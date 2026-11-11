@@ -5,8 +5,9 @@
 //! - Kendi çok örneklemeli (MSAA) çerçeve tamponuna çizer, sonra görünüm dikdörtgenine kopyalar
 //!   (blit). Böylece ana pencerenin derinlik tamponuna ve MSAA ayarına bağımlı değildir; kenarlar
 //!   yumuşak görünür.
-//! - Tek gölgelendirici: yarım küre ortam ışığı + kameraya bağlı yönlü ışık + hafif parlama,
-//!   iki yüzlü aydınlatma (pervane diskleri ve ince yüzeyler arkadan da görünür).
+//! - Tek gölgelendirici: yarım küre ortam ışığı + ana ve dolgu yönlü ışıklar + parça başına
+//!   Blinn-Phong parlama, iki yüzlü aydınlatma (pervane diskleri ve ince yüzeyler arkadan da
+//!   görünür). Aynı gölgelendirici zeminde yumuşak bir temas gölgesi (elips lekesi) de çizer.
 //! - Herhangi bir adım başarısız olursa `failed` bayrağı kalkar; arayüz bir sonraki karede
 //!   sessizce 2D şemaya düşer.
 //!
@@ -21,7 +22,21 @@ use std::sync::Arc;
 pub struct FrameData {
     pub view_proj: [f32; 16],
     pub eye: [f32; 3],
+    /// Ana ışık yönü (yüzeyden ışığa, birim).
     pub light_dir: [f32; 3],
+    /// Dolgu ışığı yönü (ana ışığın karşı tarafı, daha sönük).
+    pub fill_dir: [f32; 3],
+    /// Yarım küre ortam ışığı: gökyüzü (yukarı bakan) ve zemin (aşağı bakan) rengi.
+    pub sky: [f32; 3],
+    pub ground: [f32; 3],
+    /// Tür → (parlama şiddeti, parlaklık üssü).
+    pub materials: Vec<(PartKind, [f32; 2])>,
+    /// Patlatılmış görünümde tür başına kayma.
+    pub offsets: Vec<(PartKind, [f32; 3])>,
+    /// Zemin temas gölgesi: (merkez x, merkez y, yarı boy x, yarı boy y), zemin z'si, koyuluk.
+    pub shadow: [f32; 4],
+    pub ground_z: f32,
+    pub shadow_alpha: f32,
     pub clear: [f32; 4],
     pub grid_minor: [f32; 4],
     pub grid_major: [f32; 4],
@@ -73,7 +88,15 @@ pub struct Renderer {
     u_color: Option<glow::UniformLocation>,
     u_light: Option<glow::UniformLocation>,
     u_eye: Option<glow::UniformLocation>,
-    u_lit: Option<glow::UniformLocation>,
+    u_fill: Option<glow::UniformLocation>,
+    u_sky: Option<glow::UniformLocation>,
+    u_gcol: Option<glow::UniformLocation>,
+    u_mat: Option<glow::UniformLocation>,
+    u_mode: Option<glow::UniformLocation>,
+    u_shadow: Option<glow::UniformLocation>,
+    u_ground: Option<glow::UniformLocation>,
+    u_off: Option<glow::UniformLocation>,
+    shadow_quad: Option<(glow::VertexArray, glow::Buffer)>,
     a_pos: u32,
     a_nrm: Option<u32>,
     meshes: Vec<GpuMesh>,
@@ -89,41 +112,97 @@ precision highp float;
 in vec3 a_pos;
 in vec3 a_nrm;
 uniform mat4 u_vp;
+uniform float u_mode;
+uniform vec4 u_shadow;
+uniform float u_ground;
+uniform vec3 u_off;
 out vec3 v_nrm;
 out vec3 v_pos;
+out vec2 v_uv;
 void main() {
+    vec3 p = a_pos + u_off;
+    if (u_mode > 1.5) {
+        // Zemin lekesi: birim kare (-1..1) → elips kutusu, zemin düzleminde.
+        p = vec3(u_shadow.xy + a_pos.xy * u_shadow.zw, u_ground);
+    }
     v_nrm = a_nrm;
-    v_pos = a_pos;
-    gl_Position = u_vp * vec4(a_pos, 1.0);
+    v_pos = p;
+    v_uv = a_pos.xy;
+    gl_Position = u_vp * vec4(p, 1.0);
 }
 "#;
 
+// u_mode: 0 = aydınlatmasız (çizgiler), 1 = aydınlatmalı parça, 2 = zemin gölgesi.
 const FS: &str = r#"
 precision highp float;
 in vec3 v_nrm;
 in vec3 v_pos;
+in vec2 v_uv;
 uniform vec4 u_color;
 uniform vec3 u_light;
+uniform vec3 u_fill;
 uniform vec3 u_eye;
-uniform float u_lit;
+uniform vec3 u_sky;
+uniform vec3 u_gcol;
+uniform vec2 u_mat;
+uniform float u_mode;
 out vec4 o_color;
 void main() {
+    if (u_mode > 1.5) {
+        // Süper elips uzaklığı: uçak izine yakın, kenarları yumuşak leke.
+        vec2 q = abs(v_uv);
+        float d = pow(pow(q.x, 3.0) + pow(q.y, 3.0), 1.0 / 3.0);
+        float a = 1.0 - smoothstep(0.35, 1.0, d);
+        o_color = vec4(0.0, 0.0, 0.0, u_color.a * a * a);
+        return;
+    }
     vec3 base = u_color.rgb;
     vec3 c = base;
-    if (u_lit > 0.5) {
+    if (u_mode > 0.5) {
         vec3 n = normalize(v_nrm);
         vec3 v = normalize(u_eye - v_pos);
         if (dot(n, v) < 0.0) { n = -n; }
-        float diff = max(dot(n, u_light), 0.0);
-        float hemi = 0.5 + 0.5 * n.z;
-        vec3 h = normalize(u_light + v);
-        float spec = pow(max(dot(n, h), 0.0), 40.0) * 0.22;
-        float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.12;
-        c = base * (0.30 + 0.20 * hemi + 0.58 * diff) + vec3(spec + rim);
+        vec3 amb = mix(u_gcol, u_sky, 0.5 + 0.5 * n.z);
+        float kd = max(dot(n, u_light), 0.0);
+        float fd = max(dot(n, u_fill), 0.0);
+        vec3 diff = amb * 0.60 + vec3(1.0, 0.97, 0.92) * (0.52 * kd) + vec3(0.80, 0.88, 1.0) * (0.20 * fd);
+        float s1 = pow(max(dot(n, normalize(u_light + v)), 0.0), u_mat.y);
+        float s2 = pow(max(dot(n, normalize(u_fill + v)), 0.0), u_mat.y);
+        // Parlama yalnız ışığa bakan yüzde (kd > 0): arkadaki yansıma sızmasın.
+        float spec = u_mat.x * (s1 * step(0.001, kd) + 0.35 * s2 * step(0.001, fd));
+        float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.10;
+        c = base * diff + vec3(spec + rim);
     }
     o_color = vec4(c, u_color.a);
 }
 "#;
+
+/// Birim kare (-1..1, z=0) iki üçgen; zemin lekesi için.
+fn make_quad(
+    gl: &glow::Context,
+    a_pos: u32,
+    a_nrm: Option<u32>,
+) -> Result<(glow::VertexArray, glow::Buffer), String> {
+    let v: [f32; 18] = [
+        -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0,
+        0.0,
+    ];
+    unsafe {
+        let vao = gl.create_vertex_array()?;
+        gl.bind_vertex_array(Some(vao));
+        let vbo = gl.create_buffer()?;
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &f32_bytes(&v), glow::STATIC_DRAW);
+        gl.enable_vertex_attrib_array(a_pos);
+        gl.vertex_attrib_pointer_f32(a_pos, 3, glow::FLOAT, false, 12, 0);
+        if let Some(n) = a_nrm {
+            gl.disable_vertex_attrib_array(n);
+            gl.vertex_attrib_3_f32(n, 0.0, 0.0, 1.0);
+        }
+        gl.bind_vertex_array(None);
+        Ok((vao, vbo))
+    }
+}
 
 fn f32_bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_ne_bytes()).collect()
@@ -179,7 +258,15 @@ impl Renderer {
                 u_color: gl.get_uniform_location(program, "u_color"),
                 u_light: gl.get_uniform_location(program, "u_light"),
                 u_eye: gl.get_uniform_location(program, "u_eye"),
-                u_lit: gl.get_uniform_location(program, "u_lit"),
+                u_fill: gl.get_uniform_location(program, "u_fill"),
+                u_sky: gl.get_uniform_location(program, "u_sky"),
+                u_gcol: gl.get_uniform_location(program, "u_gcol"),
+                u_mat: gl.get_uniform_location(program, "u_mat"),
+                u_mode: gl.get_uniform_location(program, "u_mode"),
+                u_shadow: gl.get_uniform_location(program, "u_shadow"),
+                u_ground: gl.get_uniform_location(program, "u_ground"),
+                u_off: gl.get_uniform_location(program, "u_off"),
+                shadow_quad: None,
                 program,
                 a_pos,
                 a_nrm,
@@ -467,16 +554,76 @@ impl Renderer {
                 f.light_dir[2],
             );
             gl.uniform_3_f32(self.u_eye.as_ref(), f.eye[0], f.eye[1], f.eye[2]);
+            gl.uniform_3_f32(
+                self.u_fill.as_ref(),
+                f.fill_dir[0],
+                f.fill_dir[1],
+                f.fill_dir[2],
+            );
+            gl.uniform_3_f32(self.u_sky.as_ref(), f.sky[0], f.sky[1], f.sky[2]);
+            gl.uniform_3_f32(self.u_gcol.as_ref(), f.ground[0], f.ground[1], f.ground[2]);
 
             let color_of = |k: PartKind| f.colors.iter().find(|(c, _)| *c == k).map(|(_, c)| *c);
+            let mat_of = |k: PartKind| {
+                f.materials
+                    .iter()
+                    .find(|(c, _)| *c == k)
+                    .map(|(_, m)| *m)
+                    .unwrap_or([0.2, 32.0])
+            };
 
+            let off_of = |k: PartKind| {
+                f.offsets
+                    .iter()
+                    .find(|(c, _)| *c == k)
+                    .map(|(_, o)| *o)
+                    .unwrap_or([0.0; 3])
+            };
+            // Alfası 1'den küçük renkler (Yapı biçiminde dış yüzey, pervane diski) son geçişte.
+            let is_clear =
+                |k: PartKind| k.translucent() || color_of(k).is_some_and(|c| c[3] < 0.999);
             // 1) Opak parçalar
-            gl.uniform_1_f32(self.u_lit.as_ref(), 1.0);
-            for m in self.meshes.iter().filter(|m| !m.kind.translucent()) {
+            gl.uniform_1_f32(self.u_mode.as_ref(), 1.0);
+            for m in self.meshes.iter().filter(|m| !is_clear(m.kind)) {
                 let Some(c) = color_of(m.kind) else { continue };
-                gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], 1.0);
+                let o = off_of(m.kind);
+                gl.uniform_3_f32(self.u_off.as_ref(), o[0], o[1], o[2]);
+                let mt = mat_of(m.kind);
+                gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
+                gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
                 gl.bind_vertex_array(Some(m.vao));
                 gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
+            }
+            gl.uniform_3_f32(self.u_off.as_ref(), 0.0, 0.0, 0.0);
+            // 1b) Zemin temas gölgesi (derinliğe yazmadan, ızgaranın altında)
+            if f.shadow_alpha > 0.0 && f.shadow[2] > 0.0 && f.shadow[3] > 0.0 {
+                if self.shadow_quad.is_none() {
+                    self.shadow_quad = Some(make_quad(gl, self.a_pos, self.a_nrm)?);
+                }
+                if let Some((vao, _)) = &self.shadow_quad {
+                    gl.enable(glow::BLEND);
+                    gl.blend_func_separate(
+                        glow::SRC_ALPHA,
+                        glow::ONE_MINUS_SRC_ALPHA,
+                        glow::ONE,
+                        glow::ONE_MINUS_SRC_ALPHA,
+                    );
+                    gl.depth_mask(false);
+                    gl.uniform_1_f32(self.u_mode.as_ref(), 2.0);
+                    gl.uniform_4_f32(
+                        self.u_shadow.as_ref(),
+                        f.shadow[0],
+                        f.shadow[1],
+                        f.shadow[2],
+                        f.shadow[3],
+                    );
+                    gl.uniform_1_f32(self.u_ground.as_ref(), f.ground_z);
+                    gl.uniform_4_f32(self.u_color.as_ref(), 0.0, 0.0, 0.0, f.shadow_alpha);
+                    gl.bind_vertex_array(Some(*vao));
+                    gl.draw_arrays(glow::TRIANGLES, 0, 6);
+                    gl.depth_mask(true);
+                    gl.disable(glow::BLEND);
+                }
             }
             // 2) Zemin ızgarası (aydınlatmasız çizgiler)
             if let Some(l) = &self.lines {
@@ -488,7 +635,7 @@ impl Renderer {
                     glow::ONE_MINUS_SRC_ALPHA,
                 );
                 gl.depth_mask(false);
-                gl.uniform_1_f32(self.u_lit.as_ref(), 0.0);
+                gl.uniform_1_f32(self.u_mode.as_ref(), 0.0);
                 gl.bind_vertex_array(Some(l.vao));
                 let c = f.grid_minor;
                 gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
@@ -510,9 +657,13 @@ impl Renderer {
                 glow::ONE_MINUS_SRC_ALPHA,
             );
             gl.depth_mask(false);
-            gl.uniform_1_f32(self.u_lit.as_ref(), 1.0);
-            for m in self.meshes.iter().filter(|m| m.kind.translucent()) {
+            gl.uniform_1_f32(self.u_mode.as_ref(), 1.0);
+            for m in self.meshes.iter().filter(|m| is_clear(m.kind)) {
                 let Some(c) = color_of(m.kind) else { continue };
+                let o = off_of(m.kind);
+                gl.uniform_3_f32(self.u_off.as_ref(), o[0], o[1], o[2]);
+                let mt = mat_of(m.kind);
+                gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
                 gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
                 gl.bind_vertex_array(Some(m.vao));
                 gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);

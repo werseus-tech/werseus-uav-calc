@@ -36,6 +36,15 @@ pub enum ViewMode {
 
 /// Merkez görünüme adımın sağladığı grafik: seçici etiketi ve çizim fonksiyonu
 /// (`draw(ui, yükseklik)`).
+/// 3D model görünüm biçimi: dış yüzey, saydam yüzey + iç yapı, ya da parçaları ayırarak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum DisplayStyle {
+    #[default]
+    Solid,
+    Structure,
+    Exploded,
+}
+
 pub struct ChartSpec<'a> {
     pub label: &'a str,
     pub draw: &'a mut dyn FnMut(&mut Ui, f32),
@@ -43,6 +52,7 @@ pub struct ChartSpec<'a> {
 
 pub struct ViewportState {
     pub mode: ViewMode,
+    pub style: DisplayStyle,
     pub cam: OrbitCamera,
     goal: Option<OrbitCamera>,
     pub show_cg: bool,
@@ -66,6 +76,7 @@ impl Default for ViewportState {
     fn default() -> Self {
         Self {
             mode: ViewMode::Model3d,
+            style: DisplayStyle::Solid,
             cam: OrbitCamera::default(),
             goal: None,
             show_cg: true,
@@ -167,34 +178,104 @@ impl ViewportState {
     }
 }
 
-/// Parça türü renkleri (tema bazlı, sakin gri-mavi tonlar; motorlar sıcak vurgu).
-pub fn part_colors(tk: &Tokens) -> Vec<(PartKind, [f32; 4])> {
+/// Parça türü renkleri (tema bazlı, sakin gri-mavi tonlar; motorlar sıcak vurgu). Dış yüzey
+/// türleri `Structure`/`Exploded` biçiminde yarı saydamdır; iç yapı yalnız o biçimlerde görünür.
+pub fn part_colors(tk: &Tokens, style: DisplayStyle) -> Vec<(PartKind, [f32; 4])> {
     let c = |r, g, b| Color32::from_rgb(r, g, b);
-    let (wing, tail, body, boom, motor) = if tk.dark {
-        (
+    // Sıra: kanat, kuyruk, gövde, bom/kol, motor, pervane, iniş takımı, tekerlek, kontrol
+    // yüzeyi, kaburga, kiriş, çerçeve.
+    let pal = if tk.dark {
+        [
             c(158, 176, 202),
             c(138, 158, 186),
             c(118, 130, 148),
             c(96, 106, 122),
             c(214, 160, 72),
-        )
+            c(74, 80, 92),
+            c(150, 158, 170),
+            c(52, 55, 62),
+            c(120, 176, 176),
+            c(222, 190, 128),
+            c(188, 196, 210),
+            c(196, 160, 104),
+        ]
     } else {
-        (
+        [
             c(198, 210, 228),
             c(178, 194, 216),
             c(160, 170, 186),
             c(124, 134, 150),
             c(214, 150, 54),
-        )
+            c(58, 63, 74),
+            c(118, 126, 140),
+            c(38, 40, 46),
+            c(94, 158, 158),
+            c(190, 150, 84),
+            c(70, 80, 98),
+            c(176, 132, 74),
+        ]
     };
-    vec![
-        (PartKind::Wing, gl::rgba(wing, 1.0)),
-        (PartKind::Tail, gl::rgba(tail, 1.0)),
-        (PartKind::Body, gl::rgba(body, 1.0)),
-        (PartKind::Boom, gl::rgba(boom, 1.0)),
-        (PartKind::Arm, gl::rgba(boom, 1.0)),
-        (PartKind::Motor, gl::rgba(motor, 1.0)),
+    let see_through = style != DisplayStyle::Solid;
+    let skin_a = if see_through { 0.30 } else { 1.0 };
+    let mut v = vec![
+        (PartKind::Wing, gl::rgba(pal[0], skin_a)),
+        (PartKind::Tail, gl::rgba(pal[1], skin_a)),
+        (PartKind::Body, gl::rgba(pal[2], skin_a)),
+        (PartKind::Control, gl::rgba(pal[8], skin_a)),
+        (PartKind::Boom, gl::rgba(pal[3], 1.0)),
+        (PartKind::Arm, gl::rgba(pal[3], 1.0)),
+        (PartKind::Motor, gl::rgba(pal[4], 1.0)),
+        (PartKind::Prop, gl::rgba(pal[5], 1.0)),
+        (PartKind::Gear, gl::rgba(pal[6], 1.0)),
+        (PartKind::Wheel, gl::rgba(pal[7], 1.0)),
         (PartKind::Rotor, gl::rgba(tk.accent, 0.22)),
+    ];
+    if see_through {
+        v.extend([
+            (PartKind::Rib, gl::rgba(pal[9], 1.0)),
+            (PartKind::Spar, gl::rgba(pal[10], 1.0)),
+            (PartKind::Former, gl::rgba(pal[11], 1.0)),
+            (PartKind::Bay, gl::rgba(tk.accent, 0.85)),
+        ]);
+    }
+    v
+}
+
+/// Parça başına parlama: (şiddet, parlaklık üssü). Karbon/metal parlak, lastik mat.
+pub fn part_materials() -> Vec<(PartKind, [f32; 2])> {
+    vec![
+        (PartKind::Wing, [0.35, 48.0]),
+        (PartKind::Tail, [0.35, 48.0]),
+        (PartKind::Control, [0.35, 48.0]),
+        (PartKind::Body, [0.30, 40.0]),
+        (PartKind::Boom, [0.50, 70.0]),
+        (PartKind::Arm, [0.50, 70.0]),
+        (PartKind::Spar, [0.50, 70.0]),
+        (PartKind::Motor, [0.70, 90.0]),
+        (PartKind::Prop, [0.20, 30.0]),
+        (PartKind::Gear, [0.30, 40.0]),
+        (PartKind::Wheel, [0.05, 8.0]),
+        (PartKind::Rib, [0.10, 16.0]),
+        (PartKind::Former, [0.10, 16.0]),
+        (PartKind::Bay, [0.15, 20.0]),
+    ]
+}
+
+/// Patlatılmış görünüm: parça türünün kayması (sahne yarıçapının oranı). Dış yüzey yukarı,
+/// kontrol yüzeyi yukarı-arkaya, iniş takımı aşağı; iç yapı yerinde kalır.
+pub fn explode_offsets(scene_radius: f32) -> Vec<(PartKind, [f32; 3])> {
+    let r = scene_radius;
+    let up = |z: f32| [0.0, 0.0, z * r];
+    vec![
+        (PartKind::Wing, up(0.30)),
+        (PartKind::Tail, up(0.30)),
+        (PartKind::Body, up(0.30)),
+        (PartKind::Control, [-0.12 * r, 0.0, 0.30 * r]),
+        (PartKind::Gear, up(-0.22)),
+        (PartKind::Wheel, up(-0.22)),
+        (PartKind::Prop, up(0.18)),
+        (PartKind::Rotor, up(0.18)),
+        (PartKind::Motor, up(0.10)),
     ]
 }
 
@@ -340,6 +421,28 @@ pub fn show(
                 t("ui.view.props_tip"),
             );
             toggle_chip(ui, &mut st.show_grid, t("ui.view.grid"), "");
+            ui.separator();
+            segmented(
+                ui,
+                &mut st.style,
+                &[
+                    (
+                        DisplayStyle::Solid,
+                        t("ui.view.style_solid"),
+                        t("ui.view.style_solid_tip"),
+                    ),
+                    (
+                        DisplayStyle::Structure,
+                        t("ui.view.style_structure"),
+                        t("ui.view.style_structure_tip"),
+                    ),
+                    (
+                        DisplayStyle::Exploded,
+                        t("ui.view.style_exploded"),
+                        t("ui.view.style_exploded_tip"),
+                    ),
+                ],
+            );
         }
         ui.separator();
         toolbar_extra(ui);
@@ -464,10 +567,24 @@ pub fn show(
     if st.show_grid {
         st.ensure_grid();
     }
-    let mut colors = part_colors(tk);
+    let mut colors = part_colors(tk, st.style);
     if !st.show_props {
-        colors.retain(|(k, _)| *k != PartKind::Rotor);
+        colors.retain(|(k, _)| !matches!(*k, PartKind::Rotor | PartKind::Prop));
     }
+    let offsets = if st.style == DisplayStyle::Exploded {
+        explode_offsets(st.scene.radius())
+    } else {
+        Vec::new()
+    };
+    let (sky, ground) = if tk.dark {
+        ([0.55, 0.62, 0.74], [0.20, 0.21, 0.25])
+    } else {
+        ([0.80, 0.85, 0.94], [0.46, 0.44, 0.42])
+    };
+    let (bmin, bmax) = (st.scene.bounds_min, st.scene.bounds_max);
+    let sc_r = st.scene.radius();
+    let (right, up) = st.cam.basis();
+    let fill = (st.cam.back_dir() * 0.40 + right * 0.75 - up * 0.20).normalized();
     let vp = st.cam.view_proj(aspect);
     let eye = st.cam.eye();
     let ld = light_dir(&st.cam);
@@ -475,6 +592,19 @@ pub fn show(
         view_proj: vp.to_cols_array(),
         eye: [eye.x, eye.y, eye.z],
         light_dir: [ld.x, ld.y, ld.z],
+        fill_dir: [fill.x, fill.y, fill.z],
+        sky,
+        ground,
+        materials: part_materials(),
+        offsets,
+        shadow: [
+            0.5 * (bmin.x + bmax.x),
+            0.5 * (bmin.y + bmax.y),
+            0.55 * (bmax.x - bmin.x) * 1.1,
+            0.55 * (bmax.y - bmin.y) * 1.1,
+        ],
+        ground_z: bmin.z - sc_r * 0.04,
+        shadow_alpha: if tk.dark { 0.45 } else { 0.28 },
         clear: gl::rgba(tk.viewport_bg, 1.0),
         grid_minor: gl::rgba(tk.viewport_grid, 1.0),
         grid_major: gl::rgba(tk.viewport_grid_major, 1.0),
@@ -788,6 +918,68 @@ mod tests {
             st.gl_failed.store(true, Ordering::Relaxed);
             st.mode = ViewMode::Model3d;
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default()
+                    .show(ui, |ui| show(ui, &mut st, &p, &m, None, None, |_| {}));
+            });
+            out.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn display_styles_select_visible_parts() {
+        for tk in [&theme::DARK, &theme::LIGHT] {
+            let solid = part_colors(tk, DisplayStyle::Solid);
+            assert!(solid.iter().all(|(k, _)| !matches!(
+                k,
+                PartKind::Rib | PartKind::Spar | PartKind::Former | PartKind::Bay
+            )));
+            assert!(
+                solid
+                    .iter()
+                    .all(|(k, c)| *k == PartKind::Rotor || c[3] == 1.0)
+            );
+            for style in [DisplayStyle::Structure, DisplayStyle::Exploded] {
+                let v = part_colors(tk, style);
+                for k in [
+                    PartKind::Rib,
+                    PartKind::Spar,
+                    PartKind::Former,
+                    PartKind::Bay,
+                ] {
+                    assert!(v.iter().any(|(q, _)| *q == k));
+                }
+                let wing = v.iter().find(|(k, _)| *k == PartKind::Wing).unwrap();
+                assert!(wing.1[3] < 1.0, "dış yüzey saydam olmalı");
+            }
+            // Her çizilen türün bir malzemesi var.
+            let mats = part_materials();
+            for (k, _) in part_colors(tk, DisplayStyle::Structure) {
+                assert!(
+                    k == PartKind::Rotor || mats.iter().any(|(q, _)| *q == k),
+                    "{k:?}"
+                );
+            }
+        }
+        assert_eq!(DisplayStyle::default(), DisplayStyle::Solid);
+        let off = explode_offsets(1.0);
+        assert!(off.iter().any(|(k, o)| *k == PartKind::Wing && o[2] > 0.0));
+        assert!(!off.iter().any(|(k, _)| *k == PartKind::Rib));
+    }
+
+    #[test]
+    fn every_style_renders_headless() {
+        let (p, m) = eval(DroneType::VtolQuadplane);
+        let mut st = ViewportState::default();
+        let ctx = egui::Context::default();
+        for style in [
+            DisplayStyle::Solid,
+            DisplayStyle::Structure,
+            DisplayStyle::Exploded,
+        ] {
+            st.style = style;
+            let mut input = egui::RawInput::default();
+            input.screen_rect = Some(Rect::from_min_size(Pos2::ZERO, vec2(900.0, 500.0)));
+            let mut out = ctx.run_ui(input, |ui| {
                 egui::CentralPanel::default()
                     .show(ui, |ui| show(ui, &mut st, &p, &m, None, None, |_| {}));
             });

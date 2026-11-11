@@ -233,7 +233,7 @@ pub fn push_box(mesh: &mut Mesh, center: Vec3, size: Vec3) {
 }
 
 /// Builds an orthonormal basis (u, v) perpendicular to unit direction d.
-fn basis_around(d: Vec3) -> (Vec3, Vec3) {
+pub fn basis_around(d: Vec3) -> (Vec3, Vec3) {
     let helper = if d.z.abs() > 0.9 { Vec3::X } else { Vec3::Z };
     let u = d.cross(helper).normalized();
     let v = d.cross(u);
@@ -434,6 +434,119 @@ pub fn push_lathe_x(mesh: &mut Mesh, profile: &[(f32, f32)], segments: u32) {
                 }
             }
         }
+    }
+}
+
+/// Üçgeni verilen yaklaşık dış normale göre doğru sarımla ekler.
+pub fn push_tri_oriented(mesh: &mut Mesh, a: u32, b: u32, c: u32, outward: Vec3) {
+    let p = |i: u32| {
+        let v = mesh.positions[i as usize];
+        Vec3::new(v[0], v[1], v[2])
+    };
+    let n = (p(b) - p(a)).cross(p(c) - p(a));
+    if n.dot(outward) >= 0.0 {
+        mesh.push_triangle(a, b, c);
+    } else {
+        mesh.push_triangle(a, c, b);
+    }
+}
+
+/// Satır × sütun noktalı ızgarayı yumuşak normallerle mesh'e çevirir (kanat/gövde/kanat
+/// gibi lofta dayalı yüzeyler). Normaller komşu noktaların farkından hesaplanır; `refs`
+/// yalnızca yönü (dışa bakış) belirler. `wrap` doğruysa sütunlar halka kapanır (gövde);
+/// yanlışsa ilk ve son sütun ayrı köşelerdir (sert kenar: kanat firar kenarı).
+/// Geçersiz boyut veya sonlu olmayan nokta hiçbir şey eklemez.
+pub fn push_grid(mesh: &mut Mesh, pos: &[Vec<Vec3>], refs: &[Vec<Vec3>], wrap: bool) {
+    let rows = pos.len();
+    if rows < 2 || refs.len() != rows {
+        return;
+    }
+    let cols = pos[0].len();
+    if cols < if wrap { 3 } else { 2 }
+        || pos.iter().any(|r| r.len() != cols)
+        || refs.iter().any(|r| r.len() != cols)
+        || pos.iter().flatten().any(|p| !p.is_finite())
+        || refs.iter().flatten().any(|p| !p.is_finite())
+    {
+        return;
+    }
+    let first = mesh.vertex_count() as u32;
+    for i in 0..rows {
+        let (i0, i1) = (i.saturating_sub(1), (i + 1).min(rows - 1));
+        for j in 0..cols {
+            let (j0, j1) = if wrap {
+                ((j + cols - 1) % cols, (j + 1) % cols)
+            } else {
+                (j.saturating_sub(1), (j + 1).min(cols - 1))
+            };
+            let r = refs[i][j];
+            let mut n = (pos[i][j1] - pos[i][j0]).cross(pos[i1][j] - pos[i0][j]);
+            if n.length() < 1e-9 {
+                n = r;
+            } else if n.dot(r) < 0.0 {
+                n = -n;
+            }
+            let n = n.normalized();
+            mesh.push_vertex(pos[i][j], if n == Vec3::ZERO { Vec3::Z } else { n });
+        }
+    }
+    let idx = |i: usize, j: usize| first + (i * cols + j) as u32;
+    let ncol = if wrap { cols } else { cols - 1 };
+    for i in 0..rows - 1 {
+        for j in 0..ncol {
+            let j1 = (j + 1) % cols;
+            let (a, b, c, d) = (idx(i, j), idx(i, j1), idx(i + 1, j1), idx(i + 1, j));
+            let out = refs[i][j] + refs[i][j1] + refs[i + 1][j1] + refs[i + 1][j];
+            push_tri_oriented(mesh, a, b, c, out);
+            push_tri_oriented(mesh, a, c, d, out);
+        }
+    }
+}
+
+/// Düz kapak: `ring` noktalarını merkezden yelpaze ile kapatır, hepsi aynı normal.
+pub fn push_flat_cap(mesh: &mut Mesh, center: Vec3, ring: &[Vec3], normal: Vec3) {
+    let n = normal.normalized();
+    if ring.len() < 3
+        || n == Vec3::ZERO
+        || !center.is_finite()
+        || ring.iter().any(|p| !p.is_finite())
+    {
+        return;
+    }
+    let ci = mesh.push_vertex(center, n);
+    let first = mesh.vertex_count() as u32;
+    for p in ring {
+        mesh.push_vertex(*p, n);
+    }
+    for i in 0..ring.len() as u32 {
+        let j = (i + 1) % ring.len() as u32;
+        push_tri_oriented(mesh, ci, first + i, first + j, n);
+    }
+}
+
+/// `origin` noktasından `axis` doğrultusunda uzanan dönel yüzey (profil: eksen boyunca
+/// uzaklık, yarıçap). Bkz. [`push_lathe_x`].
+pub fn push_lathe_axis(
+    mesh: &mut Mesh,
+    origin: Vec3,
+    axis: Vec3,
+    profile: &[(f32, f32)],
+    segments: u32,
+) {
+    let d = axis.normalized();
+    if d == Vec3::ZERO || !origin.is_finite() {
+        return;
+    }
+    let (u, v) = basis_around(d);
+    let mut tmp = Mesh::new();
+    push_lathe_x(&mut tmp, profile, segments);
+    let map = |q: [f32; 3]| d * q[0] + u * q[1] + v * q[2];
+    let first = mesh.vertex_count() as u32;
+    for (p, n) in tmp.positions.iter().zip(&tmp.normals) {
+        mesh.push_vertex(origin + map(*p), map(*n).normalized());
+    }
+    for i in &tmp.indices {
+        mesh.indices.push(first + i);
     }
 }
 

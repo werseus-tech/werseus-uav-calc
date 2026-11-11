@@ -6,7 +6,9 @@
 //! aynı ölçüleri gösterir. Bu dosya `Project`/`Model` okumaz: girdi [`AircraftSpec`]'tir,
 //! dönüşüm `spec.rs` içindedir. Böylece mesh üretimi bağımsız test edilir.
 use super::math::Vec3;
-use super::mesh::{Mesh, push_box, push_cylinder, push_disc, push_lathe_x};
+use super::mesh::{Mesh, push_box, push_cylinder, push_disc, push_flat_cap, push_grid};
+use super::parts::{push_fuselage, push_propeller, push_wheel};
+use super::structure::{FuselageStructure, SurfaceStructure, fuselage_shell, surface_parts};
 
 /// Taşıyıcı yüzey (kanat, yatay/V kuyruk, dikey kuyruk, winglet) — tek yarı tanımlanır.
 #[derive(Clone, Debug, PartialEq)]
@@ -21,6 +23,10 @@ pub struct SurfaceSpec {
     pub sweep_le_deg: f32,
     /// Dihedral [derece]; 90 = dikey yüzey (yukarı).
     pub dihedral_deg: f32,
+    /// Uçtaki burulma [derece] (kökte 0, açıklık boyunca doğrusal; + = hücum kenarı yukarı).
+    pub twist_tip_deg: f32,
+    /// İç yapı (deri kalınlığı, kaburga, kiriş, kontrol yüzeyi); `None` = yalnız dış yüzey.
+    pub structure: Option<SurfaceStructure>,
     /// Normalize profil noktaları (x 0..1 kord, y kalınlık/kord), firar üst → hücum → firar alt.
     pub profile: Vec<[f32; 2]>,
     /// Y = 0 düzlemine göre aynası da üretilsin mi (sol + sağ yarı)?
@@ -35,6 +41,8 @@ pub struct FuselageSpec {
     pub diameter: f32,
     /// Gövde ekseninin yüksekliği (kanat düzlemine göre).
     pub z_axis: f32,
+    /// Kabuk et kalınlığı ve çerçeveler; `None` = dolu dış yüzey.
+    pub structure: Option<FuselageStructure>,
 }
 
 /// Pervane diski (ve isteğe bağlı motor gövdesi).
@@ -47,6 +55,16 @@ pub struct RotorSpec {
     /// Motor çanı (silindir) yarıçapı; 0 ise motor çizilmez.
     pub motor_radius: f32,
     pub motor_height: f32,
+    /// Pervane kanat sayısı (2..=6 aralığına sıkıştırılır).
+    pub blades: u32,
+}
+
+/// Tekerlek: Y ekseni etrafında dönen lastik.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelSpec {
+    pub center: Vec3,
+    pub radius: f32,
+    pub width: f32,
 }
 
 /// Kol, bom gibi silindirik çubuk.
@@ -64,10 +82,13 @@ pub struct AircraftSpec {
     pub fuselage: Option<FuselageSpec>,
     pub rods: Vec<(PartKind, RodSpec)>,
     pub rotors: Vec<RotorSpec>,
+    pub wheels: Vec<WheelSpec>,
     /// Multirotor merkez plakası: merkez, yarıçap, kalınlık.
     pub plate: Option<(Vec3, f32, f32)>,
     /// Kutular (batarya/elektronik yığını): merkez, boyut.
     pub boxes: Vec<(Vec3, Vec3)>,
+    /// Yük/batarya/aviyonik bölmeleri: merkez, boyut.
+    pub bays: Vec<(Vec3, Vec3)>,
     pub cg: Option<Vec3>,
     pub np: Option<Vec3>,
 }
@@ -82,18 +103,37 @@ pub enum PartKind {
     Boom,
     Arm,
     Motor,
+    /// Pervane göbeği ve kanatları.
+    Prop,
+    /// İniş takımı ayakları/kızakları.
+    Gear,
+    Wheel,
+    /// Kaburga, kiriş, kontrol yüzeyi, gövde çerçevesi ve bölmeler (üretim yapısı).
+    Rib,
+    Spar,
+    Control,
+    Former,
+    Bay,
     /// Yarı saydam pervane diskleri.
     Rotor,
 }
 
 impl PartKind {
-    pub const ALL: [PartKind; 7] = [
+    pub const ALL: [PartKind; 15] = [
         PartKind::Wing,
         PartKind::Tail,
         PartKind::Body,
         PartKind::Boom,
         PartKind::Arm,
         PartKind::Motor,
+        PartKind::Prop,
+        PartKind::Gear,
+        PartKind::Wheel,
+        PartKind::Rib,
+        PartKind::Spar,
+        PartKind::Control,
+        PartKind::Former,
+        PartKind::Bay,
         PartKind::Rotor,
     ];
 
@@ -182,8 +222,18 @@ pub fn resample_profile(pts: &[[f32; 2]], n: usize) -> Vec<[f32; 2]> {
     out
 }
 
-/// Profil verisi kullanılamazsa simetrik %12 kalınlıkta yedek profil (NACA 0012 yaklaşık).
+/// NACA 4 haneli profil (firar üst → hücum → firar alt); kod geçersizse `None`.
+pub fn naca4_profile(code: &str) -> Option<Vec<[f32; 2]>> {
+    let pts = crate::cad::airfoil::generate_naca4_points(code, 80, true).ok()?;
+    let v: Vec<[f32; 2]> = pts.iter().map(|q| [q[0] as f32, q[1] as f32]).collect();
+    (v.len() >= 3 && v.iter().all(|q| q[0].is_finite() && q[1].is_finite())).then_some(v)
+}
+
+/// Profil verisi kullanılamazsa simetrik %12 kalınlıkta yedek profil (NACA 0012).
 pub fn fallback_profile() -> Vec<[f32; 2]> {
+    if let Some(v) = naca4_profile("0012") {
+        return v;
+    }
     let n = 16;
     let yt = |x: f32| {
         0.6 * (0.2969 * x.sqrt() - 0.1260 * x - 0.3516 * x * x + 0.2843 * x * x * x
@@ -203,21 +253,9 @@ pub fn fallback_profile() -> Vec<[f32; 2]> {
     v
 }
 
-/// Üçgeni verilen yaklaşık dış normale göre doğru sarımla ekler.
-fn tri_oriented(mesh: &mut Mesh, a: u32, b: u32, c: u32, outward: Vec3) {
-    let p = |i: u32| {
-        let v = mesh.positions[i as usize];
-        Vec3::new(v[0], v[1], v[2])
-    };
-    let n = (p(b) - p(a)).cross(p(c) - p(a));
-    if n.dot(outward) >= 0.0 {
-        mesh.push_triangle(a, b, c);
-    } else {
-        mesh.push_triangle(a, c, b);
-    }
-}
-
-/// Tek yarı yüzey mesh'i (aynalama çağıran tarafta).
+/// Tek yarı yüzey mesh'i (aynalama çağıran tarafta). Profil, açıklık boyunca birkaç istasyonda
+/// kök → uç doğrusal daralma/ok/dihedral/burulma ile loft edilir; normaller yumuşaktır, firar
+/// kenarı (profilin iki ucu) ayrı köşeler olduğu için sert kenar kalır.
 pub fn surface_half(s: &SurfaceSpec) -> Mesh {
     let mut mesh = Mesh::new();
     if !(finite_pos(s.semi_span) && finite_pos(s.c_root) && s.root_le.is_finite()) {
@@ -235,6 +273,11 @@ pub fn surface_half(s: &SurfaceSpec) -> Mesh {
     };
     let gamma = if s.dihedral_deg.is_finite() {
         s.dihedral_deg.clamp(-90.0, 90.0).to_radians()
+    } else {
+        0.0
+    };
+    let twist = if s.twist_tip_deg.is_finite() {
+        s.twist_tip_deg.clamp(-20.0, 20.0).to_radians()
     } else {
         0.0
     };
@@ -259,42 +302,52 @@ pub fn surface_half(s: &SurfaceSpec) -> Mesh {
         })
         .collect();
 
-    let section = |mesh: &mut Mesh, span: f32, chord: f32| -> u32 {
+    const STATIONS: usize = 10;
+    let mut rows: Vec<Vec<Vec3>> = Vec::with_capacity(STATIONS + 1);
+    let mut refs: Vec<Vec<Vec3>> = Vec::with_capacity(STATIONS + 1);
+    for k in 0..=STATIONS {
+        let f = k as f32 / STATIONS as f32;
+        let span = s.semi_span * f;
+        let chord = s.c_root + (c_tip - s.c_root) * f;
         let le = s.root_le + span_dir * span + chord_dir * (span * sweep.tan());
-        let first = mesh.vertex_count() as u32;
+        let (st, ct) = (twist * f).sin_cos();
+        let mut ring = Vec::with_capacity(n);
+        let mut rf = Vec::with_capacity(n);
         for (i, p) in prof.iter().enumerate() {
-            let pos = le + chord_dir * (p[0] * chord) + up_dir * (p[1] * chord);
-            let nrm = (chord_dir * normals2[i][0] + up_dir * normals2[i][1]).normalized();
-            mesh.push_vertex(pos, nrm);
+            // Burulma çeyrek veter etrafında: ileri (a < 0) noktalar yukarı kalkar.
+            let a = (p[0] - 0.25) * chord;
+            let h = p[1] * chord;
+            let (a2, h2) = (a * ct + h * st, h * ct - a * st);
+            ring.push(le + chord_dir * (0.25 * chord + a2) + up_dir * h2);
+            let (nx, ny) = (normals2[i][0], normals2[i][1]);
+            rf.push(chord_dir * (nx * ct + ny * st) + up_dir * (ny * ct - nx * st));
         }
-        first
-    };
-    let r0 = section(&mut mesh, 0.0, s.c_root);
-    let t0 = section(&mut mesh, s.semi_span, c_tip);
-    for i in 0..n - 1 {
-        let (a, b) = (r0 + i as u32, r0 + i as u32 + 1);
-        let (c, d) = (t0 + i as u32 + 1, t0 + i as u32);
-        let out = {
-            let v = mesh.normals[a as usize];
-            Vec3::new(v[0], v[1], v[2])
-        };
-        tri_oriented(&mut mesh, a, b, c, out);
-        tri_oriented(&mut mesh, a, c, d, out);
+        rows.push(ring);
+        refs.push(rf);
     }
-    // Kök ve uç kapakları (düz normal, merkezden yelpaze).
-    for (span, chord, dir) in [(0.0, s.c_root, -1.0_f32), (s.semi_span, c_tip, 1.0)] {
-        let le = s.root_le + span_dir * span + chord_dir * (span * sweep.tan());
-        let cap_n = span_dir * dir;
-        let center = le + chord_dir * (0.35 * chord);
-        let ci = mesh.push_vertex(center, cap_n);
-        let first = mesh.vertex_count() as u32;
-        for p in &prof {
-            let pos = le + chord_dir * (p[0] * chord) + up_dir * (p[1] * chord);
-            mesh.push_vertex(pos, cap_n);
+    push_grid(&mut mesh, &rows, &refs, false);
+    // Açık firar kenarı (kalın profil): düz bir şerit ile kapat.
+    let (first, last) = (0, n - 1);
+    let gap = rows[0][first] - rows[0][last];
+    if gap.length() > 1e-5 * s.c_root {
+        let strip: Vec<Vec<Vec3>> = rows.iter().map(|r| vec![r[first], r[last]]).collect();
+        let sref: Vec<Vec<Vec3>> = rows.iter().map(|_| vec![chord_dir * -1.0; 2]).collect();
+        push_grid(&mut mesh, &strip, &sref, false);
+    }
+    // Uç kapağı (ve aynasız yüzeyde kök kapağı): düz normal, merkezden yelpaze.
+    let caps: &[(usize, f32)] = if s.mirrored {
+        &[(STATIONS, 1.0)]
+    } else {
+        &[(0, -1.0), (STATIONS, 1.0)]
+    };
+    for &(k, dir) in caps {
+        // Merkez: kesitin ağırlık merkezi (dışbükey olmayan profilde de yelpaze taşmaz).
+        let mut center = Vec3::ZERO;
+        for p in &rows[k] {
+            center += *p;
         }
-        for i in 0..n as u32 - 1 {
-            tri_oriented(&mut mesh, ci, first + i, first + i + 1, cap_n);
-        }
+        center = center * (1.0 / n as f32);
+        push_flat_cap(&mut mesh, center, &rows[k], span_dir * dir);
     }
     mesh
 }
@@ -337,9 +390,9 @@ pub fn fuselage_profile(f: &FuselageSpec, n: usize) -> Vec<(f32, f32)> {
         } else if from_nose < 0.6 {
             1.0
         } else {
-            // kuyruğa doğru incelme (r → 0.22 r)
+            // kuyruğa doğru incelme (r → 0.1 r), sonra düz kapak
             let u = (from_nose - 0.6) / 0.4;
-            1.0 - 0.78 * u * u * (3.0 - 2.0 * u)
+            1.0 - 0.9 * u * u * (3.0 - 2.0 * u)
         }
     };
     (0..=n)
@@ -363,28 +416,28 @@ pub fn build(spec: &AircraftSpec) -> Scene {
     };
 
     for (kind, s) in &spec.surfaces {
-        let half = surface_half(s);
-        add(*kind, &half);
-        if s.mirrored {
-            add(*kind, &mirror_y(&half));
+        for (k, half) in surface_parts(s, *kind) {
+            add(k, &half);
+            if s.mirrored {
+                add(k, &mirror_y(&half));
+            }
         }
     }
 
     if let Some(f) = &spec.fuselage {
-        if finite_pos(f.length) && finite_pos(f.diameter) && f.x_nose.is_finite() {
-            let mut m = Mesh::new();
-            push_lathe_x(&mut m, &fuselage_profile(f, 28), 28);
-            translate(
-                &mut m,
-                Vec3::new(0.0, 0.0, if f.z_axis.is_finite() { f.z_axis } else { 0.0 }),
-            );
-            add(PartKind::Body, &m);
+        let mut m = Mesh::new();
+        push_fuselage(&mut m, f);
+        if let Some(st) = &f.structure {
+            let (inner, formers) = fuselage_shell(f, st);
+            m.append(&inner);
+            add(PartKind::Former, &formers);
         }
+        add(PartKind::Body, &m);
     }
 
     for (kind, r) in &spec.rods {
         let mut m = Mesh::new();
-        push_cylinder(&mut m, r.a, r.b, r.radius, 14, true);
+        push_cylinder(&mut m, r.a, r.b, r.radius, 20, true);
         add(*kind, &m);
     }
 
@@ -400,6 +453,13 @@ pub fn build(spec: &AircraftSpec) -> Scene {
         );
         add(PartKind::Body, &m);
     }
+    for (c, size) in &spec.bays {
+        if c.is_finite() && size.is_finite() && size.x > 0.0 && size.y > 0.0 && size.z > 0.0 {
+            let mut m = Mesh::new();
+            push_box(&mut m, *c, *size);
+            add(PartKind::Bay, &m);
+        }
+    }
     for (c, size) in &spec.boxes {
         if c.is_finite() && size.is_finite() && size.x > 0.0 && size.y > 0.0 && size.z > 0.0 {
             let mut m = Mesh::new();
@@ -414,22 +474,27 @@ pub fn build(spec: &AircraftSpec) -> Scene {
             continue;
         }
         if finite_pos(r.motor_radius) && finite_pos(r.motor_height) {
+            // Çan (üst %70) + daha ince gövde/stator (alt %30).
             let mut m = Mesh::new();
-            push_cylinder(
-                &mut m,
-                r.center - axis * r.motor_height,
-                r.center,
-                r.motor_radius,
-                16,
-                true,
-            );
+            let (mr, h) = (r.motor_radius, r.motor_height);
+            let base = r.center - axis * h;
+            push_cylinder(&mut m, base, base + axis * (h * 0.3), mr * 0.62, 16, true);
+            push_cylinder(&mut m, base + axis * (h * 0.3), r.center, mr, 20, true);
             add(PartKind::Motor, &m);
         }
         if finite_pos(r.radius) {
             let mut m = Mesh::new();
+            push_propeller(&mut m, r.center, axis, r.radius, r.blades, 0.0);
+            add(PartKind::Prop, &m);
+            let mut m = Mesh::new();
             push_disc(&mut m, r.center + axis * 0.004, axis, r.radius, 40);
             add(PartKind::Rotor, &m);
         }
+    }
+    for w in &spec.wheels {
+        let mut m = Mesh::new();
+        push_wheel(&mut m, w.center, w.radius, w.width);
+        add(PartKind::Wheel, &m);
     }
 
     let mut parts: Vec<Part> = by_kind
@@ -480,6 +545,8 @@ mod tests {
             c_tip: c_t,
             sweep_le_deg: sweep,
             dihedral_deg: dihedral,
+            twist_tip_deg: 0.0,
+            structure: None,
             profile: fallback_profile(),
             mirrored: true,
         }
@@ -570,6 +637,7 @@ mod tests {
                 length: 1.0,
                 diameter: 0.1,
                 z_axis: 0.0,
+                structure: None,
             }),
             rods: vec![(
                 PartKind::Arm,
@@ -585,6 +653,7 @@ mod tests {
                 radius: 0.1,
                 motor_radius: 0.01,
                 motor_height: 0.01,
+                blades: 2,
             }],
             cg: Some(Vec3::new(f32::NAN, 0.0, 0.0)),
             ..Default::default()
@@ -613,6 +682,7 @@ mod tests {
                         radius: 0.0635,
                         motor_radius: 0.012,
                         motor_height: 0.015,
+                        blades: 2,
                     }
                 })
                 .collect(),
@@ -638,6 +708,7 @@ mod tests {
             length: 0.9,
             diameter: 0.11,
             z_axis: 0.0,
+            structure: None,
         };
         let pr = fuselage_profile(&f, 20);
         assert!(pr.windows(2).all(|w| w[1].0 > w[0].0));
@@ -655,5 +726,77 @@ mod tests {
         assert!(r.iter().any(|q| q[0] < 1e-6));
         assert_eq!(r[0], p[0]);
         assert_eq!(*r.last().unwrap(), *p.last().unwrap());
+    }
+
+    #[test]
+    fn twist_raises_leading_edge_toward_tip() {
+        let mut w = wing(1.0, 0.3, 0.3, 0.0, 0.0);
+        let flat = surface_half(&w);
+        w.twist_tip_deg = 6.0;
+        let tw = surface_half(&w);
+        assert!(tw.is_valid());
+        // Hücum kenarı (en öndeki köşe, +X) yukarı kalkar.
+        let le_z = |m: &Mesh| {
+            m.positions
+                .iter()
+                .filter(|p| p[1] > 0.99)
+                .max_by(|a, b| a[0].total_cmp(&b[0]))
+                .map(|p| p[2])
+                .unwrap()
+        };
+        assert!(
+            le_z(&tw) > le_z(&flat) + 0.005,
+            "{} {}",
+            le_z(&tw),
+            le_z(&flat)
+        );
+        // Kök kesit etkilenmez.
+        let root_z = |m: &Mesh| {
+            m.positions
+                .iter()
+                .filter(|p| p[1].abs() < 1e-6)
+                .map(|p| p[2])
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(approx(root_z(&flat), root_z(&tw), 1e-5));
+    }
+
+    #[test]
+    fn trailing_edge_is_a_hard_edge_and_open_te_is_closed() {
+        let half = surface_half(&wing(0.5, 0.2, 0.2, 0.0, 0.0));
+        // Firar kenarında üst/alt köşeler aynı yerde ama normalleri belirgin farklı.
+        let mut found = false;
+        for (i, p) in half.positions.iter().enumerate() {
+            for (j, q) in half.positions.iter().enumerate().skip(i + 1) {
+                let d = (p[0] - q[0]).abs() + (p[1] - q[1]).abs() + (p[2] - q[2]).abs();
+                if d < 1e-6 && p[0] < -0.19 && p[1] > 0.2 && p[1] < 0.3 {
+                    let n = (half.normals[i], half.normals[j]);
+                    let dot = n.0[0] * n.1[0] + n.0[1] * n.1[1] + n.0[2] * n.1[2];
+                    if dot < 0.95 {
+                        found = true;
+                    }
+                }
+            }
+        }
+        assert!(found, "firar kenarında sert kenar yok");
+        // Açık firar kenarlı (kalın) profil: şerit eklenir, mesh geçerli kalır.
+        let mut thick = wing(0.5, 0.2, 0.2, 0.0, 0.0);
+        for p in &mut thick.profile {
+            p[1] += if p[1] >= 0.0 { 0.01 } else { -0.01 };
+        }
+        let closed = surface_half(&wing(0.5, 0.2, 0.2, 0.0, 0.0));
+        let m = surface_half(&thick);
+        assert!(m.is_valid() && m.triangle_count() > closed.triangle_count());
+    }
+
+    #[test]
+    fn naca4_profile_is_used_and_validated() {
+        let p = naca4_profile("2412").unwrap();
+        assert!(p.len() > 40);
+        assert!(naca4_profile("zz").is_none());
+        let t = fallback_profile();
+        let ymax = t.iter().map(|q| q[1]).fold(f32::MIN, f32::max);
+        let ymin = t.iter().map(|q| q[1]).fold(f32::MAX, f32::min);
+        assert!(approx(ymax - ymin, 0.12, 0.005));
     }
 }

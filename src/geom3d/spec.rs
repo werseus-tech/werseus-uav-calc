@@ -4,9 +4,14 @@
 //! Ölçüler ve yerleşim 2D şemadaki (`ui::schematic`) kurallarla aynıdır; geçersiz değerlerde
 //! şemadaki gibi makul yedek değerler kullanılır. Hesap motoruna yazılmaz.
 use super::aircraft::{
-    AircraftSpec, FuselageSpec, PartKind, RodSpec, RotorSpec, SurfaceSpec, fallback_profile,
+    AircraftSpec, FuselageSpec, PartKind, RodSpec, RotorSpec, SurfaceSpec, WheelSpec,
+    fallback_profile,
 };
 use super::math::Vec3;
+use super::structure::{
+    ControlSpec, FuselageStructure, SparSpec, SurfaceStructure, fuselage_radius_at, mid_at,
+    thickness_at,
+};
 use crate::calc::Model;
 use crate::calc::geometry::TailKind;
 use crate::calc::multirotor::MultirotorLayout;
@@ -30,6 +35,132 @@ fn pos_or(x: f64, min: f64, fallback: f64) -> f32 {
         x as f32
     } else {
         fallback as f32
+    }
+}
+
+/// Çok rotorlu/kaldırma pervanesi kanat sayısı (projede yoksa 2).
+fn mr_blades(p: &Project) -> u32 {
+    p.mr_prop_blades.clamp(2, 6)
+}
+
+// --- Yapı varsayılanları -------------------------------------------------------------
+// Projede bulunmayan üretim değerleri tek yerde. Kanat/kuyruk deri kalınlığı, kiriş çapı/konumu
+// ve gövde et kalınlığı `cad` yapı verisinden okunur; aşağıdakiler henüz paylaşılan bir yapı
+// arayüzünde yoktur.
+// TODO: take from shared cad structure API
+/// Deri kalınlığı [m]; yapı verisinde et kalınlığı 0 (dolu) ise.
+const DEFAULT_SKIN_T: f32 = 0.0008;
+/// Kaburga aralığı [m] ve kalınlığı [m] (yarı yüzeydeki sayı açıklıktan türetilir).
+const RIB_SPACING: f32 = 0.10;
+const RIB_T: f32 = 0.002;
+/// Menteşe aralığı [m].
+const HINGE_GAP: f32 = 0.002;
+/// Kontrol yüzeyleri: (menteşe kord oranı, açıklık başı, açıklık sonu).
+const AILERON: (f32, f32, f32) = (0.72, 0.55, 0.95);
+const ELEVON: (f32, f32, f32) = (0.75, 0.15, 0.95);
+const ELEVATOR: (f32, f32, f32) = (0.62, 0.08, 0.97);
+const RUDDER: (f32, f32, f32) = (0.60, 0.08, 0.97);
+const RUDDERVATOR: (f32, f32, f32) = (0.62, 0.10, 0.97);
+/// Gövde çerçeveleri: burundan gövde boyu oranı; kalınlık [m].
+const FORMERS: [f32; 5] = [0.06, 0.25, 0.45, 0.65, 0.85];
+const FORMER_T: f32 = 0.003;
+/// Bölmeler (aviyonik, batarya, yük): burundan gövde boyu oranı aralığı.
+const BAYS: [(f32, f32); 3] = [(0.22, 0.34), (0.37, 0.53), (0.56, 0.72)];
+
+fn mm_or(mm: f64, fallback: f32) -> f32 {
+    if mm.is_finite() && mm > 0.0 {
+        (mm / 1000.0) as f32
+    } else {
+        fallback
+    }
+}
+
+/// Yarı yüzey iç yapısı: değerler `cad` yapı parametrelerinden (mm), kaburga sayısı açıklıktan.
+fn structure(
+    wall_mm: f64,
+    spar_od_mm: f64,
+    spar_x: f64,
+    semi: f32,
+    ctl: (f32, f32, f32),
+) -> Option<SurfaceStructure> {
+    if !(semi.is_finite() && semi > 0.0) {
+        return None;
+    }
+    let od = mm_or(spar_od_mm, 0.0);
+    let spar_x = if spar_x.is_finite() {
+        spar_x as f32
+    } else {
+        0.25
+    };
+    Some(SurfaceStructure {
+        skin_t: mm_or(wall_mm, DEFAULT_SKIN_T),
+        ribs: ((semi / RIB_SPACING).ceil() as u32).clamp(3, 14),
+        rib_t: RIB_T,
+        spar: (od > 0.0).then_some(SparSpec { x_frac: spar_x, od }),
+        control: Some(ControlSpec {
+            hinge_frac: ctl.0,
+            f0: ctl.1,
+            f1: ctl.2,
+            gap: HINGE_GAP,
+        }),
+    })
+}
+
+fn tail_structure(
+    p: &Project,
+    m: &Model,
+    kind: TailKind,
+    vertical: bool,
+    semi: f32,
+    ctl: (f32, f32, f32),
+) -> Option<SurfaceStructure> {
+    use crate::cad::freecad::TailCadParams;
+    let t = if vertical {
+        TailCadParams::from_project_vertical(p, m)
+    } else {
+        TailCadParams::from_project(p, m, kind)
+    };
+    structure(t.wall_mm, t.spar_od_mm, t.spar_x_frac, semi, ctl)
+}
+
+/// Gövde içi bölmeler: her biri iç yarıçapa sığan bir kutu (gövde ekseninde).
+fn add_fuselage_bays(spec: &mut AircraftSpec) {
+    let Some(f) = spec.fuselage.clone() else {
+        return;
+    };
+    let wall = f.structure.as_ref().map_or(0.0, |s| s.wall);
+    for (a, b) in BAYS {
+        let (xa, xb) = (f.x_nose - a * f.length, f.x_nose - b * f.length);
+        let r_min = (0..=8)
+            .map(|i| fuselage_radius_at(&f, xb + (xa - xb) * i as f32 / 8.0))
+            .fold(f32::INFINITY, f32::min);
+        let r_in = r_min - wall - 0.002;
+        if r_in < 0.01 {
+            continue;
+        }
+        spec.bays.push((
+            Vec3::new(0.5 * (xa + xb), 0.0, f.z_axis),
+            Vec3::new(xa - xb, 1.3 * r_in, 0.9 * r_in),
+        ));
+    }
+}
+
+/// Uçan kanatta bölmeler kök kesitin içinde (kalınlığa sığan iki kutu).
+fn add_wing_bays(spec: &mut AircraftSpec, prof: &[[f32; 2]], c_r: f32) {
+    for (x0, x1) in [(0.28_f32, 0.46_f32), (0.50, 0.64)] {
+        let xm = 0.5 * (x0 + x1);
+        let h = 0.7
+            * thickness_at(prof, xm)
+                .min(thickness_at(prof, x0))
+                .min(thickness_at(prof, x1))
+            * c_r;
+        if h < 0.004 {
+            continue;
+        }
+        spec.bays.push((
+            Vec3::new(-xm * c_r, 0.0, mid_at(prof, xm) * c_r),
+            Vec3::new((x1 - x0) * c_r, 0.35 * c_r, h),
+        ));
     }
 }
 
@@ -77,6 +208,16 @@ fn fixed_wing(
         0.0
     };
     let wing_profile = profile_of(&p.airfoil);
+    let wing_structure = {
+        let w = crate::cad::freecad::WingCadParams::from_project(p, m);
+        structure(
+            w.wall_mm,
+            w.spar_od_mm,
+            w.spar_x_frac,
+            b * 0.5,
+            if flying { ELEVON } else { AILERON },
+        )
+    };
     let mut spec = AircraftSpec::default();
     spec.surfaces.push((
         PartKind::Wing,
@@ -87,6 +228,8 @@ fn fixed_wing(
             c_tip: c_t,
             sweep_le_deg: sweep,
             dihedral_deg: dihedral,
+            twist_tip_deg: 0.0,
+            structure: wing_structure.clone(),
             profile: wing_profile.clone(),
             mirrored: true,
         },
@@ -109,10 +252,13 @@ fn fixed_wing(
                 c_tip: c_t * 0.55,
                 sweep_le_deg: 35.0,
                 dihedral_deg: 90.0,
+                twist_tip_deg: 0.0,
+                structure: None,
                 profile: profile_of(&p.tail_airfoil_v),
                 mirrored: true,
             },
         ));
+        add_wing_bays(&mut spec, &wing_profile, c_r);
         // İtici pervane (firar kenarı ortası)
         let r = pos_or(p.d_prop, 0.02, 0.2) * 0.5;
         spec.rotors.push(RotorSpec {
@@ -121,6 +267,7 @@ fn fixed_wing(
             radius: r,
             motor_radius: (r * 0.18).clamp(0.008, 0.03),
             motor_height: 0.025,
+            blades: 2,
         });
     } else {
         // Gövde: burun x_root_le'de, kuyruk x_root_le - l_fuse'da; kanat gövdenin üst kısmında.
@@ -130,7 +277,13 @@ fn fixed_wing(
             length: l_fuse,
             diameter: d_fuse,
             z_axis,
+            structure: Some(FuselageStructure {
+                wall: mm_or(crate::cad::freecad::wall_mm_from(p), DEFAULT_SKIN_T),
+                formers: FORMERS.to_vec(),
+                former_t: FORMER_T,
+            }),
         });
+        add_fuselage_bays(&mut spec);
         let tail_x = -pos_or(p.l_h, 0.05, 0.7);
         let fuse_top_at_tail = z_axis + d_fuse * 0.5 * 0.35;
         let c_tail = pos_or(p.c_tail, 0.02, 0.0);
@@ -154,6 +307,15 @@ fn fixed_wing(
                         c_tip: c_h * 0.8,
                         sweep_le_deg: 8.0,
                         dihedral_deg: 0.0,
+                        twist_tip_deg: 0.0,
+                        structure: tail_structure(
+                            p,
+                            m,
+                            TailKind::Conventional,
+                            false,
+                            b_h * 0.5,
+                            ELEVATOR,
+                        ),
                         profile: tail_prof_h,
                         mirrored: true,
                     },
@@ -175,6 +337,8 @@ fn fixed_wing(
                         c_tip: c_v * 0.75,
                         sweep_le_deg: 30.0,
                         dihedral_deg: 90.0,
+                        twist_tip_deg: 0.0,
+                        structure: tail_structure(p, m, TailKind::Conventional, true, h_v, RUDDER),
                         profile: tail_prof_v,
                         mirrored: false,
                     },
@@ -202,6 +366,8 @@ fn fixed_wing(
                         c_tip: c * 0.75,
                         sweep_le_deg: 15.0,
                         dihedral_deg: gamma,
+                        twist_tip_deg: 0.0,
+                        structure: tail_structure(p, m, TailKind::VTail, false, semi, RUDDERVATOR),
                         profile: tail_prof_v,
                         mirrored: true,
                     },
@@ -219,6 +385,7 @@ fn fixed_wing(
                 radius: r,
                 motor_radius: motor_r,
                 motor_height: 0.025,
+                blades: 2,
             });
         } else {
             spec.rotors.push(RotorSpec {
@@ -227,8 +394,20 @@ fn fixed_wing(
                 radius: r,
                 motor_radius: motor_r,
                 motor_height: 0.025,
+                blades: 2,
             });
         }
+    }
+
+    if !flying && !vtol {
+        let r_prop = pos_or(p.d_prop, 0.02, 0.25) * 0.5;
+        add_fixed_wing_gear(
+            &mut spec,
+            (x_root_le, l_fuse, d_fuse),
+            -d_fuse * 0.22,
+            c_r,
+            r_prop,
+        );
     }
 
     if vtol {
@@ -255,6 +434,7 @@ fn fixed_wing(
                     radius: r_prop,
                     motor_radius: (r_prop * 0.16).clamp(0.01, 0.035),
                     motor_height: 0.028,
+                    blades: mr_blades(p),
                 });
             }
         }
@@ -276,6 +456,87 @@ fn fixed_wing(
     spec
 }
 
+/// Üç tekerlekli sabit iniş takımı: iki ana ayak (kanat altı) + burun ayağı. Ayak boyu,
+/// ön pervane ucunun yerden yüksekliğini koruyacak kadardır; projede veri yoktur, görseldir.
+/// `fuse` = (burun x, uzunluk, çap).
+fn add_fixed_wing_gear(
+    spec: &mut AircraftSpec,
+    fuse: (f32, f32, f32),
+    z_axis: f32,
+    c_r: f32,
+    r_prop: f32,
+) {
+    let (x_root_le, l_fuse, d_fuse) = fuse;
+    let wheel_r = (d_fuse * 0.4).clamp(0.015, 0.05);
+    let ground = z_axis - r_prop - 0.03;
+    let hub_z = ground + wheel_r;
+    let top_z = z_axis - d_fuse * 0.4;
+    if top_z - hub_z < 0.01 {
+        return;
+    }
+    let strut_r = (d_fuse * 0.04).clamp(0.003, 0.007);
+    let track = (d_fuse * 1.1).clamp(0.05, 0.25);
+    let x_main = -c_r * 0.55;
+    for side in [1.0_f32, -1.0] {
+        spec.rods.push((
+            PartKind::Gear,
+            RodSpec {
+                a: Vec3::new(x_main, side * d_fuse * 0.2, top_z),
+                b: Vec3::new(x_main, side * track, hub_z),
+                radius: strut_r,
+            },
+        ));
+        spec.wheels.push(WheelSpec {
+            center: Vec3::new(x_main, side * track, hub_z),
+            radius: wheel_r,
+            width: wheel_r * 0.55,
+        });
+    }
+    let x_nose = x_root_le - l_fuse * 0.15;
+    spec.rods.push((
+        PartKind::Gear,
+        RodSpec {
+            a: Vec3::new(x_nose, 0.0, top_z),
+            b: Vec3::new(x_nose, 0.0, hub_z),
+            radius: strut_r,
+        },
+    ));
+    spec.wheels.push(WheelSpec {
+        center: Vec3::new(x_nose, 0.0, hub_z),
+        radius: wheel_r * 0.85,
+        width: wheel_r * 0.5,
+    });
+}
+
+/// Multirotor kızakları: plakanın altında iki boyuna boru + dört kısa ayak.
+fn add_skids(spec: &mut AircraftSpec, r_plate: f32, plate_t: f32) {
+    let leg_h = (r_plate * 1.3).clamp(0.03, 0.12);
+    let z_plate = -plate_t * 0.5;
+    let z_skid = z_plate - leg_h;
+    let r = (r_plate * 0.07).clamp(0.002, 0.006);
+    for side in [1.0_f32, -1.0] {
+        let y = side * r_plate * 0.7;
+        spec.rods.push((
+            PartKind::Gear,
+            RodSpec {
+                a: Vec3::new(-r_plate * 1.25, y, z_skid),
+                b: Vec3::new(r_plate * 1.25, y, z_skid),
+                radius: r,
+            },
+        ));
+        for fx in [-1.0_f32, 1.0] {
+            spec.rods.push((
+                PartKind::Gear,
+                RodSpec {
+                    a: Vec3::new(fx * r_plate * 0.5, y, z_plate),
+                    b: Vec3::new(fx * r_plate * 0.5, y, z_skid),
+                    radius: r,
+                },
+            ));
+        }
+    }
+}
+
 fn multirotor(p: &Project, m: &Model) -> AircraftSpec {
     let d_prop = pos_or(p.mr_d_prop, 0.02, 0.127);
     let r_plate = pos_or(p.mr_r_plate, 0.01, 0.035);
@@ -294,6 +555,7 @@ fn multirotor(p: &Project, m: &Model) -> AircraftSpec {
             .collect();
     let plate_t = (r_plate * 0.08).clamp(0.002, 0.006);
     spec.plate = Some((Vec3::ZERO, r_plate, plate_t));
+    add_skids(&mut spec, r_plate, plate_t);
     // Elektronik/batarya yığını (görsel ölçek, kütle hesabına katılmaz).
     spec.boxes.push((
         Vec3::new(0.0, 0.0, plate_t * 0.5 + r_plate * 0.28),
@@ -343,6 +605,7 @@ fn multirotor(p: &Project, m: &Model) -> AircraftSpec {
             radius: d_prop * 0.5,
             motor_radius: motor_r,
             motor_height: motor_h,
+            blades: mr_blades(p),
         });
         if p.mr_coaxial {
             let bottom = *c + Vec3::Z * (z_arm - r_arm - motor_h);
@@ -352,6 +615,7 @@ fn multirotor(p: &Project, m: &Model) -> AircraftSpec {
                 radius: d_prop * 0.5,
                 motor_radius: motor_r,
                 motor_height: motor_h,
+                blades: mr_blades(p),
             });
         }
     }
@@ -368,6 +632,75 @@ mod tests {
 
     fn eval(p: &Project) -> Model {
         crate::calc::evaluate(p, &crate::calc::Library::embedded())
+    }
+
+    /// Araç türü başına üçgen bütçesi: Katı biçimde görünenler ve tüm sahne (Yapı biçimi).
+    /// Her parçada yüz normali köşe normalleriyle uyumlu mu, dejenere üçgen ne kadar?
+    #[test]
+    fn scene_winding_agrees_with_normals() {
+        for dt in DroneType::ALL {
+            let mut p = Project::default();
+            p.set_drone_type(dt);
+            let m = eval(&p);
+            let sc = build(&from_project(&p, &m, &ViewOptions::default()));
+            for part in &sc.parts {
+                let mm = &part.mesh;
+                let (mut bad, mut degen) = (0usize, 0usize);
+                for t in mm.indices.as_chunks::<3>().0 {
+                    let v = |i: u32| {
+                        let q = mm.positions[i as usize];
+                        Vec3::new(q[0], q[1], q[2])
+                    };
+                    let n = |i: u32| {
+                        let q = mm.normals[i as usize];
+                        Vec3::new(q[0], q[1], q[2])
+                    };
+                    let f = (v(t[1]) - v(t[0])).cross(v(t[2]) - v(t[0]));
+                    if f.length() < 1e-12 {
+                        degen += 1;
+                    } else if f.dot(n(t[0]) + n(t[1]) + n(t[2])) < 0.0 {
+                        bad += 1;
+                    }
+                }
+                println!(
+                    "WIND {dt:?} {:?} tris={} bad={bad} degen={degen}",
+                    part.kind,
+                    mm.triangle_count()
+                );
+                // Çizim iki yüzlü aydınlatır; yine de sarım büyük ölçüde tutarlı olmalı.
+                assert!(
+                    bad * 50 <= mm.triangle_count(),
+                    "{dt:?} {:?} bad={bad}",
+                    part.kind
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn triangle_budget_per_type() {
+        for dt in DroneType::ALL {
+            let mut p = Project::default();
+            p.set_drone_type(dt);
+            let m = eval(&p);
+            let sc = build(&from_project(&p, &m, &ViewOptions::default()));
+            let inner = |k: PartKind| {
+                matches!(
+                    k,
+                    PartKind::Rib | PartKind::Spar | PartKind::Former | PartKind::Bay
+                )
+            };
+            let solid: usize = sc
+                .parts
+                .iter()
+                .filter(|q| !inner(q.kind))
+                .map(|q| q.mesh.triangle_count())
+                .sum();
+            let all = sc.triangle_count();
+            println!("TRIS {dt:?} solid={solid} structure={all}");
+            assert!(solid > 500, "{dt:?} {solid}");
+            assert!(all < 150_000, "{dt:?} {all}");
+        }
     }
 
     #[test]
@@ -518,5 +851,222 @@ mod tests {
             assert!(sc.bounds_min.is_finite() && sc.bounds_max.is_finite());
             assert!(sc.radius() < 100.0, "{dt:?}: sahne makul boyutta olmalı");
         }
+    }
+
+    fn scene_of(dt: DroneType) -> (Project, crate::geom3d::Scene) {
+        let mut p = Project::default();
+        p.set_drone_type(dt);
+        let m = eval(&p);
+        let sc = build(&from_project(&p, &m, &ViewOptions::default()));
+        (p, sc)
+    }
+
+    #[test]
+    fn all_types_have_clean_meshes_within_budget() {
+        for dt in DroneType::ALL {
+            let (_, sc) = scene_of(dt);
+            assert!(!sc.is_empty(), "{dt:?}");
+            assert!(
+                sc.triangle_count() < 150_000,
+                "{dt:?}: {}",
+                sc.triangle_count()
+            );
+            for part in &sc.parts {
+                let m = &part.mesh;
+                assert!(m.is_valid(), "{dt:?} {:?}", part.kind);
+                assert!(m.triangle_count() > 0);
+                assert_eq!(m.normals.len(), m.positions.len());
+                for n in &m.normals {
+                    let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    assert!(
+                        (l - 1.0).abs() < 1e-3,
+                        "{dt:?} {:?}: normal length {l}",
+                        part.kind
+                    );
+                }
+                for p in &m.positions {
+                    assert!(p.iter().all(|v| v.is_finite() && v.abs() < 100.0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mesh_generation_is_deterministic() {
+        for dt in DroneType::ALL {
+            let (p, a) = scene_of(dt);
+            let m = eval(&p);
+            let b = build(&from_project(&p, &m, &ViewOptions::default()));
+            assert_eq!(a.parts.len(), b.parts.len());
+            for (x, y) in a.parts.iter().zip(&b.parts) {
+                assert_eq!(x.kind, y.kind);
+                assert_eq!(x.mesh, y.mesh, "{dt:?} {:?}", x.kind);
+            }
+        }
+    }
+
+    #[test]
+    fn symmetric_designs_have_symmetric_bounds() {
+        for dt in DroneType::ALL {
+            let (_, sc) = scene_of(dt);
+            let tol = 2e-3;
+            assert!(
+                (sc.bounds_min.y + sc.bounds_max.y).abs() < tol,
+                "{dt:?}: y {} .. {}",
+                sc.bounds_min.y,
+                sc.bounds_max.y
+            );
+            if let Some(w) = sc.part(PartKind::Wing) {
+                let (a, b) = w.mesh.bounds().unwrap();
+                assert!((a.y + b.y).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn wing_chord_and_span_match_design() {
+        let p = Project::default();
+        let m = eval(&p);
+        let spec = from_project(&p, &m, &ViewOptions::default());
+        let sc = build(&spec);
+        let (a, b) = sc.part(PartKind::Wing).unwrap().mesh.bounds().unwrap();
+        assert!(((b.y - a.y) as f64 - p.b).abs() < 1e-3);
+        let s = &spec.surfaces[0].1;
+        // Ok açısı kadar kayma + uç veteri: x aralığı kök veterinden az değil.
+        assert!(b.x - a.x >= s.c_root - 1e-4);
+        // Gerçek profil kalınlığı: kök veterinin NACA 2412'ye uygun yüzdesi.
+        assert!(b.z - a.z > 0.05 * s.c_root);
+    }
+
+    #[test]
+    fn gear_follows_vehicle_type() {
+        let (_, conv) = scene_of(DroneType::FixedWingConventional);
+        assert!(conv.part(PartKind::Gear).is_some());
+        assert!(conv.part(PartKind::Wheel).is_some());
+        let (_, fw) = scene_of(DroneType::FlyingWing);
+        assert!(fw.part(PartKind::Gear).is_none());
+        let (_, mr) = scene_of(DroneType::Multirotor);
+        assert!(mr.part(PartKind::Gear).is_some());
+        assert!(mr.part(PartKind::Wheel).is_none());
+        // Tekerlek alt ucu, ön pervane ucunun altında kalır (pervane yere değmez).
+        let wheel_min = conv
+            .part(PartKind::Wheel)
+            .unwrap()
+            .mesh
+            .bounds()
+            .unwrap()
+            .0
+            .z;
+        let prop_min = conv
+            .part(PartKind::Rotor)
+            .unwrap()
+            .mesh
+            .bounds()
+            .unwrap()
+            .0
+            .z;
+        assert!(wheel_min < prop_min);
+    }
+
+    #[test]
+    fn blade_count_comes_from_design() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        let m = eval(&p);
+        p.mr_prop_blades = 2;
+        let two = build(&from_project(&p, &m, &ViewOptions::default()));
+        p.mr_prop_blades = 3;
+        let three = build(&from_project(&p, &m, &ViewOptions::default()));
+        let t2 = two.part(PartKind::Prop).unwrap().mesh.triangle_count();
+        let t3 = three.part(PartKind::Prop).unwrap().mesh.triangle_count();
+        assert!(t3 > t2);
+    }
+
+    fn skin_bounds(sc: &crate::geom3d::Scene) -> (Vec3, Vec3) {
+        let mut mn = Vec3::new(f32::MAX, f32::MAX, f32::MAX);
+        let mut mx = Vec3::new(f32::MIN, f32::MIN, f32::MIN);
+        for part in &sc.parts {
+            if matches!(
+                part.kind,
+                PartKind::Wing | PartKind::Tail | PartKind::Body | PartKind::Control
+            ) {
+                let (a, b) = part.mesh.bounds().unwrap();
+                mn = mn.min(a);
+                mx = mx.max(b);
+            }
+        }
+        (mn, mx)
+    }
+
+    #[test]
+    fn structure_meshes_exist_for_fixed_wing_flying_wing_and_vtol() {
+        for dt in [
+            DroneType::FixedWingConventional,
+            DroneType::FixedWingVTail,
+            DroneType::FlyingWing,
+            DroneType::VtolQuadplane,
+        ] {
+            let (_, sc) = scene_of(dt);
+            for kind in [
+                PartKind::Rib,
+                PartKind::Spar,
+                PartKind::Control,
+                PartKind::Bay,
+            ] {
+                assert!(sc.part(kind).is_some(), "{dt:?}: {kind:?} yok");
+            }
+            if dt != DroneType::FlyingWing {
+                assert!(sc.part(PartKind::Former).is_some(), "{dt:?}: çerçeve yok");
+            }
+            // Üretim yapısı kapalı dış yüzeyin içinde kalır.
+            let (smin, smax) = skin_bounds(&sc);
+            for kind in [
+                PartKind::Rib,
+                PartKind::Spar,
+                PartKind::Former,
+                PartKind::Bay,
+            ] {
+                if let Some(p) = sc.part(kind) {
+                    let (a, b) = p.mesh.bounds().unwrap();
+                    let t = 1e-4;
+                    assert!(
+                        a.x >= smin.x - t
+                            && b.x <= smax.x + t
+                            && a.y >= smin.y - t
+                            && b.y <= smax.y + t
+                            && a.z >= smin.z - t
+                            && b.z <= smax.z + t,
+                        "{dt:?} {kind:?}: {a:?} {b:?} / {smin:?} {smax:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wing_rib_count_follows_the_spec() {
+        let p = Project::default();
+        let m = eval(&p);
+        let spec = from_project(&p, &m, &ViewOptions::default());
+        let n = spec.surfaces[0].1.structure.as_ref().unwrap().ribs as usize;
+        let sc = build(&spec);
+        // Kanat kaburgaları (aynalı): y > 0 yarısında kümeler.
+        let ribs = &sc.part(PartKind::Rib).unwrap().mesh;
+        let mut ys: Vec<f32> = ribs
+            .positions
+            .iter()
+            .filter(|q| q[0] > -0.6 && q[1] > 0.0)
+            .map(|q| q[1])
+            .collect();
+        ys.sort_by(f32::total_cmp);
+        let mut clusters = 0;
+        let mut last = f32::NEG_INFINITY;
+        for y in ys {
+            if y - last > 0.004 {
+                clusters += 1;
+            }
+            last = y;
+        }
+        assert_eq!(clusters, n);
     }
 }

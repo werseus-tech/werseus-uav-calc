@@ -6,9 +6,11 @@ pub mod aircraft;
 pub mod grid;
 pub mod math;
 pub mod mesh;
+pub mod parts;
 pub mod spec;
+pub mod structure;
 
-pub use aircraft::{AircraftSpec, Part, PartKind, Scene, build};
+pub use aircraft::{AircraftSpec, Part, PartKind, Scene, WheelSpec, build};
 pub use math::{Mat4, Vec3};
 pub use mesh::Mesh;
 pub use spec::{ViewOptions, from_project};
