@@ -7,6 +7,7 @@ pub mod geom;
 pub mod layout;
 pub mod outputs;
 pub mod runner;
+pub mod structure;
 
 pub use airfoil::{AirfoilProfile, generate_naca4_points, parse_selig_dat};
 pub use freecad::{

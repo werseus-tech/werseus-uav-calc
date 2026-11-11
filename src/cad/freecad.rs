@@ -3,6 +3,10 @@
 //! Tüm fonksiyonlar saf Rust string'i üretir ve bağımsız olarak birim testlerine tabi tutulabilir.
 
 use super::geom::{Frame, FuseProfile, Profile, SparAxis, SurfaceGeom};
+use super::structure::{
+    FuselageStructure, INNER_SEGMENTS_PER_SIDE, SECTION_SEGMENTS_PER_SIDE, SurfaceStructure,
+    TAIL_RIB_PITCH_MM, WING_RIB_PITCH_MM,
+};
 use crate::calc::Model;
 use crate::calc::geometry::TailKind;
 use crate::calc::multirotor::MultirotorLayout;
@@ -78,10 +82,11 @@ impl WingCadParams {
         }
     }
 
-    /// Geometri (profil geçersizse simetrik NACA 0009).
+    /// Geometri (profil geçersizse simetrik NACA 0009). Profil, CAD kesitleriyle aynı az
+    /// noktalı örneklemedir (yuvalar ve kelepçe semeri de bu noktaları kullanır).
     pub fn geom(&self) -> SurfaceGeom {
         SurfaceGeom {
-            profile: profile_or_default(&self.root_profile),
+            profile: profile_or_default(&self.root_profile).resampled(SECTION_SEGMENTS_PER_SIDE),
             c_root: self.root_chord_mm,
             c_tip: self.tip_chord_mm,
             span: self.half_span_mm,
@@ -96,6 +101,16 @@ impl WingCadParams {
             self.spar_od_mm,
             self.spar_id_mm,
             self.wall_mm,
+        )
+    }
+
+    /// İç yapı (kabuk, kaburgalar, kiriş kanalı) — tek kaynak: `cad::structure`.
+    pub fn structure(&self) -> SurfaceStructure {
+        SurfaceStructure::new(
+            self.half_span_mm,
+            self.wall_mm,
+            self.spar(),
+            WING_RIB_PITCH_MM,
         )
     }
 }
@@ -269,12 +284,17 @@ impl TailCadParams {
 
     pub fn geom(&self) -> SurfaceGeom {
         SurfaceGeom {
-            profile: profile_or_default(&self.profile),
+            profile: profile_or_default(&self.profile).resampled(SECTION_SEGMENTS_PER_SIDE),
             c_root: self.root_chord_mm,
             c_tip: self.tip_chord_mm,
             span: self.span_mm,
             sweep_le_deg: self.sweep_le_deg,
         }
+    }
+
+    /// İç yapı (kabuk ve kaburgalar; kuyrukta kiriş yok) — tek kaynak: `cad::structure`.
+    pub fn structure(&self) -> SurfaceStructure {
+        SurfaceStructure::new(self.span_mm, self.wall_mm, None, TAIL_RIB_PITCH_MM)
     }
 }
 
@@ -357,6 +377,11 @@ impl FuselageCadParams {
             self.nose_ratio,
             self.tail_ratio,
         )
+    }
+
+    /// İç yapı (kabuk ve halka postalar) — tek kaynak: `cad::structure`.
+    pub fn structure(&self) -> FuselageStructure {
+        FuselageStructure::new(&self.profile(), self.max_diameter_mm / 2.0, self.wall_mm)
     }
 }
 
@@ -523,18 +548,6 @@ pub fn py_str_literal(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-fn format_points_python(pts: &[[f64; 2]], scale: &str) -> String {
-    let mut out = String::from("[\n");
-    for p in pts {
-        out.push_str(&format!(
-            "    FreeCAD.Vector({:.6} * ({}), {:.6} * ({}), 0),\n",
-            p[0], scale, p[1], scale
-        ));
-    }
-    out.push(']');
-    out
-}
-
 /// Üçgenleştirmeden hacim, alan ve ağırlık merkezi. OCC'nin `Shape.Volume` integrali çok
 /// düğümlü B-spline loft yüzeylerinde belirgin hata verebildiği (kanat loftunda ~%20) için
 /// kütle ve hacim kontrolleri bu fonksiyonla yapılır.
@@ -601,6 +614,13 @@ try:
     out_dir = {out_dir_py}
     os.makedirs(out_dir, exist_ok=True)
 
+    def _broken():
+        # Yeniden hesaplamada hata veren ozellikler (bozuk agac): sessizce eski sekli tutarlar.
+        return [o.Name for o in doc.Objects if ("Invalid" in o.State or "Error" in o.State)]
+    bad = _broken()
+    if bad:
+        raise RuntimeError("Hatali ozellik: " + ", ".join(bad))
+
     main_obj = doc.getObject("{main_obj_clean}")
     is_valid = main_obj.Shape.isValid() if main_obj else False
     vol_mm3 = mesh_props(main_obj.Shape)[0] if main_obj and is_valid else 0.0
@@ -616,7 +636,7 @@ try:
         doc.recompute()
         updated_obj = doc.getObject("{main_obj_clean}")
         updated_vol = mesh_props(updated_obj.Shape)[0] if updated_obj else 0.0
-        if abs(updated_vol - vol_mm3) > 0.01:
+        if abs(updated_vol - vol_mm3) > 0.01 and not _broken() and updated_obj.Shape.isValid():
             param_update_ok = True
     except Exception as e:
         print(f"Parametric update test warning: {{e}}")
@@ -626,7 +646,7 @@ try:
         doc.recompute()
         restored = doc.getObject("{main_obj_clean}")
         restored_vol = mesh_props(restored.Shape)[0] if restored else 0.0
-        if abs(restored_vol - vol_mm3) > 1e-3 * max(1.0, abs(vol_mm3)):
+        if abs(restored_vol - vol_mm3) > 1e-3 * max(1.0, abs(vol_mm3)) or _broken():
             raise RuntimeError("Parametre ozgun degerine geri yuklenemedi")
 
     # Cikti nesneleri listesi
@@ -702,7 +722,8 @@ except Exception as e:
 }
 /// Yüzey parçası betiklerinde ortak Python yardımcıları: taşıyıcı yüzeyin [z0, z1]
 /// aralığındaki birebir parçasını ("yuva tıkacı") ev sahibi parçanın koordinatlarında üretir.
-/// Kesit formülü kanat/kuyruk betikleriyle aynıdır (doğrusal kord ve hücum kenarı).
+/// Kesit, kanat/kuyruk çizimleriyle aynıdır: profil noktalarından geçen tek B-spline (açık
+/// firarda ayrıca firar çizgisi); doğrusal kord ve hücum kenarı, düz (ruled) loft.
 pub(crate) const PY_SURF_HELPERS: &str = r#"
 def _surf_section(sp, z):
     s = abs(z)
@@ -712,11 +733,152 @@ def _surf_section(sp, z):
     vs = [mtx.multVec(FreeCAD.Vector(x0 + q[0] * c, q[1] * c, z)) for q in sp["pts"]]
     bs = Part.BSplineCurve()
     bs.interpolate(vs)
-    return Part.Wire([bs.toShape()])
+    edges = [bs.toShape()]
+    if (vs[0] - vs[-1]).Length > 1e-9:
+        edges.append(Part.LineSegment(vs[-1], vs[0]).toShape())
+    return Part.Wire(edges)
 
 def surf_plug(sp):
     return Part.makeLoft([_surf_section(sp, sp["z0"]), _surf_section(sp, sp["z1"])], True, True)
 "#;
+
+/// PartDesign yardımcıları (FreeCAD Python): tam kısıtlı çizimler. Her köşe/kutup (pole)
+/// konumu `DistanceX`/`DistanceY` kısıtıyla verilir ve kısıt değeri Spreadsheet ifadesine
+/// bağlanır; böylece GUI'de bir hücre değiştirilip yeniden hesaplandığında çizim, loft ve
+/// boşaltmalar birlikte güncellenir. İfadeler yalnızca hücre takma adları ve sayılardan oluşur.
+pub(crate) const PY_PD_HELPERS: &str = r#"
+from Sketcher import Constraint as _C
+_V = FreeCAD.Vector
+
+def _origin(body, role):
+    for o in body.Origin.OriginFeatures:
+        if o.Role == role:
+            return o
+    raise RuntimeError("Govde orijin duzlemi yok: " + role)
+
+def _attach(sk, body, plane, place):
+    sk.AttachmentSupport = [(_origin(body, plane), "")]
+    sk.MapMode = "FlatFace"
+    for prop, e in place:
+        sk.setExpression(".AttachmentOffset." + prop, e)
+
+def _bind(sk, exprs):
+    for i, e in exprs:
+        sk.setExpression("Constraints[%d]" % i, e)
+
+def pole_sketch(body, name, poles, knots, mults, te_line, place):
+    """Tek B-spline kesit; kutuplar [x0, y0, ifade_x, ifade_y]. Kutup daireleri yardimci
+    geometri (agirlik 1), firar acik ise kapatan cizgi."""
+    sk = body.newObject("Sketcher::SketchObject", name)
+    _attach(sk, body, "XY_Plane", place)
+    bs = Part.BSplineCurve()
+    bs.buildFromPolesMultsKnots([_V(p[0], p[1], 0) for p in poles], mults, knots, False, 3)
+    sk.addGeometry([bs], False)
+    sk.addGeometry([Part.Circle(_V(p[0], p[1], 0), _V(0, 0, 1), 1.0) for p in poles], True)
+    cons = []
+    ex = []
+    for j, p in enumerate(poles):
+        g = 1 + j
+        cons.append(_C("InternalAlignment:Sketcher::BSplineControlPoint", g, 3, 0, j))
+        cons.append(_C("Weight", g, 1.0))
+        cons.append(_C("DistanceX", g, 3, p[0]))
+        ex.append((len(cons) - 1, p[2]))
+        cons.append(_C("DistanceY", g, 3, p[1]))
+        ex.append((len(cons) - 1, p[3]))
+    if te_line:
+        n = len(poles)
+        sk.addGeometry([Part.LineSegment(_V(poles[-1][0], poles[-1][1], 0), _V(poles[0][0], poles[0][1], 0))], False)
+        cons.append(_C("Coincident", 0, 2, n + 1, 1))
+        cons.append(_C("Coincident", n + 1, 2, 0, 1))
+    sk.addConstraint(cons)
+    _bind(sk, ex)
+    return sk
+
+def airfoil_sketch(body, name, pts, chord0, chord_e, place):
+    """Profil kesiti: normalize noktalardan gecen B-spline. Interpolasyon olcekten bagimsiz
+    oldugu icin kutuplar kord ifadesiyle carpilarak tam olarak olceklenir."""
+    te_open = (pts[0][0] - pts[-1][0]) ** 2 + (pts[0][1] - pts[-1][1]) ** 2 > 1e-18
+    b = Part.BSplineCurve()
+    b.interpolate([_V(q[0], q[1], 0) for q in pts])
+    poles = [[p.x * chord0, p.y * chord0, "%s * %.12f" % (chord_e, p.x), "%s * %.12f" % (chord_e, p.y)] for p in b.getPoles()]
+    return pole_sketch(body, name, poles, b.getKnots(), b.getMultiplicities(), te_open, place)
+
+def poly_sketch(body, name, plane, loops):
+    """Kapali cokgenler; her kose [x0, y0, ifade_x, ifade_y]."""
+    sk = body.newObject("Sketcher::SketchObject", name)
+    _attach(sk, body, plane, [])
+    cons = []
+    ex = []
+    geo = []
+    for loop in loops:
+        g0 = len(geo)
+        n = len(loop)
+        for i in range(n):
+            a = loop[i]
+            b = loop[(i + 1) % n]
+            geo.append(Part.LineSegment(_V(a[0], a[1], 0), _V(b[0], b[1], 0)))
+            cons.append(_C("Coincident", g0 + i, 2, g0 + (i + 1) % n, 1))
+            cons.append(_C("DistanceX", g0 + i, 1, a[0]))
+            ex.append((len(cons) - 1, a[2]))
+            cons.append(_C("DistanceY", g0 + i, 1, a[1]))
+            ex.append((len(cons) - 1, a[3]))
+    sk.addGeometry(geo, False)
+    sk.addConstraint(cons)
+    _bind(sk, ex)
+    return sk
+
+def check_sketches(doc):
+    """Tum cizimler tam kisitli ve cozulmus olmali."""
+    bad = []
+    for o in doc.Objects:
+        if o.TypeId == "Sketcher::SketchObject":
+            if o.solve() != 0 or not o.FullyConstrained:
+                bad.append(o.Name)
+    if bad:
+        raise RuntimeError("Tam kisitli olmayan cizim: " + ", ".join(bad))
+"#;
+
+/// Spreadsheet hücre içeriği (birimli). Negatif değerler formül olarak yazılır (`=-3 deg`):
+/// FreeCAD, başında eksi olan birimli düz metni sayı yerine metin olarak saklıyor.
+pub(crate) fn qty(v: f64, unit: &str) -> String {
+    if v < 0.0 {
+        format!("={v:.4} {unit}")
+    } else {
+        format!("{v:.2} {unit}")
+    }
+}
+
+/// Spreadsheet satırları: A sütunu ad, B sütunu değer (takma adlı), C sütunu not.
+fn sheet_lines(rows: &[(String, String, &str)]) -> String {
+    rows.iter()
+        .enumerate()
+        .map(|(i, (alias, val, note))| {
+            let a = sanitize_ident(alias);
+            let mut l = format!(
+                "sheet.set(\"A{r}\", \"{a}\"); sheet.set(\"B{r}\", {v}); sheet.setAlias(\"B{r}\", \"{a}\")\n",
+                r = i + 1,
+                v = py_str_literal(val),
+            );
+            if !note.is_empty() {
+                l.push_str(&format!(
+                    "sheet.set(\"C{r}\", {n})\n",
+                    r = i + 1,
+                    n = py_str_literal(note)
+                ));
+            }
+            l
+        })
+        .collect()
+}
+
+/// `+ 3.2 mm` / `- 3.2 mm` biçiminde ifade eki.
+fn mm_offset(v: f64) -> String {
+    if v < 0.0 {
+        format!(" - {:.6} mm", -v)
+    } else {
+        format!(" + {:.6} mm", v)
+    }
+}
 
 /// Taşıyıcı yüzey betiği (kanat, kuyruk, winglet) için ortak tanım.
 struct SurfaceScript<'a> {
@@ -725,147 +887,185 @@ struct SurfaceScript<'a> {
     main: &'a str,
     prefix: &'a str,
     geom: SurfaceGeom,
-    wall: f64,
-    spar: Option<SparAxis>,
+    structure: SurfaceStructure,
     mirror: bool,
     span_alias: &'a str,
     sweep_alias: &'a str,
+    /// Kanatta dihedral ve burulma (uç kesit yerleşimi) Spreadsheet'ten sürülür.
+    attitude: bool,
     extra_sheet: Vec<(&'a str, String)>,
     test_val: String,
 }
 
-fn format_polygon_python(pts: &[[f64; 2]]) -> String {
-    let mut out = String::from("[\n");
-    for p in pts.iter().filter(|p| p[0].is_finite() && p[1].is_finite()) {
-        out.push_str(&format!(
-            "    FreeCAD.Vector({:.5}, {:.5}, 0),\n",
-            p[0], p[1]
-        ));
-    }
-    out.push(']');
-    out
-}
-
 fn surface_script(s: SurfaceScript, options: &ExportOptions) -> String {
     let g = &s.geom;
-    let root_rib = s.spar.map(|a| a.root_rib).unwrap_or(s.wall);
+    let st = &s.structure;
+    let span = s.span_alias;
+    let sweep = s.sweep_alias;
     let footer = common_python_footer(
         &s.part_name,
         &options.out_dir,
         options,
-        s.span_alias,
+        span,
         &s.test_val,
         &[],
         s.main,
     );
 
-    let mut sheet_rows: Vec<(&str, String)> = vec![
-        ("root_chord", format!("{:.2} mm", g.c_root)),
-        ("tip_chord", format!("{:.2} mm", g.c_tip)),
-        (s.span_alias, format!("{:.2} mm", g.span)),
-        (s.sweep_alias, format!("{:.2} deg", g.sweep_le_deg)),
-        ("wall", format!("{:.2} mm", s.wall)),
-        ("root_rib", format!("{:.2} mm", root_rib)),
-    ];
-    sheet_rows.extend(s.extra_sheet.iter().cloned());
-    let sheet: String = sheet_rows
-        .iter()
-        .enumerate()
-        .map(|(i, (alias, val))| {
-            let a = sanitize_ident(alias);
+    // Uç kesiti kanatta dihedral ile kalınlık yönünde yükselir ve dörtte bir kord noktası
+    // (kiriş hattı) etrafında burulur (pozitif burulma = hücum kenarı yukarı). Dış yüzey kök
+    // ile uç arasında düz (ruled) loft olduğundan ara istasyondaki kesit, kök ve uç kesitinin
+    // doğrusal karışımıdır: ölçekli dönme a + b·e^(-i·burulma), a = (1-s)·c_kök, b = s·c_uç.
+    // İç boşluk kesitleri tam bu kord (|a + b·e^(-iθ)|) ve açıyla yerleşir; böylece burulma ve
+    // daralma birlikteyken de kabuk kalınlığı korunur.
+    let chord_e = |z: &str| -> String {
+        if s.attitude {
+            let a = format!("(1 - ({z}) / Params.{span}) * Params.root_chord");
+            let b = format!("({z}) / Params.{span} * Params.tip_chord");
+            format!("sqrt(({a}) ^ 2 + ({b}) ^ 2 + 2 * ({a}) * ({b}) * cos(Params.twist_deg))")
+        } else {
             format!(
-                "sheet.set(\"A{r}\", \"{a}\"); sheet.set(\"B{r}\", {v}); sheet.setAlias(\"B{r}\", \"{a}\")\n",
-                r = i + 1,
-                v = py_str_literal(val),
+                "(Params.root_chord + (Params.tip_chord - Params.root_chord) * ({z}) / Params.{span})"
             )
-        })
-        .collect();
+        }
+    };
+    let place = |z: &str| -> Vec<[String; 2]> {
+        if !s.attitude {
+            return vec![
+                ["Base.z".to_string(), z.to_string()],
+                ["Base.x".to_string(), format!("({z}) * tan(Params.{sweep})")],
+            ];
+        }
+        let sf = format!("({z}) / Params.{span}");
+        let a = format!("(1 - {sf}) * Params.root_chord");
+        let b = format!("{sf} * Params.tip_chord");
+        vec![
+            ["Base.z".to_string(), z.to_string()],
+            [
+                "Base.x".to_string(),
+                format!(
+                    "({z}) * tan(Params.{sweep}) + {sf} * 0.25 * Params.tip_chord * (1 - cos(Params.twist_deg))"
+                ),
+            ],
+            [
+                "Base.y".to_string(),
+                format!(
+                    "({z}) * tan(Params.dihedral_deg) + {sf} * 0.25 * Params.tip_chord * sin(Params.twist_deg)"
+                ),
+            ],
+            [
+                "Rotation.Yaw".to_string(),
+                format!(
+                    "-atan2(({b}) * sin(Params.twist_deg); ({a}) + ({b}) * cos(Params.twist_deg))"
+                ),
+            ],
+        ]
+    };
 
-    // İç boşluk (kabuk): kök kaburgası ve uç kapağı arasında, kesit başına iç profil.
-    let z_in_root = root_rib;
-    let z_in_tip = g.span - s.wall;
-    let inner = if s.wall > 0.0 && z_in_tip > z_in_root + 1.0 {
-        let a = g.profile.inner_polygon(g.chord_at(z_in_root), s.wall, 40);
-        let b = g.profile.inner_polygon(g.chord_at(z_in_tip), s.wall, 40);
-        a.zip(b)
+    let mut rows: Vec<(String, String, &str)> = vec![
+        ("root_chord".into(), qty(g.c_root, "mm"), ""),
+        ("tip_chord".into(), qty(g.c_tip, "mm"), ""),
+        (span.into(), qty(g.span, "mm"), ""),
+        (sweep.into(), qty(g.sweep_le_deg, "deg"), ""),
+        ("wall".into(), qty(st.wall_mm, "mm"), ""),
+        ("root_rib".into(), qty(st.root_rib_mm, "mm"), ""),
+    ];
+    // İç boşluk kesitleri: kord ve et kalınlığına doğrusal (bkz. `geom::InnerTerm`); kord
+    // konumları en küçük kordla (uç) seçilir, böylece tüm bölmelerde aynı kutup sayısı olur.
+    let c_min = g.chord_at(g.span - st.wall_mm).min(g.c_root).max(1e-6);
+    let terms = if st.is_hollow() {
+        g.profile
+            .inner_terms(st.wall_mm / c_min, INNER_SEGMENTS_PER_SIDE)
     } else {
         None
     };
-    let mut tools = String::new();
-    if let Some((pa, pb)) = &inner {
-        tools.push_str(&format!(
-            r#"
-# Ic bosluk (kabuk): kok kaburgasi ile uc kapagi arasinda, et kalinligi Params.wall
-# (Part::Feature tel: nokta sirasi korunur, boylece loft burulmaz; yerlesim ifadeyle parametrik)
-def _poly_section(name, pts):
-    sec = doc.addObject("Part::Feature", name)
-    sec.Shape = Part.makePolygon(pts + [pts[0]])
-    return sec
-sk_in_root = _poly_section("SecInnerRoot", {pa})
-sk_in_root.setExpression("Placement.Base.z", "Params.root_rib")
-sk_in_root.setExpression("Placement.Base.x", "Params.root_rib * tan(Params.{sweep})")
-sk_in_tip = _poly_section("SecInnerTip", {pb})
-sk_in_tip.setExpression("Placement.Base.z", "Params.{span} - Params.wall")
-sk_in_tip.setExpression("Placement.Base.x", "(Params.{span} - Params.wall) * tan(Params.{sweep})")
-inner = doc.addObject("Part::Loft", "{prefix}InnerLoft")
-inner.Sections = [sk_in_root, sk_in_tip]
-inner.Solid = True; inner.Ruled = True
-tools.append(inner)
-"#,
-            pa = format_polygon_python(pa),
-            pb = format_polygon_python(pb),
-            sweep = s.sweep_alias,
-            span = s.span_alias,
-            prefix = s.prefix,
+    let mut bays_json = Vec::new();
+    if let Some(terms) = &terms {
+        let n = st.rib_bays;
+        rows.push(("rib_t".into(), qty(st.rib_t_mm, "mm"), ""));
+        rows.push((
+            "rib_pitch".into(),
+            format!("=({span} - wall - root_rib) / {n}"),
+            "",
         ));
-    }
-    if let Some(a) = &s.spar {
-        tools.push_str(&format!(
-            r#"
-# Kiris (boru) deligi: kok kaburgasindan gecer; eksen dortte bir kord cizgisi boyunca
-spar = doc.addObject("Part::Cylinder", "SparHole")
-spar.setExpression("Radius", "Params.spar_od / 2")
-spar.Height = {h:.4}
-spar.Placement = FreeCAD.Placement(FreeCAD.Vector({x:.5}, {y:.5}, {z:.5}), FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), FreeCAD.Vector({dx:.8}, {dy:.8}, {dz:.8})))
-tools.append(spar)
-"#,
-            h = a.hole_len,
-            x = a.hole_start[0],
-            y = a.hole_start[1],
-            z = a.hole_start[2],
-            dx = a.dir[0],
-            dy = a.dir[1],
-            dz = a.dir[2],
+        rows.push((
+            "rib_count".into(),
+            format!("{}", n.saturating_sub(1)),
+            "fixed: change in WerSeuS and regenerate / sabit: uygulamada degistirip yeniden uretin",
         ));
+        let section = |z_e: &str, z: f64| -> serde_json::Value {
+            let c_e = chord_e(z_e);
+            let c = g.chord_at(z);
+            let mut poles: Vec<serde_json::Value> = terms
+                .iter()
+                .map(|t| {
+                    let p = t.eval(c, st.wall_mm);
+                    let (lim_sign, f) = if t.upper { ("+", "max") } else { ("-", "min") };
+                    serde_json::json!([
+                        p[0],
+                        p[1],
+                        format!("{c_e} * {:.10}", t.x),
+                        format!(
+                            "{f}({c_e} * {:.10} + Params.wall * {:.10}; {c_e} * {:.10} {lim_sign} Params.wall * 0.25)",
+                            t.y, t.w, t.mid
+                        ),
+                    ])
+                })
+                .collect();
+            poles.push(poles[0].clone());
+            serde_json::json!({"poles": poles, "place": place(z_e)})
+        };
+        for (k, (za, zb)) in st.bays_mm().into_iter().enumerate() {
+            let k = k as u32;
+            let za_e = if k == 0 {
+                "Params.root_rib".to_string()
+            } else {
+                format!("Params.root_rib + {k} * Params.rib_pitch + Params.rib_t / 2")
+            };
+            let zb_e = if k + 1 == n {
+                format!("Params.{span} - Params.wall")
+            } else {
+                format!(
+                    "Params.root_rib + {} * Params.rib_pitch - Params.rib_t / 2",
+                    k + 1
+                )
+            };
+            bays_json.push(serde_json::json!({"a": section(&za_e, za), "b": section(&zb_e, zb)}));
+        }
     }
-    let has_tools = inner.is_some() || s.spar.is_some();
-    let finish = if has_tools {
-        format!(
-            r#"prev = loft
-for i, tool in enumerate(tools):
-    nm = "{main}" if i == len(tools) - 1 else "{prefix}Cut%d" % i
-    c = doc.addObject("Part::Cut", nm)
-    c.Base = prev; c.Tool = tool
-    prev = c
-"#,
-            main = s.main,
-            prefix = s.prefix
-        )
-    } else {
-        format!(
-            r#"main_ref = doc.addObject("Part::Refine", "{main}")
-main_ref.Source = loft
-"#,
-            main = s.main
-        )
-    };
+    for (a, v) in &s.extra_sheet {
+        rows.push(((*a).into(), v.clone(), ""));
+    }
+    let n_in = terms.as_ref().map(|t| t.len() + 1).unwrap_or(4);
+    let in_knots: Vec<f64> = (0..n_in.saturating_sub(2)).map(|i| i as f64).collect();
+    let mut in_mults = vec![1u32; in_knots.len()];
+    if let Some(f) = in_mults.first_mut() {
+        *f = 4;
+    }
+    if let Some(l) = in_mults.last_mut() {
+        *l = 4;
+    }
+
+    let spar = s.spar_json(g);
+    let spec = serde_json::json!({
+        "pts": g.profile.pts,
+        "c_root": g.c_root,
+        "c_tip": g.c_tip,
+        "tip_place": place(&format!("Params.{span}")),
+        "bays": bays_json,
+        "in_knots": in_knots,
+        "in_mults": in_mults,
+        "spar": spar,
+    });
+    let spec_py = py_str_literal(&spec.to_string());
+
     let mirror = if s.mirror {
         format!(
             r#"
 # Sag yari: sol yarinin kok duzlemine (yerel Z=0) gore parametrik ayna kopyasi.
 # Montajda iki yari da App::Link ile ayni kok baglanti cercevesine yerlestirilir.
 mir = doc.addObject("Part::Mirroring", "{main}_Mirror")
-mir.Source = doc.getObject("{main}")
+mir.Source = body
 mir.Normal = FreeCAD.Vector(0, 0, 1)
 mir.Base = FreeCAD.Vector(0, 0, 0)
 doc.recompute()
@@ -880,64 +1080,95 @@ doc.recompute()
         r#"# -*- coding: utf-8 -*-
 # FreeCAD 1.1 Parametrik {title} - WerSeuS UAV Calc
 # Yerel cerceve: X kord (hucum kenarindan firara), Y kalinlik, Z aciklik (kokten uca); kok hucum kenari orijin.
-import FreeCAD, Part, Sketcher, math
+# Agac: PartDesign Body -> kok/uc profil cizimleri (tam kisitli B-spline, kutuplar Params'a bagli)
+# -> AdditiveLoft -> kabuk bolmeleri (SubtractiveLoft; aralarda kaburgalar kalir) -> kiris kanali.
+# Params hucresini degistirip yeniden hesaplayin (Ctrl+R): parca yeniden uretilir.
+import FreeCAD, Part, Sketcher, math, json
 
 doc = FreeCAD.newDocument("{part_name}")
 doc.UseHasher = False
 
 sheet = doc.addObject("Spreadsheet::Sheet", "Params")
 {sheet}doc.recompute()
+{helpers}
+spec = json.loads({spec_py})
+body = doc.addObject("PartDesign::Body", "{main}")
 
-root_chord = {c_r:.4}
-tip_chord = {c_t:.4}
+sk_root = airfoil_sketch(body, "SkRoot", spec["pts"], spec["c_root"], "Params.root_chord", [])
+sk_tip = airfoil_sketch(body, "SkTip", spec["pts"], spec["c_tip"], "Params.tip_chord", spec["tip_place"])
+loft = body.newObject("PartDesign::AdditiveLoft", "{prefix}Loft")
+loft.Profile = sk_root
+loft.Sections = [sk_tip]
+loft.Ruled = True
 
-# Kok profili (Z = 0)
-sk_root = doc.addObject("Sketcher::SketchObject", "SkRoot")
-pts_root = {root_pts}
-b_root = Part.BSplineCurve()
-b_root.interpolate(pts_root)
-sk_root.addGeometry(b_root, False)
+# Kabuk: her bolme ayri bosaltma; bolmeler arasinda Params.rib_t kalinliginda kaburgalar kalir.
+for k, bay in enumerate(spec["bays"]):
+    sa = pole_sketch(body, "{prefix}Bay%dRootSk" % k, bay["a"]["poles"], spec["in_knots"], spec["in_mults"], False, bay["a"]["place"])
+    sb = pole_sketch(body, "{prefix}Bay%dTipSk" % k, bay["b"]["poles"], spec["in_knots"], spec["in_mults"], False, bay["b"]["place"])
+    cut = body.newObject("PartDesign::SubtractiveLoft", "{prefix}Bay%d" % k)
+    cut.Profile = sa
+    cut.Sections = [sb]
+    cut.Ruled = True
 
-# Uc profili (Z = aciklik)
-sk_tip = doc.addObject("Sketcher::SketchObject", "SkTip")
-sk_tip.setExpression("Placement.Base.z", "Params.{span}")
-sk_tip.setExpression("Placement.Base.x", "Params.{span} * tan(Params.{sweep})")
-pts_tip = {tip_pts}
-b_tip = Part.BSplineCurve()
-b_tip.interpolate(pts_tip)
-sk_tip.addGeometry(b_tip, False)
+# Kiris kanali: kok kaburgasindan ve tum kaburgalardan gecer (cap Params.spar_od).
+sp = spec["spar"]
+if sp:
+    hole = body.newObject("PartDesign::SubtractiveCylinder", "SparHole")
+    hole.Height = sp["len"]
+    hole.Radius = sp["r"]
+    hole.Placement = FreeCAD.Placement(FreeCAD.Vector(*sp["start"]), FreeCAD.Rotation(FreeCAD.Vector(0, 0, 1), FreeCAD.Vector(*sp["dir"])))
+    hole.setExpression("Radius", "Params.spar_od / 2")
+    hole.setExpression(".Placement.Base.x", sp["ex"])
+    hole.setExpression(".Placement.Base.y", sp["ey"])
 
-loft = doc.addObject("Part::Loft", "{prefix}Loft")
-loft.Sections = [sk_root, sk_tip]
-loft.Solid = True
-loft.Ruled = False
-
-tools = []
-{tools}
-{finish}
 doc.recompute()
+check_sketches(doc)
 {mirror}
 {footer}
 "#,
         title = s.title,
         part_name = s.part_name,
-        sheet = sheet,
-        c_r = g.c_root,
-        c_t = g.c_tip,
-        root_pts = format_points_python(&g.profile.pts, "root_chord"),
-        tip_pts = format_points_python(&g.profile.pts, "tip_chord"),
-        span = s.span_alias,
-        sweep = s.sweep_alias,
+        sheet = sheet_lines(&rows),
+        helpers = PY_PD_HELPERS,
+        spec_py = spec_py,
+        main = s.main,
         prefix = s.prefix,
-        tools = tools,
-        finish = finish,
         mirror = mirror,
         footer = footer,
     )
 }
 
-/// Kanat için FreeCAD Python betiği üretir: içi boş kabuk (et kalınlığı `wall_mm`), kök
-/// kaburgası, dörtte bir kord çizgisi boyunca kiriş deliği ve parametrik ayna (sağ yarı).
+impl SurfaceScript<'_> {
+    /// Kiriş kanalı: kök kaburgasındaki delikten kirişin ucunu 1.5 mm geçecek kadar; başlangıç
+    /// noktası kord ve `spar_x_frac` hücreleriyle sürülür (eksen yönü sabit).
+    fn spar_json(&self, g: &SurfaceGeom) -> serde_json::Value {
+        let Some(a) = self.structure.spar else {
+            return serde_json::Value::Null;
+        };
+        let frac = self
+            .extra_sheet
+            .iter()
+            .find(|(k, _)| *k == "spar_x_frac")
+            .and_then(|(_, v)| v.trim().parse::<f64>().ok())
+            .unwrap_or(0.25);
+        let mid = 0.5 * (g.profile.yu(frac) + g.profile.yl(frac));
+        let s0 = super::geom::dot(super::geom::sub(a.start, a.hole_start), a.dir);
+        let len = s0 + a.length + 1.5;
+        let kx = a.hole_start[0] - frac * g.c_root;
+        let ky = a.hole_start[1] - mid * g.c_root;
+        serde_json::json!({
+            "start": a.hole_start,
+            "dir": a.dir,
+            "len": len,
+            "r": a.od / 2.0,
+            "ex": format!("Params.spar_x_frac * Params.root_chord{}", mm_offset(kx)),
+            "ey": format!("{mid:.10} * Params.root_chord{}", mm_offset(ky)),
+        })
+    }
+}
+
+/// Kanat için FreeCAD Python betiği üretir: PartDesign gövdesi, kabuk (et kalınlığı `wall_mm`),
+/// kök kaburgası, ara kaburgalar, kaburgalardan geçen kiriş kanalı ve parametrik ayna (sağ yarı).
 pub fn generate_wing_script(params: &WingCadParams, options: &ExportOptions) -> String {
     surface_script(
         SurfaceScript {
@@ -946,15 +1177,15 @@ pub fn generate_wing_script(params: &WingCadParams, options: &ExportOptions) -> 
             main: "WingSolid",
             prefix: "Wing",
             geom: params.geom(),
-            wall: params.wall_mm,
-            spar: params.spar(),
+            structure: params.structure(),
             mirror: true,
             span_alias: "half_span",
             sweep_alias: "sweep_le_deg",
+            attitude: true,
             extra_sheet: vec![
-                ("dihedral_deg", format!("{:.2} deg", params.dihedral_deg)),
-                ("twist_deg", format!("{:.2} deg", params.twist_deg)),
-                ("spar_od", format!("{:.2} mm", params.spar_od_mm)),
+                ("dihedral_deg", qty(params.dihedral_deg, "deg")),
+                ("twist_deg", qty(params.twist_deg, "deg")),
+                ("spar_od", qty(params.spar_od_mm, "mm")),
                 ("spar_x_frac", format!("{:.4}", params.spar_x_frac)),
             ],
             test_val: format!("{:.1} mm", params.half_span_mm + 50.0),
@@ -963,7 +1194,7 @@ pub fn generate_wing_script(params: &WingCadParams, options: &ExportOptions) -> 
     )
 }
 
-/// Kuyruk (Yatay / Dikey / V-kuyruk / winglet) için FreeCAD Python betiği üretir (içi boş).
+/// Kuyruk (Yatay / Dikey / V-kuyruk / winglet) için FreeCAD Python betiği üretir (kabuk + kaburga).
 pub fn generate_tail_script(params: &TailCadParams, options: &ExportOptions) -> String {
     surface_script(
         SurfaceScript {
@@ -972,20 +1203,22 @@ pub fn generate_tail_script(params: &TailCadParams, options: &ExportOptions) -> 
             main: "TailSolid",
             prefix: "Tail",
             geom: params.geom(),
-            wall: params.wall_mm,
-            spar: None,
+            structure: params.structure(),
             mirror: params.mirrored_pair,
             span_alias: "span",
             sweep_alias: "sweep_deg",
-            extra_sheet: vec![("angle_deg", format!("{:.2} deg", params.angle_deg))],
+            attitude: false,
+            extra_sheet: vec![("angle_deg", qty(params.angle_deg, "deg"))],
             test_val: format!("{:.1} mm", params.span_mm + 40.0),
         },
         options,
     )
 }
 
-/// Gövde betiği: dönel (revolve) dış profil, et kalınlığı `wall_mm` olan iç boşluk, düz burun
-/// yüzü (firewall), iniş takımı oturma yüzeyi ve kanat/kuyruk yuvaları.
+/// Gövde betiği: PartDesign gövdesi. Dış profil (tam kısıtlı çizim, Params'a bağlı) döndürülür;
+/// iç boşluk ayrı bir gövdede (dış profilden `wall` kadar içe kaydırılmış çizim, halka posta
+/// yuvaları ve iniş takımı tabanı) üretilip Boolean ile çıkarılır. Düz burun yüzü (firewall),
+/// iniş takımı oturma yüzeyi ve kanat/kuyruk yuvaları korunur.
 pub fn generate_fuselage_script(params: &FuselageCadParams, options: &ExportOptions) -> String {
     let clean_name = sanitize_ident(&params.name);
     let footer = common_python_footer(
@@ -998,82 +1231,246 @@ pub fn generate_fuselage_script(params: &FuselageCadParams, options: &ExportOpti
         "FuselageSolid",
     );
     let prof = params.profile();
-    let inner = if params.wall_mm > 0.0 {
-        Some(prof.inner(params.wall_mm))
+    let st = params.structure();
+    let r_max = params.max_diameter_mm / 2.0;
+    let l = params.length_mm;
+
+    // Dış profil köşeleri ve ifadeleri (FuseProfile::new ile aynı formül).
+    let n_pts = prof.pts.len();
+    let k_nose = n_pts.saturating_sub(3); // burun noktası aralığı sayısı
+    let mut outer: Vec<serde_json::Value> = Vec::new();
+    for (i, p) in prof.pts.iter().enumerate() {
+        let (ex, ey) = if i <= k_nose {
+            let s = i as f64 / k_nose.max(1) as f64;
+            let f = (1.0 - (1.0 - s) * (1.0 - s)).sqrt();
+            (
+                format!("Params.length * Params.nose_ratio * {s:.10}"),
+                format!("Params.nose_r + (Params.diameter / 2 - Params.nose_r) * {f:.10}"),
+            )
+        } else if i + 1 < n_pts {
+            (
+                "Params.length * (1 - Params.tail_ratio)".to_string(),
+                "Params.diameter / 2".to_string(),
+            )
+        } else {
+            ("Params.length".to_string(), "Params.tail_r".to_string())
+        };
+        outer.push(serde_json::json!([p[0], p[1], ex, ey]));
+    }
+    let mut loop_outer = vec![serde_json::json!([0.0, 0.0, "0 mm", "0 mm"])];
+    loop_outer.extend(outer.iter().cloned());
+    loop_outer.push(serde_json::json!([l, 0.0, "Params.length", "0 mm"]));
+
+    let inner = if st.wall_mm > 0.0 {
+        Some(prof.inner(st.wall_mm))
     } else {
         None
     };
+    // Halka postalar: iç boşluktan çıkarılan dikdörtgen kesitli halkalar. Delik yarıçapı,
+    // postanın bulunduğu x'teki dış yarıçapın (burun/kuyruk/silindir bölgesine göre doğrusal
+    // bileşimi) wall + former_depth eksiğidir.
+    let formers: Vec<serde_json::Value> = st
+        .former_fracs
+        .iter()
+        .map(|&f| {
+            let x = f * l;
+            let (a, b, c) = if f <= params.nose_ratio {
+                let s = f / params.nose_ratio.max(1e-9);
+                let q = (1.0 - (1.0 - s) * (1.0 - s)).sqrt();
+                (1.0 - q, q, 0.0)
+            } else if f >= 1.0 - params.tail_ratio {
+                let t = (f - (1.0 - params.tail_ratio)) / params.tail_ratio.max(1e-9);
+                (0.0, 1.0 - t, t)
+            } else {
+                (0.0, 1.0, 0.0)
+            };
+            let r_hole = prof.r_at(x) - st.wall_mm - st.former_depth_mm;
+            let rh_e = format!(
+                "{a:.10} * Params.nose_r + {b:.10} * Params.diameter / 2 + {c:.10} * Params.tail_r - Params.wall - Params.former_depth"
+            );
+            let x0_e = format!("Params.length * {f:.10} - Params.former_t / 2");
+            let x1_e = format!("Params.length * {f:.10} + Params.former_t / 2");
+            let h = st.former_t_mm / 2.0;
+            let big = 2.0 * r_max;
+            serde_json::json!([
+                [x - h, r_hole, x0_e, rh_e],
+                [x + h, r_hole, x1_e, rh_e],
+                [x + h, big, x1_e, "Params.diameter"],
+                [x - h, big, x0_e, "Params.diameter"],
+            ])
+        })
+        .collect();
     let plugs: Vec<&PlugSpec> = params.plugs.iter().filter(|p| p.is_finite()).collect();
     let spec = serde_json::json!({
-        "outer": prof.pts,
+        "outer": loop_outer,
+        "outer_chain": outer,
         "inner": inner,
-        "wall": params.wall_mm,
-        "r_max": params.max_diameter_mm / 2.0,
+        "wall": st.wall_mm,
+        "length": l,
+        "r_max": r_max,
         "pad": params.pad,
+        "formers": formers,
         "plugs": plugs,
     });
     let spec_py = py_str_literal(&spec.to_string());
+    let rows: Vec<(String, String, &str)> = vec![
+        ("length".into(), qty(l, "mm"), ""),
+        ("diameter".into(), qty(params.max_diameter_mm, "mm"), ""),
+        ("wall".into(), qty(st.wall_mm, "mm"), ""),
+        ("nose_r".into(), qty(params.nose_r_mm, "mm"), ""),
+        ("tail_r".into(), qty(params.tail_r_mm, "mm"), ""),
+        ("nose_ratio".into(), format!("{:.4}", params.nose_ratio), ""),
+        ("tail_ratio".into(), format!("{:.4}", params.tail_ratio), ""),
+        ("former_t".into(), qty(st.former_t_mm, "mm"), ""),
+        ("former_depth".into(), qty(st.former_depth_mm, "mm"), ""),
+        (
+            "former_count".into(),
+            format!("{}", st.former_fracs.len()),
+            "fixed: change in WerSeuS and regenerate / sabit: uygulamada degistirip yeniden uretin",
+        ),
+    ];
 
     format!(
         r#"# -*- coding: utf-8 -*-
 # FreeCAD 1.1 Govde Uretici - WerSeuS UAV Calc
 # Yerel cerceve = montaj cercevesi: X kuyruga dogru, Y saga, Z yukari; burun yuzu (firewall) x = 0.
-# Dis profil donel; ic bosluk et kalinligi kadar ice kaydirilmis profil. Kanat ve kuyruk yuvalari,
-# yuzeylerin birebir parcalari (ayni kesit formulu) cikarilarak acilir.
-import FreeCAD, Part, math, json
+# Agac: FuselageSolid (PartDesign Body): dis profil cizimi -> Revolution -> inis takimi tabani
+# (SubtractiveBox) -> ic bosluk (FuselageVoid govdesi, Boolean Cut) -> kanat/kuyruk yuvalari.
+# FuselageVoid: ice kaydirilmis profil (paralel + mesafe kisitlari, mesafe = Params.wall)
+# -> Revolution -> halka posta yuvalari (Groove) -> taban kalinligi (SubtractiveBox).
+# Kanat ve kuyruk yuvalari yuzeylerin birebir parcalaridir (montaj yerlesiminden sabit).
+import FreeCAD, Part, Sketcher, math, json
 
 doc = FreeCAD.newDocument("{part_name}")
 doc.UseHasher = False
 
 sheet = doc.addObject("Spreadsheet::Sheet", "Params")
-sheet.set("A1", "length"); sheet.set("B1", "{length:.2} mm"); sheet.setAlias("B1", "length")
-sheet.set("A2", "diameter"); sheet.set("B2", "{dia:.2} mm"); sheet.setAlias("B2", "diameter")
-sheet.set("A3", "wall"); sheet.set("B3", "{wall:.2} mm"); sheet.setAlias("B3", "wall")
-sheet.set("A4", "nose_r"); sheet.set("B4", "{nose_r:.2} mm"); sheet.setAlias("B4", "nose_r")
-sheet.set("A5", "tail_r"); sheet.set("B5", "{tail_r:.2} mm"); sheet.setAlias("B5", "tail_r")
-doc.recompute()
+{sheet}doc.recompute()
 
 spec = json.loads({spec_py})
 {helpers}
-def _revolve(prof):
-    pts = [FreeCAD.Vector(prof[0][0], 0, 0)]
-    pts += [FreeCAD.Vector(q[0], 0, q[1]) for q in prof]
-    pts.append(FreeCAD.Vector(prof[-1][0], 0, 0))
-    pts.append(pts[0])
-    face = Part.Face(Part.makePolygon(pts))
-    return face.revolve(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(1, 0, 0), 360)
+{pd_helpers}
+def void_sketch(body, chain, inner):
+    """Ic profil: dis profilin (yardimci geometri) her parcasina paralel ve Params.wall
+    uzakliginda cizgiler; uclarda x = wall ve x = length - wall kapaklari, eksen boyunca kapanis."""
+    sk = body.newObject("Sketcher::SketchObject", "SkVoid")
+    _attach(sk, body, "XZ_Plane", [])
+    n = len(chain) - 1
+    geo = [Part.LineSegment(_V(chain[i][0], chain[i][1], 0), _V(chain[i + 1][0], chain[i + 1][1], 0)) for i in range(n)]
+    sk.addGeometry(geo, True)
+    w = spec["wall"]
+    L = spec["length"]
+    p0 = _V(w, 0, 0)
+    p1 = _V(L - w, 0, 0)
+    q = [_V(a[0], a[1], 0) for a in inner]
+    lines = [Part.LineSegment(p0, q[0])]
+    lines += [Part.LineSegment(q[j], q[j + 1]) for j in range(n)]
+    lines += [Part.LineSegment(q[n], p1), Part.LineSegment(p1, p0)]
+    base = n
+    sk.addGeometry(lines, False)
+    m = len(lines)
+    cons = []
+    ex = []
+    for i in range(n - 1):
+        cons.append(_C("Coincident", i, 2, i + 1, 1))
+    for i in range(n + 1):
+        g, pos = (i, 1) if i < n else (n - 1, 2)
+        cons.append(_C("DistanceX", g, pos, chain[i][0]))
+        ex.append((len(cons) - 1, chain[i][2]))
+        cons.append(_C("DistanceY", g, pos, chain[i][1]))
+        ex.append((len(cons) - 1, chain[i][3]))
+    for k in range(m):
+        cons.append(_C("Coincident", base + k, 2, base + (k + 1) % m, 1))
+    # Isaretli ice kaydirma: her dis parcanin baslangicindan ice dogru (yon -90 deg, Angle
+    # kisiti yonludur) Params.wall boyunda yardimci normal; ic cizgi normalin ucundan gecer ve
+    # dis parcaya paraleldir. Isaretsiz nokta-dogru mesafesi parametre degisiminde dis tarafa
+    # sicrayabildigi icin kullanilmaz.
+    nb = base + m
+    normals = []
+    for j in range(n):
+        a = _V(chain[j][0], chain[j][1], 0)
+        d = _V(chain[j + 1][0] - chain[j][0], chain[j + 1][1] - chain[j][1], 0)
+        d.normalize()
+        normals.append(Part.LineSegment(a, a + _V(d.y, -d.x, 0) * w))
+    sk.addGeometry(normals, True)
+    for j in range(n):
+        cons.append(_C("Parallel", base + 1 + j, j))
+        cons.append(_C("Coincident", nb + j, 1, j, 1))
+        cons.append(_C("Angle", j, nb + j, -math.pi / 2))
+        cons.append(_C("Distance", nb + j, w))
+        ex.append((len(cons) - 1, "Params.wall"))
+        cons.append(_C("PointOnObject", nb + j, 2, base + 1 + j))
+    cons.append(_C("Vertical", base))
+    cons.append(_C("Vertical", base + n + 1))
+    cons.append(_C("DistanceX", base, 1, w))
+    ex.append((len(cons) - 1, "Params.wall"))
+    cons.append(_C("DistanceY", base, 1, 0.0))
+    cons.append(_C("DistanceX", base + n + 1, 2, L - w))
+    ex.append((len(cons) - 1, "Params.length - Params.wall"))
+    cons.append(_C("DistanceY", base + n + 1, 2, 0.0))
+    sk.addConstraint(cons)
+    _bind(sk, ex)
+    return sk
 
-outer = _revolve(spec["outer"])
-void = _revolve(spec["inner"]) if spec["inner"] else None
+def revolve(body, name, sk, groove=False):
+    f = body.newObject("PartDesign::Groove" if groove else "PartDesign::Revolution", name)
+    f.Profile = sk
+    f.ReferenceAxis = (sk, ["H_Axis"])
+    f.Angle = 360
+    return f
+
+def sub_box(body, name, x0, y0, z0, lx, ly, lz):
+    b = body.newObject("PartDesign::SubtractiveBox", name)
+    b.Length = lx
+    b.Width = ly
+    b.Height = lz
+    b.Placement = FreeCAD.Placement(FreeCAD.Vector(x0, y0, z0), FreeCAD.Rotation())
+    return b
+
+body = doc.addObject("PartDesign::Body", "FuselageSolid")
+sk_out = poly_sketch(body, "SkOuter", "XZ_Plane", [spec["outer"]])
+revolve(body, "FuseRevolution", sk_out)
 pad = spec["pad"]
+big = 4.0 * spec["r_max"]
 if pad:
-    big = 4.0 * spec["r_max"]
-    box = Part.makeBox(pad["x1"] - pad["x0"], 2 * big, big + pad["z"], FreeCAD.Vector(pad["x0"], -big, -big))
-    outer = outer.cut(box)
-    if void is not None:
+    sub_box(body, "GearPadFlat", pad["x0"], -big, -big, pad["x1"] - pad["x0"], 2 * big, big + pad["z"])
+
+if spec["inner"]:
+    vb = doc.addObject("PartDesign::Body", "FuselageVoid")
+    sk_v = void_sketch(vb, spec["outer_chain"], spec["inner"])
+    revolve(vb, "VoidRevolution", sk_v)
+    if spec["formers"]:
+        sk_f = poly_sketch(vb, "SkFormers", "XZ_Plane", spec["formers"])
+        revolve(vb, "FormerSlots", sk_f, groove=True)
+    if pad:
         w = spec["wall"]
-        box_i = Part.makeBox(pad["x1"] - pad["x0"] + 2 * w, 2 * big, big + pad["z"] + w, FreeCAD.Vector(pad["x0"] - w, -big, -big))
-        void = void.cut(box_i)
-shell = outer.cut(void) if void is not None else outer
-for sp in spec["plugs"]:
-    shell = shell.cut(surf_plug(sp))
-if len(shell.Solids) == 1:
-    shell = shell.Solids[0]
-main_part = doc.addObject("Part::Feature", "FuselageSolid")
-main_part.Shape = shell
+        sub_box(vb, "GearPadFloor", pad["x0"] - w, -big, -big, pad["x1"] - pad["x0"] + 2 * w, 2 * big, big + pad["z"] + w)
+    cv = body.newObject("PartDesign::Boolean", "CutVoid")
+    cv.Type = "Cut"
+    cv.addObjects([vb])
+    vb.Visibility = False
+
+if spec["plugs"]:
+    slots = []
+    for i, sp in enumerate(spec["plugs"]):
+        f = doc.addObject("Part::Feature", "Slot%d" % i)
+        f.Shape = surf_plug(sp)
+        f.Visibility = False
+        slots.append(f)
+    cs = body.newObject("PartDesign::Boolean", "CutSlots")
+    cs.Type = "Cut"
+    cs.addObjects(slots)
 
 doc.recompute()
+check_sketches(doc)
 
 {footer}
 "#,
         part_name = clean_name,
-        length = params.length_mm,
-        dia = params.max_diameter_mm,
-        wall = params.wall_mm,
-        nose_r = params.nose_r_mm,
-        tail_r = params.tail_r_mm,
+        sheet = sheet_lines(&rows),
         spec_py = spec_py,
         helpers = PY_SURF_HELPERS,
+        pd_helpers = PY_PD_HELPERS,
         footer = footer,
     )
 }
@@ -1433,7 +1830,13 @@ mod tests {
 
         assert!(script.contains("import FreeCAD"));
         assert!(script.contains("Params.half_span"));
-        assert!(script.contains("WingInnerLoft") && script.contains("SparHole"));
+        assert!(script.contains("WingBay%d") && script.contains("SparHole"));
+        assert!(script.contains("PartDesign::AdditiveLoft") && script.contains("rib_pitch"));
+        // Kabuk bölmeleri ve kiriş kanalı spec içinde dolu olmalı (spec JSON, Python dizgesi).
+        assert!(script.contains(r#"\"bays\":[{"#), "kaburga bölmeleri yok");
+        assert!(!script.contains(r#"\"spar\":null"#), "kiriş kanalı yok");
+        // Her şey Spreadsheet takma adlarına bağlı: kutup ifadeleri hücre adlarını kullanır.
+        assert!(script.contains("Params.root_chord") && script.contains("Params.rib_t / 2"));
         assert!(script.contains("200.00 mm"));
         assert!(script.contains("120.00 mm"));
         assert!(script.contains("800.00 mm"));

@@ -414,6 +414,229 @@ fn test_freecad_headless_integration() {
     let _ = fs::remove_dir_all(std::env::temp_dir().join("werseus_cad_test"));
 }
 
+/// Üretilen .FCStd dosyasını ikinci bir FreeCAD sürecinde açıp düzenleyen doğrulama betiği:
+/// özellik ağacı (PartDesign Body, AdditiveLoft/Revolution, tam kısıtlı çizimler, Spreadsheet)
+/// var mı; her hücre düzenlemesinden sonra yeniden hesaplama hatasız mı, tek geçerli katı mı
+/// ve üçgen ağı sınır kutusu/hacmi beklenen yönde değişiyor mu. Sonuç standart JSON
+/// işaretleriyle döner; başarısız kontroller `error` alanında listelenir.
+const PY_TREE_CHECK: &str = r#"
+import FreeCAD, Mesh, json, traceback
+spec = json.loads(SPEC)
+fails = []
+try:
+    doc = FreeCAD.openDocument(spec["file"])
+    sheet = doc.getObject("Params")
+    body = doc.getObject(spec["main"])
+    if sheet is None or body is None or body.TypeId != "PartDesign::Body":
+        raise RuntimeError("Params veya PartDesign Body yok")
+    types = [o.TypeId for o in body.Group]
+    for t in spec["need"]:
+        if types.count(t) < 1:
+            fails.append("ozellik yok: " + t)
+    if types.count("Sketcher::SketchObject") < spec["min_sketches"]:
+        fails.append("cizim sayisi az: %d" % types.count("Sketcher::SketchObject"))
+
+    def state(tag):
+        doc.recompute()
+        bad = [o.Name for o in doc.Objects if "Invalid" in o.State or "Error" in o.State]
+        if bad:
+            fails.append(tag + ": hatali ozellik " + ",".join(bad))
+        for o in doc.Objects:
+            if o.TypeId == "Sketcher::SketchObject" and (o.solve() != 0 or not o.FullyConstrained):
+                fails.append(tag + ": cizim tam kisitli degil " + o.Name)
+        sh = body.Shape
+        if not sh.isValid() or len(sh.Solids) != 1:
+            fails.append(tag + ": gecersiz ya da cok parcali kati (%d)" % len(sh.Solids))
+        m = Mesh.Mesh(sh.tessellate(0.05))
+        b = m.BoundBox
+        return {"vol": abs(m.Volume), "bb": [b.XMin, b.XMax, b.YMin, b.YMax, b.ZMin, b.ZMax]}
+
+    base = state("ilk")
+    orig = {}
+    for e in spec["edits"]:
+        alias, val, kind, idx, delta = e
+        orig.setdefault(alias, sheet.getContents(alias))
+        sheet.set(alias, val)
+        r = state(alias + "=" + val)
+        if kind == "bb":
+            got = r["bb"][idx] - base["bb"][idx]
+            if abs(got - delta) > max(0.6, 0.02 * abs(delta)):
+                fails.append("%s=%s: sinir kutusu[%d] degisimi %.2f, beklenen %.2f" % (alias, val, idx, got, delta))
+        elif kind == "vol+":
+            if not r["vol"] > base["vol"] * 1.01:
+                fails.append("%s=%s: hacim artmadi (%.0f -> %.0f)" % (alias, val, base["vol"], r["vol"]))
+        elif kind == "vol-":
+            if not r["vol"] < base["vol"] * 0.999:
+                fails.append("%s=%s: hacim azalmadi (%.0f -> %.0f)" % (alias, val, base["vol"], r["vol"]))
+        sheet.set(alias, orig[alias])
+    back = state("geri")
+    if abs(back["vol"] - base["vol"]) > 1e-3 * base["vol"]:
+        fails.append("ozgun hacme donmedi: %.1f -> %.1f" % (base["vol"], back["vol"]))
+    res = {"ok": not fails, "status": "ok" if not fails else "error", "part": spec["main"],
+           "valid": not fails, "volume_mm3": base["vol"], "param_update_ok": not fails,
+           "num_segments": 1, "fcstd_path": spec["file"], "step_files": [], "stl_files": [],
+           "error": "; ".join(fails) if fails else None, "traceback": None}
+except Exception as ex:
+    res = {"ok": False, "status": "error", "part": "", "valid": False, "volume_mm3": 0.0,
+           "param_update_ok": False, "num_segments": 0, "fcstd_path": "", "step_files": [],
+           "stl_files": [], "error": str(ex), "traceback": traceback.format_exc()}
+print("__WERSEUS_CAD_JSON_START__" + json.dumps(res) + "__WERSEUS_CAD_JSON_END__")
+"#;
+
+/// (takma ad, yeni değer, tür "bb"/"vol+"/"vol-"/"ok", sınır kutusu dizini, beklenen değişim)
+type Edit<'a> = (&'a str, &'a str, &'a str, usize, f64);
+
+/// Bir parçanın ağaç kontrolü tanımı.
+struct TreeCase<'a> {
+    tag: &'a str,
+    script: String,
+    main: &'a str,
+    need: &'a [&'a str],
+    min_sketches: usize,
+    edits: &'a [Edit<'a>],
+}
+
+fn check_tree(
+    inst: &werseus_uav_calc::cad::FreeCadInstallation,
+    dir: &std::path::Path,
+    case: TreeCase,
+) {
+    let TreeCase {
+        tag,
+        script,
+        main,
+        need,
+        min_sketches,
+        edits,
+    } = case;
+    let sp = dir.join(format!("{tag}.py"));
+    fs::write(&sp, script).unwrap();
+    let r = run_freecad_script_sync(&inst.cmd_path, &sp).unwrap_or_else(|e| panic!("{tag}: {e}"));
+    assert!(r.valid && r.param_update_ok, "{tag}: {r:?}");
+    let spec = serde_json::json!({
+        "file": r.fcstd_path,
+        "main": main,
+        "need": need,
+        "min_sketches": min_sketches,
+        "edits": edits.iter().map(|e| serde_json::json!([e.0, e.1, e.2, e.3, e.4])).collect::<Vec<_>>(),
+    });
+    let check = PY_TREE_CHECK.replace("SPEC", &serde_json::to_string(&spec.to_string()).unwrap());
+    let cp = dir.join(format!("{tag}_check.py"));
+    fs::write(&cp, check).unwrap();
+    let c = run_freecad_script_sync(&inst.cmd_path, &cp);
+    assert!(c.is_ok(), "{tag}: parametrik ağaç kontrolü: {:?}", c.err());
+    println!("{tag}: ağaç ve düzenleme kontrolü geçti");
+}
+
+/// Kanat, kuyruk ve gövde: düzenlenebilir PartDesign ağacı; Spreadsheet hücresi değişince
+/// parça doğru yönde yeniden üretilir ve hiçbir özellik hata durumuna düşmez.
+#[test]
+#[ignore = "FreeCAD gerekir; yalnızca elle: cargo test -- --ignored"]
+fn parametric_feature_tree_follows_spreadsheet() {
+    let Some(inst) = detect_freecad(None) else {
+        println!("FreeCAD bulunamadı, test atlandı.");
+        return;
+    };
+    let dir = std::env::temp_dir().join("werseus_cad_tree_test");
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let lib = Library::embedded();
+    let p = load_example("fixed_wing_2kg_1600mm.json").unwrap();
+    let m = evaluate(&p, &lib);
+    let opts = ExportOptions {
+        export_fcstd: true,
+        export_step: false,
+        export_stl: false,
+        out_dir: dir.clone(),
+    };
+    let wing = WingCadParams::from_project(&p, &m);
+    assert!(wing.structure().rib_bays >= 2, "kanatta kaburga olmalı");
+    let c_r = format!("{:.2} mm", wing.root_chord_mm + 30.0);
+    let span = format!("{:.2} mm", wing.half_span_mm + 100.0);
+    let wall = format!("{:.2} mm", wing.wall_mm * 2.0);
+    let rib = format!("{:.2} mm", wing.structure().rib_t_mm * 2.0);
+    let spar = format!("{:.2} mm", wing.spar_od_mm + 2.0);
+    let wing_edits: Vec<Edit> = vec![
+        ("half_span", &span, "bb", 5, 100.0),
+        // Kök kordu büyür: kök firar kenarı (X en büyük) 30 mm geriye.
+        ("root_chord", &c_r, "bb", 1, 30.0),
+        ("wall", &wall, "vol+", 0, 0.0),
+        ("rib_t", &rib, "vol+", 0, 0.0),
+        ("twist_deg", "=-3 deg", "ok", 0, 0.0),
+        ("twist_deg", "3 deg", "ok", 0, 0.0),
+        ("dihedral_deg", "4 deg", "ok", 0, 0.0),
+        ("spar_od", &spar, "vol-", 0, 0.0),
+    ];
+    check_tree(
+        &inst,
+        &dir,
+        TreeCase {
+            tag: "wing",
+            script: generate_wing_script(&wing, &opts),
+            main: "WingSolid",
+            need: &[
+                "PartDesign::AdditiveLoft",
+                "PartDesign::SubtractiveLoft",
+                "PartDesign::SubtractiveCylinder",
+            ],
+            min_sketches: 4,
+            edits: &wing_edits,
+        },
+    );
+
+    let tail = TailCadParams::from_project(&p, &m, TailKind::Conventional);
+    let t_span = format!("{:.2} mm", tail.span_mm + 40.0);
+    let t_tip = format!("{:.2} mm", tail.tip_chord_mm * 0.8);
+    check_tree(
+        &inst,
+        &dir,
+        TreeCase {
+            tag: "tail_h",
+            script: generate_tail_script(&tail, &opts),
+            main: "TailSolid",
+            need: &["PartDesign::AdditiveLoft", "PartDesign::SubtractiveLoft"],
+            min_sketches: 4,
+            edits: &[
+                ("span", &t_span, "bb", 5, 40.0),
+                ("tip_chord", &t_tip, "vol-", 0, 0.0),
+            ],
+        },
+    );
+
+    let fuse = FuselageCadParams::from_project(&p, &m);
+    assert!(
+        !fuse.structure().former_fracs.is_empty(),
+        "gövdede posta olmalı"
+    );
+    let len = format!("{:.2} mm", fuse.length_mm + 60.0);
+    let dia = format!("{:.2} mm", fuse.max_diameter_mm - 10.0);
+    let fwall = format!("{:.2} mm", fuse.wall_mm * 2.0);
+    let depth = format!("{:.2} mm", fuse.structure().former_depth_mm * 1.5);
+    check_tree(
+        &inst,
+        &dir,
+        TreeCase {
+            tag: "fuselage",
+            script: generate_fuselage_script(&fuse, &opts),
+            main: "FuselageSolid",
+            need: &[
+                "PartDesign::Revolution",
+                "PartDesign::Boolean",
+                "PartDesign::SubtractiveBox",
+            ],
+            min_sketches: 1,
+            edits: &[
+                ("length", &len, "bb", 1, 60.0),
+                // En büyük çap 10 mm küçülür: üst yüzey 5 mm iner.
+                ("diameter", &dia, "bb", 5, -5.0),
+                ("wall", &fwall, "vol+", 0, 0.0),
+                ("former_depth", &depth, "vol+", 0, 0.0),
+            ],
+        },
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
 /// Parçaları ve montajı üretir (iptal/süre sınırı pratikte yok); özet ya da hata iletisi.
 fn run_outputs_blocking(
     cmd_path: std::path::PathBuf,

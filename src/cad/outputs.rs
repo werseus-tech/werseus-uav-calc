@@ -1991,13 +1991,14 @@ mod tests {
         let (p, m) = fx(DroneType::FixedWingConventional);
         let dir = std::env::temp_dir().join("werseus_out_test");
         let w = plan_part(PartId::Wing, &p, &m, &dir).script;
-        assert!(w.contains("WingInnerLoft"), "kanat içi boş olmalı");
+        assert!(w.contains("WingBay%d"), "kanat içi boş olmalı");
+        assert!(w.contains("PartDesign::Body") && w.contains("rib_count"));
         assert!(w.contains("SparHole"));
         assert!(w.contains("WingSolid_Mirror"));
         let f = plan_part(PartId::Fuselage, &p, &m, &dir).script;
         assert!(f.contains("surf_plug") && f.contains("\\\"plugs\\\""));
         let v = plan_part(PartId::TailVertical, &p, &m, &dir).script;
-        assert!(v.contains("TailInnerLoft") && !v.contains("_Mirror\""));
+        assert!(v.contains("TailBay%d") && !v.contains("_Mirror\""));
     }
 
     #[test]

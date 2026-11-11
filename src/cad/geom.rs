@@ -272,14 +272,65 @@ impl Profile {
         self.pts.iter().map(|p| p[1]).fold(f64::INFINITY, f64::min)
     }
 
+    /// Firar kenarı kapalı mı (üst ve alt yüzey firarda aynı noktada)?
+    pub fn te_closed(&self) -> bool {
+        let n = self.pts.len();
+        n > 1
+            && (self.pts[0][0] - self.pts[n - 1][0]).abs()
+                + (self.pts[0][1] - self.pts[n - 1][1]).abs()
+                < 1e-9
+    }
+
+    /// Kosinüs aralıklı az noktalı kopya: üst yüzey firardan hücum kenarına, alt yüzey hücum
+    /// kenarından firara, yüzey başına `per_side` aralık. Kapalı firarda son nokta = ilk nokta;
+    /// açık firarda liste açık kalır (firar çizgisi ayrıca kapatılır).
+    pub fn resampled(&self, per_side: usize) -> Profile {
+        let n = per_side.max(4);
+        let x_lo = self.upper[0][0].min(self.lower[0][0]);
+        let x_hi = self.upper[self.upper.len() - 1][0].max(self.lower[self.lower.len() - 1][0]);
+        let xs: Vec<f64> = (0..=n)
+            .map(|k| {
+                let s = 0.5 * (1.0 - (std::f64::consts::PI * k as f64 / n as f64).cos());
+                x_lo + (x_hi - x_lo) * s
+            })
+            .collect();
+        let up: Vec<[f64; 2]> = xs.iter().map(|&x| [x, self.yu(x)]).collect();
+        let lo: Vec<[f64; 2]> = xs.iter().map(|&x| [x, self.yl(x)]).collect();
+        let mut pts: Vec<[f64; 2]> = up.iter().rev().copied().collect();
+        let le_gap = (up[0][1] - lo[0][1]).abs() > 1e-9;
+        pts.extend(lo.iter().skip(if le_gap { 0 } else { 1 }).copied());
+        if (up[n][1] - lo[n][1]).abs() < 1e-7 {
+            let last = pts.len() - 1;
+            pts[last] = pts[0];
+        }
+        Profile {
+            pts,
+            upper: up,
+            lower: lo,
+        }
+    }
+
     /// İçi boş kabuk için iç profil (mm, hücum kenarı x=0). Yüzeye dik et kalınlığı `wall`
     /// (eğim düzeltmeli düşey kaydırma); kalınlığın 3·wall altına düştüğü burun ve firar
-    /// bölgeleri dolu kalır. Profil çok inceyse `None`.
+    /// bölgeleri dolu kalır. Profil çok inceyse `None`. Noktalar `inner_terms` ile aynıdır.
     pub fn inner_polygon(&self, chord: f64, wall: f64, n: usize) -> Option<Vec<[f64; 2]>> {
         if !(chord > 0.0 && wall > 0.0) {
             return None;
         }
-        let tau = wall / chord;
+        Some(
+            self.inner_terms(wall / chord, n)?
+                .iter()
+                .map(|t| t.eval(chord, wall))
+                .collect(),
+        )
+    }
+
+    /// İç profil noktalarının kord ve et kalınlığına doğrusal bağımlılığı (bkz. `InnerTerm`).
+    /// Kord konumları ve dolu kalan burun/firar bölgeleri `tau` = wall / chord ile seçilir.
+    pub fn inner_terms(&self, tau: f64, n: usize) -> Option<Vec<InnerTerm>> {
+        if !(tau > 0.0 && tau.is_finite()) {
+            return None;
+        }
         let need = 3.0 * tau;
         let samples = 600;
         let xs: Vec<f64> = (1..samples).map(|i| i as f64 / samples as f64).collect();
@@ -312,19 +363,46 @@ impl Profile {
         for &x in &st {
             let su = d(&|x| self.yu(x), x);
             let sl = d(&|x| self.yl(x), x);
-            let mut yu = self.yu(x) - tau * (1.0 + su * su).sqrt();
-            let mut yl = self.yl(x) + tau * (1.0 + sl * sl).sqrt();
-            if yu - yl < 0.5 * tau {
-                let m = 0.5 * (self.yu(x) + self.yl(x));
-                yu = m + 0.25 * tau;
-                yl = m - 0.25 * tau;
-            }
-            up.push([x * chord, yu * chord]);
-            lo.push([x * chord, yl * chord]);
+            let mid = 0.5 * (self.yu(x) + self.yl(x));
+            up.push(InnerTerm {
+                x,
+                y: self.yu(x),
+                w: -(1.0 + su * su).sqrt(),
+                mid,
+                upper: true,
+            });
+            lo.push(InnerTerm {
+                x,
+                y: self.yl(x),
+                w: (1.0 + sl * sl).sqrt(),
+                mid,
+                upper: false,
+            });
         }
-        let mut poly: Vec<[f64; 2]> = up.into_iter().rev().collect();
+        let mut poly: Vec<InnerTerm> = up.into_iter().rev().collect();
         poly.extend(lo);
         Some(poly)
+    }
+}
+
+/// İç profil noktası: kord `c` ve et kalınlığı `w` için x = c·x, y = c·y + w·w_coef; üst
+/// yüzeyde y en az c·mid + w/4, alt yüzeyde en çok c·mid − w/4 (ince bölgede iç profil
+/// kendini kesmez). FreeCAD çizim ifadeleri aynı formülü kullanır.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InnerTerm {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub mid: f64,
+    pub upper: bool,
+}
+
+impl InnerTerm {
+    pub fn eval(&self, chord: f64, wall: f64) -> [f64; 2] {
+        let y = chord * self.y + wall * self.w;
+        let lim = chord * self.mid + if self.upper { 0.25 } else { -0.25 } * wall;
+        let y = if self.upper { y.max(lim) } else { y.min(lim) };
+        [chord * self.x, y]
     }
 }
 
@@ -340,7 +418,7 @@ pub struct SurfaceGeom {
 }
 
 /// Kiriş (boru) ekseni: yüzey yerel çerçevesinde başlangıç, yön ve boy (mm).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SparAxis {
     pub start: V3,
     pub dir: V3,
@@ -616,6 +694,31 @@ mod tests {
         // Çok ince profil/kalın duvar: kabuk yok.
         assert!(pr.inner_polygon(10.0, 2.0, 40).is_none());
         assert!(Profile::new(&[[0.0, f64::NAN]; 8]).is_none());
+    }
+
+    #[test]
+    fn resampled_profile_keeps_shape_and_te() {
+        let pts = crate::cad::airfoil::generate_naca4_points("2412", 100, true).unwrap();
+        let pr = Profile::new(&pts).unwrap();
+        let rs = pr.resampled(16);
+        assert_eq!(rs.pts.len(), 33);
+        assert!(rs.te_closed());
+        for i in 1..20 {
+            let x = i as f64 / 20.0;
+            assert!((rs.thickness(x) - pr.thickness(x)).abs() < 2e-3, "x={x}");
+        }
+        // Açık firar: liste açık kalır.
+        let mut open = pts.clone();
+        open[0][1] += 0.002;
+        let n = open.len();
+        open[n - 1][1] -= 0.002;
+        let ro = Profile::new(&open).unwrap().resampled(16);
+        assert!(!ro.te_closed());
+        // İç profil terimleri doğrusal: aynı terimlerden iki kord için iki profil.
+        let t = rs.inner_terms(0.5 / 150.0, 12).unwrap();
+        let a = t[5].eval(150.0, 0.5);
+        let b = t[5].eval(300.0, 0.5);
+        assert!((b[0] - 2.0 * a[0]).abs() < 1e-9);
     }
 
     #[test]
