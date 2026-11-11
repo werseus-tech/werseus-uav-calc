@@ -1,0 +1,4 @@
+# Statik CRT: son kullanicinin VC++ Redistributable kurmasina gerek kalmaz.
+# Static CRT so end users do not need the VC++ redistributable.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

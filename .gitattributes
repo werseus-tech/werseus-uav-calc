@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Line ending normalization for data and asset JSON files
+data/*.json text eol=lf
+assets/*.json text eol=lf
+assets/**/*.json text eol=lf

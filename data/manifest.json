@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "updated": "2026-11-10",
+  "files": {
+    "cells.json": {
+      "sha256": "44a9f10fce290abf604137c162b2a8f0dd013839bf84b887d3221b113aae7d5f",
+      "schema_version": 1
+    },
+    "packs.json": {
+      "sha256": "a8be4f64cf50694613c2e1807e84c02120441eb09c8591456e54abe31ab4a985",
+      "schema_version": 1
+    },
+    "motors.json": {
+      "sha256": "a8be4f64cf50694613c2e1807e84c02120441eb09c8591456e54abe31ab4a985",
+      "schema_version": 1
+    },
+    "props.json": {
+      "sha256": "a8be4f64cf50694613c2e1807e84c02120441eb09c8591456e54abe31ab4a985",
+      "schema_version": 1
+    },
+    "escs.json": {
+      "sha256": "a8be4f64cf50694613c2e1807e84c02120441eb09c8591456e54abe31ab4a985",
+      "schema_version": 1
+    }
+  }
+}

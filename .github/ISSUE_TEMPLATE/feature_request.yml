@@ -1,0 +1,28 @@
+name: "Özellik Talebi / Feature Request"
+description: "WerSeuS – UAV Calc için yeni bir özellik, formül veya platform önerin."
+title: "[FEATURE]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        WerSeuS – UAV Calc'ı geliştirmemize yardımcı olduğunuz için teşekkür ederiz!
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Çözülmek İstenen Problem / Pain Point"
+      description: "Hangi tasarım ihtiyacı veya problem için bu özelliğe ihtiyaç duyuyorsunuz?"
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: "Önerilen Çözüm / Proposed Feature"
+      description: "Özelliğin nasıl çalışmasını ve arayüzde nasıl görünmesini istersiniz?"
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Değerlendirilen Alternatifler / Alternatives Considered"
+      description: "Düşündüğünüz başka alternatif yaklaşımlar var mı?"

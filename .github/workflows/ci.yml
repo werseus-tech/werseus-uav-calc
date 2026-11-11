@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  pull_request:
+    branches: [ "master", "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    # windows-latest: Visual Studio Build Tools (MSVC + Windows SDK) hazır gelir.
+    runs-on: windows-latest
+    steps:
+      - name: Depoyu Klonla (Checkout)
+        uses: actions/checkout@v4
+
+      # Araç zinciri depodaki rust-toolchain.toml ile sabit (stable-x86_64-pc-windows-msvc).
+      - name: Rust MSVC Araç Zincirini Kur
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Kod Format Kontrolü (fmt)
+        run: cargo fmt --check
+
+      - name: Statik Analiz (clippy)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Topluluk Veritabanı Doğrulama (Data Validation)
+        shell: powershell
+        run: |
+          .\scripts\validate-data.ps1
+
+      # Canlı Ollama testi yalnızca WERSEUS_LIVE_OLLAMA=1 ile çalışır (burada ayarlanmaz);
+      # FreeCAD testleri FreeCAD kurulu değilse kendiliğinden atlanır.
+      - name: Testleri Çalıştır
+        run: cargo test
+
+      - name: Dağıtım Sürümünü Derle (Release Build)
+        run: cargo build --release
+
+      - name: Dağıtım Paketini Hazırla (PowerShell)
+        shell: powershell
+        run: |
+          .\scripts\build-release.ps1
+
+      - name: Dağıtım ZIP Dosyasını Yükle (Artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: WerSeuS-UAV-Calc-windows-x64
+          path: |
+            dist/*.zip
+            dist/SHA256SUMS.txt

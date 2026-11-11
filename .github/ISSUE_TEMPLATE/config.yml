@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "E-posta ile Güvenlik veya Özel Destek"
+    url: "mailto:info.wsseng@gmail.com"
+    about: "Güvenlik açıkları veya ticari lisans talepleri için doğrudan e-posta gönderebilirsiniz."
+  - name: "GitHub Depo / Repository"
+    url: "https://github.com/werseus-tech/werseus-uav-calc"
+    about: "Resmi proje deposu / Official project repository."

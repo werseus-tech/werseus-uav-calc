@@ -1,0 +1,7 @@
+# Depo icinde arac zinciri sabitlemesi: MSVC (Visual Studio Build Tools C++ is yuku gerekir).
+# Pins the toolchain for this repo only; the global rustup default is not affected.
+[toolchain]
+channel = "stable-x86_64-pc-windows-msvc"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"

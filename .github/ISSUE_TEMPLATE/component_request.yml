@@ -1,0 +1,62 @@
+name: "Bileşen Önerisi / Component Request"
+description: "Topluluk veritabanına (data/) yeni bir hücre, batarya paketi, motor, pervane veya ESC ekleme önerisi."
+title: "[COMPONENT]: "
+labels: ["component-database"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Topluluk bileşen veritabanına katkıda bulunarak açık kaynak havacılık kütüphanesini genişlettiğiniz için teşekkür ederiz!
+        Lütfen eklemek istediğiniz bileşenin **üretici orijinal teknik veri sayfasına (datasheet)** dayandığından emin olun.
+        Satıcı/mağaza sitelerinden kazıma (scraping) veya tahmini değerler kabul edilmez.
+  - type: dropdown
+    id: component_type
+    attributes:
+      label: "Bileşen Türü / Component Type"
+      description: "Hangi tür bileşen eklemek istiyorsunuz?"
+      options:
+        - "Hücre (Cell) [cells.json]"
+        - "Hazır Batarya Paketi (Pack) [packs.json]"
+        - "Motor [motors.json]"
+        - "Pervane (Propeller) [props.json]"
+        - "Hız Kontrolcü (ESC) [escs.json]"
+    validations:
+      required: true
+  - type: input
+    id: component_name
+    attributes:
+      label: "Bileşen Adı ve Sabit ID / Component Name & ID"
+      description: "Örnek ID: molicel_inr21700_p45b | Ad: Molicel P45B 21700"
+      placeholder: "üretici_model_ölçü"
+    validations:
+      required: true
+  - type: textarea
+    id: specs
+    attributes:
+      label: "Teknik Parametreler / Technical Specifications"
+      description: "Hücre için: Kimya, Nominal V, Kapasite (Ah), Kütle (g), Azami Sürekli Akım (A), İç Direnç (mΩ opsiyonel)."
+      placeholder: |
+        - Kimya: Li-ion
+        - Nominal Gerilim: 3.6 V
+        - Kapasite: 4.5 Ah
+        - Kütle: 70.0 g
+        - Azami Sürekli Akım: 45.0 A
+    validations:
+      required: true
+  - type: input
+    id: datasheet_source
+    attributes:
+      label: "Üretici Veri Sayfası Kaynağı (Datasheet) [ZORUNLU]"
+      description: "Üretici doküman adı veya doğrudan PDF/web bağlantısı (Mağaza linki DEĞİL!)."
+      placeholder: "Örn: Molicel INR-21700-P45B Data Sheet v2.1 veya https://..."
+    validations:
+      required: true
+  - type: checkboxes
+    id: declaration
+    attributes:
+      label: "Doğrulama ve Beyan / Verification"
+      options:
+        - label: "Bu değerlerin bir e-ticaret/mağaza sitesinden veya otomatik scraping yoluyla DEĞİL, doğrudan üretici resmi teknik veri sayfasından alındığını teyit ediyorum."
+          required: true
+        - label: "Wh/kg özgül enerji değerinin fiziksel olarak makul aralıkta olduğunu kontrol ettim."
+          required: true

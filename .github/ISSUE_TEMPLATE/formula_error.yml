@@ -1,0 +1,40 @@
+name: "Formül / Hesaplama Hatası Bildirimi"
+description: "Aerodinamik, itki, stabilite, ağırlık veya multirotor hesaplarında bir matematiksel formül hatası bildirin."
+title: "[FORMULA]: "
+labels: ["math", "formula-error"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Havacılık mühendisliği hesaplamalarının doğruluğu projemizin temel taşıdır.
+        Lütfen formül veya birim hatasını aşağıdaki alanları doldurarak bildirin.
+  - type: input
+    id: formula_name
+    attributes:
+      label: "Hangi Formül / Modül? (Which Formula?)"
+      description: "Örnek: Helmbold 3D CL_alpha, Hoerner Oswald e, Multirotor Momentum İdeal Güç, Statik Marjin vb."
+      placeholder: "calc::aero::cla_helmbold"
+    validations:
+      required: true
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: "Programdaki Mevcut Hesaplama / Değer (Current Calculation)"
+      description: "Programın şu an kullandığı formül veya ürettiği hatalı sayısal sonuç."
+    validations:
+      required: true
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: "Beklenen Doğru Formül ve Sonuç (Expected Formula and Value)"
+      description: "Doğru olduğunu değerlendirdiğiniz matematiksel ifade ve örnek sayısal girdi/çıktı."
+    validations:
+      required: true
+  - type: textarea
+    id: scientific_source
+    attributes:
+      label: "Akademik / Mühendislik Kaynağı (Engineering Reference)"
+      description: "Zorunlu: Raymer, Roskam, Leishman, NASA raporu veya akademik makale adı, basım yılı ve sayfa numarası."
+      placeholder: "Raymer, D. P., Aircraft Design: A Conceptual Approach, 6th Ed., Bölüm 12, Denklem 12.14, s. 412"
+    validations:
+      required: true

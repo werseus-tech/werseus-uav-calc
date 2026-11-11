@@ -1,0 +1,62 @@
+name: "Hata Bildirimi / Bug Report"
+description: "Programda karşılaştığınız bir yazılım hatasını veya çökmeyi bildirin."
+title: "[BUG]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        WerSeuS – UAV Calc projesine hata bildirdiğiniz için teşekkür ederiz.
+        Lütfen kişisel şifrelerinizi, API anahtarlarınızı veya özel bilgilerinizi paylaşmayın.
+  - type: input
+    id: version
+    attributes:
+      label: "Program Sürümü / Version"
+      description: "Hangi sürümü kullanıyorsunuz? (Yardım -> Hakkında veya v0.0.1)"
+      placeholder: "v0.0.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: "İşletim Sistemi / Operating System"
+      options:
+        - "Windows 11 x64"
+        - "Windows 10 x64"
+        - "Windows Diğer"
+        - "Linux / macOS"
+    validations:
+      required: true
+  - type: dropdown
+    id: drone_type
+    attributes:
+      label: "Seçili İHA Platform Türü / Drone Platform Type"
+      options:
+        - "Sabit Kanat - Konvansiyonel (Fixed-Wing Conventional)"
+        - "Sabit Kanat - V-Kuyruk (Fixed-Wing V-Tail)"
+        - "Uçan Kanat (Flying Wing)"
+        - "Multirotor (Döner Kanat)"
+        - "VTOL Quadplane Hibrit"
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: "Hata Tanımı ve Yeniden Oluşturma Adımları / Steps to Reproduce"
+      description: "Ne yaparken hatayla karşılaştınız? Adım adım anlatınız."
+      placeholder: "1. 'Geometri' sekmesine gittim\n2. Kanat açıklığını 1.6 m girdim\n3. Program şu hatayı verdi..."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Günlük / Çökme Metni (Log / Crash Details)"
+      description: "Varsa çökme günlüğü veya app.log içeriğini buraya yapıştırın."
+      render: shell
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: "Gizlilik ve Doğrulama"
+      options:
+        - label: "Hata raporundaki dosya yollarında ve metinlerde özel API anahtarı veya gizli veri bulunmadığını kontrol ettim."
+          required: true

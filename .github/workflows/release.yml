@@ -1,0 +1,78 @@
+name: Release
+
+# `v*` etiketi (ör. v0.0.1) itildiğinde Windows paketini derler ve GitHub Release oluşturur.
+on:
+  push:
+    tags: [ "v*" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Release oluşturmak/dosya yüklemek için yazma izni gerekir.
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # windows-latest: Visual Studio Build Tools (MSVC + Windows SDK) hazır gelir.
+    runs-on: windows-latest
+    steps:
+      - name: Depoyu Klonla (Checkout)
+        uses: actions/checkout@v4
+
+      # Araç zinciri depodaki rust-toolchain.toml ile sabit (stable-x86_64-pc-windows-msvc).
+      - name: Rust MSVC Araç Zincirini Kur
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+
+      # Etiket (vX.Y.Z) ile Cargo.toml sürümü aynı olmalı; değilse yanlış sürüm yayımlanmaz.
+      - name: Etiket ve Cargo.toml Sürümünü Denetle
+        shell: powershell
+        run: |
+          $tagVersion = $env:GITHUB_REF_NAME -replace '^v', ''
+          $cargoText = Get-Content -Raw -Path Cargo.toml
+          if ($cargoText -notmatch '(?m)^version\s*=\s*"([^"]+)"') {
+            throw "Cargo.toml içinde sürüm okunamadı"
+          }
+          $cargoVersion = $Matches[1]
+          if ($tagVersion -ne $cargoVersion) {
+            throw "Etiket sürümü ($tagVersion) Cargo.toml sürümüyle ($cargoVersion) eşleşmiyor"
+          }
+          Write-Host "Sürüm doğrulandı: $cargoVersion"
+
+      # Canlı Ollama testi yalnızca WERSEUS_LIVE_OLLAMA=1 ile çalışır (burada ayarlanmaz);
+      # FreeCAD testleri FreeCAD kurulu değilse kendiliğinden atlanır.
+      - name: Testleri Çalıştır
+        run: cargo test
+
+      # build-release.ps1 kendisi `cargo build --release` çalıştırır, zip ve SHA256SUMS.txt üretir.
+      - name: Dağıtım Paketini Hazırla (PowerShell)
+        shell: powershell
+        run: |
+          .\scripts\build-release.ps1
+
+      # Yalnız `gh` kullanılır (üçüncü taraf release action'ı yok). Release zaten varsa dosyalar güncellenir.
+      - name: GitHub Release Oluştur veya Güncelle
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # gh stderr'e yazabilir; Windows PowerShell 5.1'de bu "Stop" ile hata sayılmasın (çıkış kodları açıkça denetlenir).
+          $ErrorActionPreference = "Continue"
+          $tag = $env:GITHUB_REF_NAME
+          $zip = Get-ChildItem -Path dist -Filter "*.zip" -File | Select-Object -First 1
+          if (-not $zip) { throw "dist altında zip bulunamadı" }
+          $assets = @($zip.FullName, (Resolve-Path "dist/SHA256SUMS.txt").Path)
+
+          gh release view $tag | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag zaten var; dosyalar güncelleniyor."
+            gh release upload $tag @assets --clobber
+            if ($LASTEXITCODE -ne 0) { throw "gh release upload başarısız (kod $LASTEXITCODE)" }
+          } else {
+            $notes = "docs/release-notes/$tag.md"
+            $notesArgs = if (Test-Path $notes) { @("--notes-file", $notes) } else { @("--generate-notes") }
+            gh release create $tag @assets --title "WerSeuS $([char]0x2013) UAV Calc $tag" @notesArgs --verify-tag
+            if ($LASTEXITCODE -ne 0) { throw "gh release create başarısız (kod $LASTEXITCODE)" }
+          }

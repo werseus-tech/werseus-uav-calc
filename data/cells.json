@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "updated": "2026-11-10",
+  "items": [
+    {
+      "id": "molicel_inr21700_p42a",
+      "name": "Molicel P42A 21700",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 4.2,
+      "mass_g": 70.0,
+      "max_cont_a": 45.0,
+      "source": "Molicel INR-21700-P42A Technical Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "molicel_inr21700_p45b",
+      "name": "Molicel P45B 21700",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 4.5,
+      "mass_g": 70.0,
+      "max_cont_a": 45.0,
+      "source": "Molicel INR-21700-P45B Technical Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "molicel_inr21700_p50b",
+      "name": "Molicel P50B 21700",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 5.0,
+      "mass_g": 70.0,
+      "max_cont_a": 60.0,
+      "source": "Molicel INR-21700-P50B Technical Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "samsung_inr21700_50s",
+      "name": "Samsung 50S 21700",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 5.0,
+      "mass_g": 72.0,
+      "max_cont_a": 25.0,
+      "source": "Samsung SDI INR21700-50S Specification Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "samsung_inr21700_40t",
+      "name": "Samsung 40T 21700",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 4.0,
+      "mass_g": 70.0,
+      "max_cont_a": 35.0,
+      "source": "Samsung SDI INR21700-40T Specification Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "lg_inr21700_m50lt",
+      "name": "LG M50LT 21700",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.63,
+      "capacity_ah": 4.8,
+      "mass_g": 68.0,
+      "max_cont_a": 7.3,
+      "source": "LG Energy Solution INR21700-M50LT Product Specification",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "murata_us18650_vtc6",
+      "name": "Sony/Murata VTC6 18650",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 3.0,
+      "mass_g": 46.6,
+      "max_cont_a": 15.0,
+      "source": "Murata US18650VTC6 Lithium-Ion Secondary Cell Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "samsung_inr18650_35e",
+      "name": "Samsung 35E 18650",
+      "chemistry": "Li-ion",
+      "nominal_v": 3.6,
+      "capacity_ah": 3.5,
+      "mass_g": 50.0,
+      "max_cont_a": 8.0,
+      "source": "Samsung SDI INR18650-35E Specification Data Sheet",
+      "source_url": "",
+      "source_date": "",
+      "verified_by": "maintainer"
+    },
+    {
+      "id": "generic_lipo_1s_5000mah",
+      "name": "LiPo 1S 5000 mAh (genel)",
+      "chemistry": "LiPo",
+      "nominal_v": 3.7,
+      "capacity_ah": 5.0,
+      "mass_g": 130.0,
+      "max_cont_a": 100.0,
+      "source": "WerSeuS Generic LiPo 1S 5000 mAh Reference Specification",
+      "source_url": "",
+      "source_date": "2026-11-10",
+      "verified_by": "maintainer"
+    }
+  ]
+}

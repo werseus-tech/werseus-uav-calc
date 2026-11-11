@@ -1,0 +1,50 @@
+[package]
+name = "werseus-uav-calc"
+version = "0.0.1"
+edition = "2024"
+description = "WerSeuS – UAV Calc"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/werseus-tech/werseus-uav-calc"
+homepage = "https://github.com/werseus-tech/werseus-uav-calc"
+
+build = "build.rs"
+
+[lib]
+name = "werseus_uav_calc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "werseus-uav-calc"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard"] }
+egui = { version = "0.37.0", default-features = false, features = ["default_fonts"] }
+egui_plot = "0.38.0"
+rfd = "0.18.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+image = { version = "0.25", default-features = false, features = ["png"] }
+ureq = { version = "2.10.1", default-features = false, features = ["json", "native-tls"] }
+native-tls = "0.2"
+rust_xlsxwriter = "0.102"
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"
+
+[lints.clippy]
+# Stil lint'leri: 54 ic ice `if` blogunu let-chain'e cevirmek dogrulanmis hesap/UI kodunda
+# toplu yeniden yazim gerektirir; okunabilirlik kazanci dusuk, regresyon riski var.
+collapsible_if = "allow"
+# Testlerde `let mut p = Params::default(); p.x = ..;` kalibi bilincli (tek alan degisimi okunur).
+field_reassign_with_default = "allow"
