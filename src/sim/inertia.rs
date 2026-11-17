@@ -35,6 +35,26 @@ pub fn estimate(p: &Project, m: &Model) -> Inertia {
     sanitize(raw, mass, characteristic_length(p, m))
 }
 
+/// Converts a full 3x3 inertia tensor about the CG [kg m^2] (tensor convention: products of
+/// inertia on the off-diagonal are -sum(m x z) etc.) from a project frame with y to the
+/// right and z up, whose x axis points aft (`x_aft = true`, fixed-wing nose datum) or
+/// forward (multirotor frame centre), into the simulator body frame (FRD).
+///
+/// This is the adapter for replacing [`estimate`] with a dedicated mass-properties result:
+/// `from_tensor(mp.inertia_kgm2, x_aft)` then the same `sanitize` checks. The x-y and y-z
+/// products are dropped (left/right symmetric aircraft assumed).
+pub fn from_tensor(t: [[f64; 3]; 3], x_aft: bool) -> Inertia {
+    let sx = if x_aft { -1.0 } else { 1.0 };
+    // FRD = diag(sx, 1, -1) * project frame; T'_02 = sx * (-1) * T_02 and the aircraft
+    // convention stores Ixz = +sum(m x z) = -T'_02.
+    Inertia {
+        ixx: t[0][0],
+        iyy: t[1][1],
+        izz: t[2][2],
+        ixz: sx * t[0][2],
+    }
+}
+
 fn characteristic_length(p: &Project, m: &Model) -> f64 {
     if p.drone_type == DroneType::Multirotor {
         finite_pos(p.mr_frame_size, 0.25)
@@ -199,6 +219,19 @@ fn multirotor(p: &Project, m: &Model) -> Inertia {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tensor_adapter_maps_axes() {
+        // A point mass 1 kg at 1 m forward and 0.5 m below the CG: Ixz(FRD) = +0.5.
+        // Project frame x aft, z up: x = -1, z = -0.5 -> tensor T_02 = -m x z = -0.5.
+        let t = [[0.25, 0.0, -0.5], [0.0, 1.25, 0.0], [-0.5, 0.0, 1.0]];
+        let i = from_tensor(t, true);
+        assert_eq!((i.ixx, i.iyy, i.izz), (0.25, 1.25, 1.0));
+        assert!((i.ixz - 0.5).abs() < 1e-12);
+        // Same point in a forward-x frame: x = 1, z = -0.5 -> T_02 = 0.5.
+        let t = [[0.25, 0.0, 0.5], [0.0, 1.25, 0.0], [0.5, 0.0, 1.0]];
+        assert!((from_tensor(t, false).ixz - 0.5).abs() < 1e-12);
+    }
 
     #[test]
     fn estimate_is_valid_for_every_type() {
