@@ -7,6 +7,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord, clippy::needless_range_loop)]
 pub mod airfoil;
 pub mod boundary_layer;
+pub mod flowsim;
 pub mod lbm;
 pub mod linalg;
 pub mod panel;
