@@ -8,6 +8,7 @@ pub mod export;
 pub mod footprint;
 pub mod geom3d;
 pub mod i18n;
+pub mod massprops;
 pub mod project;
 pub mod report;
 pub mod support;

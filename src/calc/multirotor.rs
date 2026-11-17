@@ -8,6 +8,8 @@ use std::f64::consts::PI;
 
 pub const G: f64 = 9.80665;
 pub const RHO0: f64 = 1.2250;
+/// Largest accepted CG offset from the motor centroid, as a fraction of the frame size.
+pub const CG_OFFSET_MAX_FRAC: f64 = 0.03;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum MultirotorLayout {
@@ -398,7 +400,7 @@ pub fn evaluate_multirotor(inp: &MultirotorIn) -> MultirotorOut {
     let dy = cg_y - geom_center_y;
     let cg_offset_d = (dx * dx + dy * dy).sqrt();
     let cg_offset_frac = safe_div(cg_offset_d, inp.d_frame);
-    let cg_offset_ok = cg_offset_frac <= 0.03;
+    let cg_offset_ok = cg_offset_frac <= CG_OFFSET_MAX_FRAC;
     let prop_overlap = d_prop > s_adj;
     let prop_clearance_ok = d_prop <= d_prop_max;
 
