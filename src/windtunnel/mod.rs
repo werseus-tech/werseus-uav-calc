@@ -11,4 +11,5 @@ pub mod lbm;
 pub mod linalg;
 pub mod panel;
 pub mod polar;
+pub mod section;
 pub mod vlm;
