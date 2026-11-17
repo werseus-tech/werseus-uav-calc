@@ -35,7 +35,8 @@ pub struct FeaSettings {
     pub arm_section: ArmSection,
     /// `None` = wing structure step values (allowable stress) with a pultruded-carbon modulus.
     pub wing_material: Option<StructMaterial>,
-    /// Relative margin around an excitation band that is still reported as "caution".
+    /// Relative band around the dwell RPM (hover/cruise) where a crossing is a high risk; the
+    /// same margin widens the operating range for "caution". 20 % matches the arm structure step.
     pub margin: f64,
     /// Lowest operating rotor speed of the lift rotors as a fraction of hover RPM.
     pub low_rpm_frac: f64,
@@ -49,7 +50,7 @@ impl Default for FeaSettings {
             arm_material: None,
             arm_section: ArmSection::Project,
             wing_material: None,
-            margin: 0.15,
+            margin: 0.20,
             low_rpm_frac: 0.6,
         }
     }
@@ -93,6 +94,8 @@ pub struct Excitation {
     pub source: ExcitationSource,
     pub rpm_lo: f64,
     pub rpm_hi: f64,
+    /// Speed where the rotor dwells most of the time (hover or cruise RPM).
+    pub rpm_dwell: f64,
     pub blades: u32,
     /// Rotor mounted on the member itself (direct excitation) or elsewhere on the airframe.
     pub direct: bool,
@@ -256,6 +259,7 @@ pub fn lift_rotor_band(p: &Project, m: &Model, s: &FeaSettings) -> Option<Excita
         source: ExcitationSource::LiftRotor,
         rpm_lo: rpm_hover * s.low_rpm_frac.clamp(0.1, 1.0),
         rpm_hi: rpm_hover * ratio.sqrt(),
+        rpm_dwell: rpm_hover,
         blades: p.mr_prop_blades.max(1),
         direct: true,
     })
@@ -272,17 +276,22 @@ pub fn cruise_prop_band(m: &Model) -> Option<Excitation> {
         source: ExcitationSource::CruiseProp,
         rpm_lo: lo,
         rpm_hi: hi,
+        rpm_dwell: lo,
         blades: 2,
         direct: false,
     })
 }
 
 /// Resonance check of every mode against every excitation band (1x and blade-pass).
+/// A mode is crossed by harmonic `h` at `rpm = 60 f / h`. High risk: that speed lies within
+/// `margin` of the dwell speed (sustained excitation, same criterion as the arm structure step).
+/// Caution: it lies elsewhere in the operating range widened by `margin` (passed through
+/// during throttle changes).
 pub fn find_resonances(modes: &[ModeResult], exc: &[Excitation], margin: f64) -> Vec<Resonance> {
     let margin = if margin.is_finite() {
         margin.clamp(0.0, 1.0)
     } else {
-        0.15
+        0.20
     };
     let mut out = Vec::new();
     for md in modes {
@@ -298,11 +307,14 @@ pub fn find_resonances(modes: &[ModeResult], exc: &[Excitation], margin: f64) ->
                 if harm == Harmonic::BladePass && e.blades <= 1 {
                     continue;
                 }
-                let lo = h * e.rpm_lo / 60.0;
-                let hi = h * e.rpm_hi / 60.0;
-                let risk = if f >= lo && f <= hi {
+                let rpm = f * 60.0 / h;
+                let dwell = e.rpm_dwell;
+                let risk = if dwell > 0.0
+                    && rpm >= dwell * (1.0 - margin)
+                    && rpm <= dwell * (1.0 + margin)
+                {
                     Some(Risk::High)
-                } else if f >= lo * (1.0 - margin) && f <= hi * (1.0 + margin) {
+                } else if rpm >= e.rpm_lo * (1.0 - margin) && rpm <= e.rpm_hi * (1.0 + margin) {
                     Some(Risk::Caution)
                 } else {
                     None
@@ -315,7 +327,7 @@ pub fn find_resonances(modes: &[ModeResult], exc: &[Excitation], margin: f64) ->
                         source: e.source,
                         harmonic: harm,
                         risk,
-                        rpm_cross: f * 60.0 / h,
+                        rpm_cross: rpm,
                     });
                 }
             }

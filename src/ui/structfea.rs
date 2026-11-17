@@ -299,6 +299,7 @@ fn resonance_summary(ui: &mut Ui, mbr: &MemberResult) {
                     source_name(e.source).to_string(),
                     fmt(e.rpm_lo, 0),
                     fmt(e.rpm_hi, 0),
+                    fmt(e.rpm_dwell, 0),
                     e.blades.to_string(),
                 ],
             ),
@@ -475,8 +476,8 @@ fn campbell_plot(ui: &mut Ui, mbr: &MemberResult, margin: f64, idx: usize) {
                         .color(tk.text_weak)
                         .width(1.0),
                     );
-                    // Risk band along the excitation line: operating range (danger) with the
-                    // margin on either side (warning).
+                    // Risk bands along the excitation line: operating range widened by the
+                    // margin (warning) and dwell RPM +/- margin (danger).
                     let seg = |a: f64, b: f64| {
                         PlotPoints::from(vec![[a, h * a / 60.0], [b, h * b / 60.0]])
                     };
@@ -489,9 +490,12 @@ fn campbell_plot(ui: &mut Ui, mbr: &MemberResult, margin: f64, idx: usize) {
                         .width(5.0),
                     );
                     pu.line(
-                        Line::new(name, seg(e.rpm_lo, e.rpm_hi))
-                            .color(tk.danger)
-                            .width(5.0),
+                        Line::new(
+                            name,
+                            seg(e.rpm_dwell * (1.0 - margin), e.rpm_dwell * (1.0 + margin)),
+                        )
+                        .color(tk.danger)
+                        .width(5.0),
                     );
                 }
             }

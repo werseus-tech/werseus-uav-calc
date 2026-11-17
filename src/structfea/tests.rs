@@ -151,27 +151,33 @@ fn resonance_flag_when_band_crosses_mode() {
         freq_hz: 120.0,
         shape: Vec::new(),
     }];
-    let band = |lo: f64, hi: f64| Excitation {
+    let band = |lo: f64, hi: f64, dwell: f64| Excitation {
         source: ExcitationSource::LiftRotor,
         rpm_lo: lo,
         rpm_hi: hi,
+        rpm_dwell: dwell,
         blades: 2,
         direct: true,
     };
-    // 1x band 100..150 Hz crosses 120 Hz.
-    let r = find_resonances(&modes, &[band(6000.0, 9000.0)], 0.15);
-    assert!(
-        r.iter()
-            .any(|x| x.harmonic == Harmonic::Rev1 && x.risk == Risk::High)
-    );
-    assert!((r[0].rpm_cross - 7200.0).abs() < 1e-9);
-    // Blade-pass band 40..55 Hz x2 = 80..110 Hz: 120 Hz is within the 15 % margin only.
-    let r = find_resonances(&modes, &[band(2400.0, 3300.0)], 0.15);
+    // 1x crossing at 7200 RPM = hover: high risk; blade-pass crossing at 3600 RPM lies in
+    // the operating range widened by the margin (4000 x 0.85 = 3400): caution.
+    let r = find_resonances(&modes, &[band(4000.0, 12000.0, 7200.0)], 0.15);
+    assert_eq!(r.len(), 2);
+    let rev = r.iter().find(|x| x.harmonic == Harmonic::Rev1).unwrap();
+    assert_eq!(rev.risk, Risk::High);
+    assert!((rev.rpm_cross - 7200.0).abs() < 1e-9);
+    let bpf = r
+        .iter()
+        .find(|x| x.harmonic == Harmonic::BladePass)
+        .unwrap();
+    assert_eq!(bpf.risk, Risk::Caution);
+    assert!((bpf.rpm_cross - 3600.0).abs() < 1e-9);
+    // Band crosses the mode but away from hover: caution only.
+    let r = find_resonances(&modes, &[band(6000.0, 12000.0, 10000.0)], 0.15);
     assert_eq!(r.len(), 1);
-    assert_eq!(r[0].harmonic, Harmonic::BladePass);
     assert_eq!(r[0].risk, Risk::Caution);
     // Far away: no flag.
-    assert!(find_resonances(&modes, &[band(600.0, 900.0)], 0.15).is_empty());
+    assert!(find_resonances(&modes, &[band(600.0, 900.0, 800.0)], 0.15).is_empty());
 }
 
 fn eval(p: &Project) -> Model {
@@ -235,9 +241,27 @@ fn consistent_with_existing_arm_calculation() {
             p.name,
             st.f_natural
         );
-        // If the arm step warns about resonance at hover, this analysis flags it too.
-        if st.resonance_rot_warn || st.resonance_bpf_warn {
-            assert!(a.worst_risk().is_some());
+        // High risk on bending mode 1 with the default 20 % margin is the same criterion as
+        // the arm step's hover resonance warning (up to the small frequency difference).
+        let high = |h: Harmonic| {
+            a.resonances.iter().any(|r| {
+                r.mode_kind == ModeKind::Bending
+                    && r.mode_index == 1
+                    && r.harmonic == h
+                    && r.risk == Risk::High
+            })
+        };
+        let near_edge = |f_exc: f64| (((f1 - f_exc) / f_exc).abs() - 0.2).abs() < 0.03;
+        if !near_edge(st.f_rot_hover) {
+            assert_eq!(high(Harmonic::Rev1), st.resonance_rot_warn, "{}", p.name);
+        }
+        if !near_edge(st.f_bpf_hover) && p.mr_prop_blades > 1 {
+            assert_eq!(
+                high(Harmonic::BladePass),
+                st.resonance_bpf_warn,
+                "{}",
+                p.name
+            );
         }
     }
 }
