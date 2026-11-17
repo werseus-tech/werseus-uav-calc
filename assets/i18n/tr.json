@@ -2802,7 +2802,7 @@
   "thermalpower.status.warn": "Sınırda",
   "thermalpower.status.fail": "Çok sıcak",
   "thermalpower.heatmap_note": "Tam gazdaki kararlı sıcaklığa göre renklendirilmiş şematik üstten görünüm. Bir CFD alanı değildir: her parça tek bir yığık düğümdür.",
-  "thermalpower.legend": "ortam → sınır",
+  "thermalpower.legend": "ortamdan sınıra",
   "thermalpower.run.battery": "Batarya kablosu",
   "thermalpower.run.esc": "ESC güç kabloları",
   "thermalpower.run.phase": "Motor faz kabloları",

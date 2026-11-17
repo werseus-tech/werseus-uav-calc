@@ -2802,7 +2802,7 @@
   "thermalpower.status.warn": "Close",
   "thermalpower.status.fail": "Too hot",
   "thermalpower.heatmap_note": "Schematic top view coloured by steady temperature at full throttle. It is not a CFD field: each part is one lumped node.",
-  "thermalpower.legend": "ambient → limit",
+  "thermalpower.legend": "ambient to limit",
   "thermalpower.run.battery": "Battery lead",
   "thermalpower.run.esc": "ESC power leads",
   "thermalpower.run.phase": "Motor phase leads",
