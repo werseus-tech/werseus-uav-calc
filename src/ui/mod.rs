@@ -6,6 +6,7 @@ pub mod ai;
 pub mod components;
 pub mod design_point;
 pub mod endurance;
+pub mod flow_tunnel;
 pub mod formulas;
 pub mod geometry;
 pub mod help;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    FlowTunnel,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::FlowTunnel => t("tab_flowtunnel"),
         }
     }
 
@@ -92,6 +95,7 @@ impl Tab {
                 Tab::Weight,
                 Tab::Stability,
                 Tab::Structure,
+                Tab::FlowTunnel,
                 Tab::Schematic,
             ],
             DroneType::VtolQuadplane => vec![
@@ -101,6 +105,7 @@ impl Tab {
                 Tab::Geometry,
                 Tab::Aero,
                 Tab::WindTunnel,
+                Tab::FlowTunnel,
                 Tab::DesignPoint,
                 Tab::Endurance,
                 Tab::Propulsion,
@@ -116,6 +121,7 @@ impl Tab {
                 Tab::Geometry,
                 Tab::Aero,
                 Tab::WindTunnel,
+                Tab::FlowTunnel,
                 Tab::DesignPoint,
                 Tab::Endurance,
                 Tab::Propulsion,
@@ -162,6 +168,7 @@ pub struct App {
         Option<std::sync::mpsc::Receiver<Option<crate::cad::FreeCadInstallation>>>,
     pub freecad_detecting: bool,
     pub wt_state: windtunnel::WtState,
+    pub flow_state: flow_tunnel::FlowUiState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -256,6 +263,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            flow_state: flow_tunnel::FlowUiState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -326,6 +334,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            flow_state: flow_tunnel::FlowUiState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

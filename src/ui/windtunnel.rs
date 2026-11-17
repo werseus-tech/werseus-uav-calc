@@ -241,6 +241,67 @@ fn poll(st: &mut WtState) {
     }
 }
 
+/// Canlı tünel ekranı için: arka plan sonucunu topla (sonuç varsa `true`).
+pub(crate) fn poll_results(st: &mut WtState) -> bool {
+    poll(st);
+    st.results.is_some()
+}
+
+/// Panel + VLM hesabı sürüyor mu?
+pub(crate) fn is_computing(st: &WtState) -> bool {
+    st.rx.is_some()
+}
+
+/// Son hata iletisi (varsa).
+pub(crate) fn last_error(st: &WtState) -> Option<&str> {
+    st.error.as_deref()
+}
+
+/// Panel + VLM hesabını başlatır (zaten sürüyorsa bir şey yapmaz).
+pub(crate) fn start_compute(st: &mut WtState, p: &Project, m: &Model, ctx: &egui::Context) {
+    if st.rx.is_none() {
+        start(st, p, m, ctx);
+    }
+}
+
+/// Mevcut 2D polardan (panel + sınır tabaka) verilen α için (cl, cd, cm_c4), doğrusal
+/// aradeğerleme; α hesaplanan aralığın dışındaysa `None`.
+pub(crate) fn polar_at(st: &WtState, alpha_deg: f64) -> Option<(f64, f64, f64)> {
+    let pts = &st.results.as_ref()?.polar.points;
+    for w in pts.windows(2) {
+        let (a, b) = (&w[0], &w[1]);
+        let (lo, hi) = (a.alpha_deg.min(b.alpha_deg), a.alpha_deg.max(b.alpha_deg));
+        if alpha_deg >= lo && alpha_deg <= hi {
+            let d = b.alpha_deg - a.alpha_deg;
+            let t = if d.abs() > 1e-12 {
+                (alpha_deg - a.alpha_deg) / d
+            } else {
+                0.0
+            };
+            let l = |x: f64, y: f64| x + (y - x) * t;
+            return Some((l(a.cl, b.cl), l(a.cd, b.cd), l(a.cm_c4, b.cm_c4)));
+        }
+    }
+    None
+}
+
+/// VLM sonuçları: (kanat CLα [/rad], burundan nötr nokta [m]).
+pub(crate) fn vlm_summary(st: &WtState) -> Option<(f64, Option<f64>)> {
+    let r = st.results.as_ref()?;
+    let np = r
+        .wing_tail
+        .as_ref()
+        .unwrap_or(&r.wing)
+        .x_np
+        .map(|x| x + r.x_root_le);
+    Some((r.wing.cl_alpha_per_rad, np))
+}
+
+/// 2D polarda tutunma kaybı (α, cl), varsa.
+pub(crate) fn stall(st: &WtState) -> Option<(f64, f64)> {
+    st.results.as_ref()?.polar.stall
+}
+
 pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut WtState) {
     poll(st);
     let tk = theme::tokens(ui);

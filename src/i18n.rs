@@ -462,6 +462,7 @@ mod tests {
             include_str!("ui/multirotor.rs"),
             include_str!("ui/propulsion.rs"),
             include_str!("ui/schematic.rs"),
+            include_str!("ui/flow_tunnel.rs"),
             include_str!("ui/stability.rs"),
             include_str!("ui/structure.rs"),
             include_str!("ui/step_ui.rs"),
