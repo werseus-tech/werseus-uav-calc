@@ -48,7 +48,8 @@ pub struct WingAero {
     pub ar: f64,
     pub cla: f64,
     pub cl_max: f64,
-    /// Scale applied to the attached-flow lift curve so the blended curve peaks at CLmax.
+    /// Plateau of the attached-flow lift curve relative to CLmax (the stall angle is then
+    /// calibrated so the blended curve peaks exactly at CLmax).
     pub cl_att_scale: f64,
     pub alpha_stall: f64,
     pub cd0: f64,
@@ -624,7 +625,7 @@ fn wing_aero(p: &Project, m: &Model, rho: f64, mass: f64) -> WingAero {
         ar,
         cla,
         cl_max,
-        cl_att_scale: 1.0,
+        cl_att_scale: 1.1,
         alpha_stall: 1.25 * cl_max / cla,
         cd0,
         k,
@@ -647,7 +648,7 @@ fn wing_aero(p: &Project, m: &Model, rho: f64, mass: f64) -> WingAero {
         cl_dr,
         mixing,
     };
-    w.cl_att_scale = 1.0 / super::aero::peak_cl_ratio(&w);
+    w.alpha_stall = super::aero::calibrate_stall_angle(&w);
     let alpha_w_trim = super::aero::alpha_for_cl(&w, cl_cr.min(0.9 * cl_max));
     w.alpha_w_trim = alpha_w_trim;
     w.i_w = alpha_w_trim - 0.5_f64.to_radians();

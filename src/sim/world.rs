@@ -14,7 +14,7 @@ pub const DT: f64 = 1.0 / 400.0;
 const MAX_SPEED: f64 = 120.0;
 const MAX_RATE: f64 = 40.0;
 const SERVO_RATE: f64 = 6.0; // full travel (-1..1) in ~0.33 s
-const FAILSAFE_DELAY: f64 = 0.3;
+const FAILSAFE_DELAY: f64 = 0.2;
 const GEAR_DEFLECTION: f64 = 0.01;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -592,7 +592,7 @@ impl Sim {
 
     fn deriv(&self, s: &RigidState, f: &Forces) -> Deriv {
         let i = &self.inertia;
-        let gyro = s.w.cross(i.mul(s.w));
+        let gyro = s.w.cross(i.apply(s.w));
         Deriv {
             dpos: s.vel,
             dvel: f.f_world / self.mass,
@@ -757,7 +757,8 @@ impl Sim {
                     }
                 }
                 ContactKind::Structure => {
-                    let hard = v_pt.z > 1.5 || V3::new(v_pt.x, v_pt.y, 0.0).norm() > 4.0;
+                    let hard = v_pt.z > 0.8 * self.params.crash_sink
+                        || V3::new(v_pt.x, v_pt.y, 0.0).norm() > 6.0;
                     let spinning_rotor = self
                         .params
                         .rotors
@@ -866,7 +867,7 @@ impl Sim {
                 f.m_body.y / (sim.mass * G * wa.mac),
             ]
         };
-        let mut x = [wa.alpha_w_trim - wa.i_w, 0.0, 0.6];
+        let mut x = [wa.alpha_w_trim - wa.i_w, 0.0, 0.85];
         let mut ok = false;
         for _ in 0..40 {
             let r = residual(self, x);
@@ -884,7 +885,11 @@ impl Sim {
                     j[row][c] = (rp[row] - r[row]) / h;
                 }
             }
-            let Some(dx) = solve3(j, r) else { break };
+            let Some(dx) = solve3(j, r) else {
+                // Flat Jacobian (e.g. prop beyond its zero-thrust speed): more throttle.
+                x[2] = (x[2] + 0.1).min(1.0);
+                continue;
+            };
             for c in 0..3 {
                 x[c] -= dx[c].clamp(-0.2, 0.2);
             }

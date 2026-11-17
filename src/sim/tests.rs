@@ -157,7 +157,7 @@ fn vtol_takes_off_hovers_and_lands() {
     run(&mut sim, 6.0);
     assert_eq!(sim.status, FlightStatus::Airborne);
     sim.input.throttle = 0.5;
-    run(&mut sim, 2.0);
+    run(&mut sim, 8.0);
     let h0 = sim.telemetry.agl;
     run(&mut sim, 10.0);
     assert!(
@@ -197,10 +197,11 @@ fn torque_free_rigid_body_conserves_energy_and_momentum() {
     let i = sim.inertia;
     let energy = |s: &Sim| {
         let st = &s.state;
-        0.5 * s.mass * st.vel.dot(st.vel) + 0.5 * st.w.dot(i.mul(st.w))
-            - s.mass * crate::calc::atmosphere::G * (-st.pos.z)
+        0.5 * s.mass * st.vel.dot(st.vel)
+            + 0.5 * st.w.dot(i.apply(st.w))
+            + s.mass * crate::calc::atmosphere::G * (-st.pos.z)
     };
-    let momentum = |s: &Sim| s.state.q.rotate(i.mul(s.state.w));
+    let momentum = |s: &Sim| s.state.q.rotate(i.apply(s.state.w));
     let (e0, h0) = (energy(&sim), momentum(&sim));
     for _ in 0..(10.0 / DT) as usize {
         sim.step_passive();

@@ -209,7 +209,7 @@ impl Autopilot {
                 }
             }
             // Heading hold when the yaw stick is centred.
-            if yaw_rate == 0.0 && !c.on_ground {
+            if yaw_rate == 0.0 && !c.on_ground && !c.failsafe {
                 let h = *self.heading_hold.get_or_insert(psi);
                 yaw_rate = (1.5 * wrap_pi(h - psi)).clamp(-1.0, 1.0);
             } else {
@@ -239,7 +239,7 @@ impl Autopilot {
             self.rate_i = (self.rate_i + err * dt).clamp_norm(1.0);
         }
         let ang_acc = err.mul_elem(kp) + self.rate_i.mul_elem(ki);
-        let torque = i.diag().mul_elem(ang_acc) + w.cross(i.mul(w));
+        let torque = i.diag().mul_elem(ang_acc) + w.cross(i.apply(w));
 
         // --- Collective
         let lift: Vec<&Rotor> = p.rotors.iter().filter(|r| r.lift).collect();
@@ -441,8 +441,10 @@ fn invert(a: &mut [[f64; 4]; 4], dim: usize) -> Option<[[f64; 4]; 4]> {
     Some(inv)
 }
 
-/// Thrust per rotor [N] for a collective thrust and body torque, over the healthy lift
-/// rotors. Yaw, then roll/pitch are scaled back when motors saturate.
+/// Thrust per rotor [N] for a collective thrust and body torque over the healthy lift
+/// rotors (active-set least squares: saturated rotors are fixed at their limit and the
+/// rest re-solved). Yaw is dropped when fewer than four rotors remain free, then roll /
+/// pitch keep priority over collective.
 pub fn allocate(
     p: &VehicleParams,
     failed: &[bool],
@@ -450,12 +452,47 @@ pub fn allocate(
     collective: f64,
     torque: V3,
 ) -> Vec<f64> {
+    // Yaw authority of rotor drag torque is small: never let it eat roll/pitch authority.
+    let yaw_cap: f64 = 0.1
+        * p.rotors
+            .iter()
+            .filter(|r| r.lift)
+            .map(|r| r.t_max * k_batt * r.k_q)
+            .sum::<f64>();
+    let torque = V3::new(torque.x, torque.y, torque.z.clamp(-yaw_cap, yaw_cap));
+    // Attitude has priority: lower the collective until the torque is achieved.
+    let mut last = Vec::new();
+    for scale in [1.0, 0.85, 0.7, 0.55, 0.4, 0.25] {
+        let t = allocate_once(p, failed, k_batt, collective * scale, torque);
+        let mut achieved = V3::ZERO;
+        for (k, r) in p.rotors.iter().enumerate() {
+            if r.lift {
+                achieved += V3::new(-r.pos.y, r.pos.x, r.spin * r.k_q) * t[k];
+            }
+        }
+        let err = V3::new(achieved.x - torque.x, achieved.y - torque.y, 0.0).norm();
+        let ok = err <= 0.1 * V3::new(torque.x, torque.y, 0.0).norm() + 1e-3;
+        last = t;
+        if ok {
+            break;
+        }
+    }
+    last
+}
+
+fn allocate_once(
+    p: &VehicleParams,
+    failed: &[bool],
+    k_batt: f64,
+    collective: f64,
+    torque: V3,
+) -> Vec<f64> {
     let n = p.rotors.len();
-    let idx: Vec<usize> = (0..n)
+    let mut out = vec![0.0; n];
+    let healthy: Vec<usize> = (0..n)
         .filter(|&k| p.rotors[k].lift && !failed.get(k).copied().unwrap_or(false))
         .collect();
-    let mut out = vec![0.0; n];
-    if idx.is_empty() {
+    if healthy.is_empty() {
         return out;
     }
     // Effectiveness rows: thrust, roll (-y T), pitch (x T), yaw (spin k_q T).
@@ -463,10 +500,12 @@ pub fn allocate(
         let r = &p.rotors[k];
         [1.0, -r.pos.y, r.pos.x, r.spin * r.k_q]
     };
-    let solve = |dim: usize| -> Option<Vec<[f64; 4]>> {
-        // B (dim x m), pinv = B^T (B B^T)^-1 -> per rotor a row of `dim` gains.
+    let tmax = |k: usize| p.rotors[k].t_max * k_batt;
+    let desired = [collective, torque.x, torque.y, torque.z];
+    // Minimum-norm solution over `free` for `target` using the first `dim` rows.
+    let solve = |free: &[usize], target: [f64; 4], dim: usize| -> Option<Vec<f64>> {
         let mut bbt = [[0.0; 4]; 4];
-        for &k in &idx {
+        for &k in free {
             let b = row(k);
             for r in 0..dim {
                 for c2 in 0..dim {
@@ -475,70 +514,60 @@ pub fn allocate(
             }
         }
         let inv = invert(&mut bbt, dim)?;
+        let mut y = [0.0; 4];
+        for (r, yr) in y.iter_mut().enumerate().take(dim) {
+            *yr = (0..dim).map(|c2| inv[r][c2] * target[c2]).sum();
+        }
         Some(
-            idx.iter()
+            free.iter()
                 .map(|&k| {
                     let b = row(k);
-                    let mut g = [0.0; 4];
-                    for (c2, gc) in g.iter_mut().enumerate().take(dim) {
-                        *gc = (0..dim).map(|r| b[r] * inv[r][c2]).sum();
-                    }
-                    g
+                    (0..dim).map(|r| b[r] * y[r]).sum()
                 })
                 .collect(),
         )
     };
-    let (gains, dim) = match solve(4) {
-        Some(g) => (g, 4),
-        None => match solve(3) {
-            Some(g) => (g, 3),
-            None => {
-                let share = collective / idx.len() as f64;
-                for &k in &idx {
-                    out[k] = share;
-                }
-                return out;
-            }
-        },
-    };
-    let tmax: Vec<f64> = idx.iter().map(|&k| p.rotors[k].t_max * k_batt).collect();
-    let eval = |t: f64, l: f64, m: f64, nz: f64| -> Vec<f64> {
-        let d = [t, l, m, nz];
-        gains
+    let mut fixed: Vec<(usize, f64)> = Vec::new();
+    for _ in 0..8 {
+        let free: Vec<usize> = healthy
             .iter()
-            .map(|g| (0..dim).map(|r| g[r] * d[r]).sum())
-            .collect()
-    };
-    let mut best: Option<Vec<f64>> = None;
-    'outer: for s_yaw in [1.0, 0.5, 0.0] {
-        for s_att in [1.0, 0.8, 0.6, 0.4, 0.2, 0.0] {
-            let u = eval(
-                collective,
-                torque.x * s_att,
-                torque.y * s_att,
-                torque.z * s_yaw * s_att,
-            );
-            // Collective direction: uniform shift weights from the thrust column.
-            let col = eval(1.0, 0.0, 0.0, 0.0);
-            let mut lo_shift = f64::MIN;
-            let mut hi_shift = f64::MAX;
-            for (j, &uj) in u.iter().enumerate() {
-                let cj = col[j].max(1e-6);
-                // need 0 <= uj + s*cj <= tmax
-                lo_shift = lo_shift.max((0.0 - uj) / cj);
-                hi_shift = hi_shift.min((tmax[j] - uj) / cj);
-            }
-            if lo_shift <= hi_shift {
-                let s = 0.0_f64.clamp(lo_shift, hi_shift);
-                let v: Vec<f64> = u.iter().zip(&col).map(|(uj, cj)| uj + s * cj).collect();
-                best = Some(v);
-                break 'outer;
+            .copied()
+            .filter(|k| !fixed.iter().any(|(f, _)| f == k))
+            .collect();
+        if free.is_empty() {
+            break;
+        }
+        let mut target = desired;
+        for &(k, t) in &fixed {
+            let b = row(k);
+            for r in 0..4 {
+                target[r] -= b[r] * t;
             }
         }
+        let dims: &[usize] = if free.len() >= 4 { &[4, 3, 1] } else { &[3, 1] };
+        let Some(sol) = dims.iter().find_map(|&d| solve(&free, target, d)) else {
+            break;
+        };
+        let mut violated = false;
+        for (j, &k) in free.iter().enumerate() {
+            out[k] = sol[j];
+            if sol[j] < 0.0 {
+                fixed.push((k, 0.0));
+                violated = true;
+            } else if sol[j] > tmax(k) {
+                fixed.push((k, tmax(k)));
+                violated = true;
+            }
+        }
+        for &(k, t) in &fixed {
+            out[k] = t;
+        }
+        if !violated {
+            break;
+        }
     }
-    let v = best.unwrap_or_else(|| eval(collective, 0.0, 0.0, 0.0));
-    for (j, &k) in idx.iter().enumerate() {
-        out[k] = v[j].clamp(0.0, tmax[j]);
+    for &k in &healthy {
+        out[k] = out[k].clamp(0.0, tmax(k));
     }
     out
 }

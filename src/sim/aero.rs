@@ -93,25 +93,31 @@ pub fn cl_cd(w: &WingAero, alpha_w: f64) -> (f64, f64, f64) {
     )
 }
 
-/// Peak CL of the blended curve divided by CLmax (used to calibrate `cl_att_scale`).
-pub fn peak_cl_ratio(w: &WingAero) -> f64 {
-    let mut w = w.clone();
-    let mut scale = 1.0;
-    for _ in 0..8 {
-        w.cl_att_scale = scale;
-        let peak = (0..=400)
-            .map(|i| cl_cd(&w, i as f64 * 0.0015).0)
-            .fold(f64::MIN, f64::max);
-        let ratio = peak / w.cl_max;
-        if !(ratio.is_finite() && ratio > 0.1) {
-            return 1.0;
-        }
-        if (ratio - 1.0).abs() < 1e-3 {
-            break;
-        }
-        scale /= ratio;
+/// Stall angle (sigmoid centre) for which the blended lift curve peaks exactly at CLmax.
+pub fn calibrate_stall_angle(w: &WingAero) -> f64 {
+    let a_lin = w.cl_max / w.cla.max(0.1);
+    let peak_for = |alpha_stall: f64| {
+        let mut w = w.clone();
+        w.alpha_stall = alpha_stall;
+        (0..=800)
+            .map(|i| cl_cd(&w, i as f64 * 0.001).0)
+            .fold(f64::MIN, f64::max)
+            / w.cl_max
+    };
+    // The peak grows monotonically with the stall angle: bisection.
+    let (mut lo, mut hi) = (0.8 * a_lin, 2.5 * a_lin);
+    if !(peak_for(lo) < 1.0 && peak_for(hi) > 1.0) {
+        return 1.25 * a_lin;
     }
-    1.0 / scale
+    for _ in 0..50 {
+        let mid = 0.5 * (lo + hi);
+        if peak_for(mid) < 1.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 /// Wing angle of attack for a given CL on the attached branch (bisection).

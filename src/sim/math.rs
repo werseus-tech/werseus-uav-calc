@@ -145,7 +145,7 @@ impl Quat {
         (phi, theta, psi)
     }
 
-    pub fn mul(self, o: Quat) -> Quat {
+    pub fn hamilton(self, o: Quat) -> Quat {
         Quat {
             w: self.w * o.w - self.x * o.x - self.y * o.y - self.z * o.z,
             x: self.w * o.x + self.x * o.w + self.y * o.z - self.z * o.y,
@@ -201,7 +201,7 @@ impl Quat {
             y: w.y,
             z: w.z,
         };
-        let d = self.mul(o);
+        let d = self.hamilton(o);
         Quat {
             w: 0.5 * d.w,
             x: 0.5 * d.x,
@@ -232,7 +232,7 @@ pub struct Inertia {
 
 impl Inertia {
     /// I * w
-    pub fn mul(&self, w: V3) -> V3 {
+    pub fn apply(&self, w: V3) -> V3 {
         V3::new(
             self.ixx * w.x - self.ixz * w.z,
             self.iyy * w.y,
@@ -340,7 +340,7 @@ mod tests {
             ixz: 0.02,
         };
         let w = V3::new(0.7, -1.2, 2.0);
-        let back = i.solve(i.mul(w));
+        let back = i.solve(i.apply(w));
         assert!((back - w).norm() < 1e-12);
     }
 
