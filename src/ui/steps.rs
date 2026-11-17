@@ -389,6 +389,9 @@ pub fn results(
         }
         Screen::Outputs | Screen::Schematic | Screen::WindTunnel => {}
     }
+    if matches!(screen, Screen::Stability | Screen::MrCg) {
+        super::massprops::panel(ui, p, m);
+    }
     let _ = lib;
 }
 
