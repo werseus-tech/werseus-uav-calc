@@ -1560,9 +1560,9 @@ fn expected_output_files(out_dir: &Path, stem: &str) -> Vec<std::path::PathBuf> 
         .collect()
 }
 
-type FileSnapshot = Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>;
+pub(crate) type FileSnapshot = Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>;
 
-fn snapshot_files(paths: Vec<std::path::PathBuf>) -> FileSnapshot {
+pub(crate) fn snapshot_files(paths: Vec<std::path::PathBuf>) -> FileSnapshot {
     paths
         .into_iter()
         .map(|p| {
@@ -1573,7 +1573,7 @@ fn snapshot_files(paths: Vec<std::path::PathBuf>) -> FileSnapshot {
 }
 
 /// Anlık görüntüden sonra oluşan ya da değişen dosyaları siler (yarım çıktı); silinen sayısı.
-fn remove_new_or_changed(snap: &FileSnapshot) -> usize {
+pub(crate) fn remove_new_or_changed(snap: &FileSnapshot) -> usize {
     let mut n = 0;
     for (p, before) in snap {
         let now = std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -1597,7 +1597,7 @@ fn step_limit(limit: Duration, started: Instant, total: Duration) -> Option<(Dur
     })
 }
 
-fn minutes_text(d: Duration) -> String {
+pub(crate) fn minutes_text(d: Duration) -> String {
     let secs = d.as_secs();
     if secs >= 60 && secs.is_multiple_of(60) {
         (secs / 60).to_string()

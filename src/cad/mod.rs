@@ -2,6 +2,8 @@
 //! CAD entegrasyonu, profil uretimi ve FreeCAD 1.1 betik olusturucu modulleri.
 
 pub mod airfoil;
+pub mod build123d;
+mod build123d_py;
 pub mod freecad;
 pub mod geom;
 pub mod layout;
