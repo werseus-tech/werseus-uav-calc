@@ -15,6 +15,8 @@ pub mod teach;
 pub mod ui;
 pub mod windtunnel;
 
+pub mod acoustics;
+
 /// Gömülü uygulama ikonunu yükler.
 pub fn load_icon() -> egui::IconData {
     let icon_bytes = include_bytes!("../assets/icon/app_icon.png");
