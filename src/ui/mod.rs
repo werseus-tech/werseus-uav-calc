@@ -26,6 +26,7 @@ pub mod structure;
 pub mod summary;
 pub mod teach;
 pub mod theme;
+pub mod thermalpower;
 pub mod type_cards;
 pub mod viewport3d;
 pub mod weight;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    ThermalPower,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::ThermalPower => t("thermalpower.tab"),
         }
     }
 
@@ -93,6 +96,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::ThermalPower,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +112,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::ThermalPower,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +127,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::ThermalPower,
             ],
         }
     }
@@ -162,6 +168,7 @@ pub struct App {
         Option<std::sync::mpsc::Receiver<Option<crate::cad::FreeCadInstallation>>>,
     pub freecad_detecting: bool,
     pub wt_state: windtunnel::WtState,
+    pub tp_state: thermalpower::TpState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -256,6 +263,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            tp_state: thermalpower::TpState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -326,6 +334,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            tp_state: thermalpower::TpState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

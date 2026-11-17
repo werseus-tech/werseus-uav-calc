@@ -12,6 +12,7 @@ pub mod project;
 pub mod report;
 pub mod support;
 pub mod teach;
+pub mod thermalpower;
 pub mod ui;
 pub mod windtunnel;
 
