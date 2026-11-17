@@ -22,6 +22,7 @@ pub mod simple_steps;
 pub mod stability;
 pub mod step_ui;
 pub mod steps;
+pub mod structfea;
 pub mod structure;
 pub mod summary;
 pub mod teach;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    StructFea,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::StructFea => t("structfea.tab"),
         }
     }
 
@@ -93,6 +96,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::StructFea,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +112,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::StructFea,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +127,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::StructFea,
             ],
         }
     }
