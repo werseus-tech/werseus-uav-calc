@@ -33,6 +33,8 @@ pub mod widgets;
 pub mod windtunnel;
 pub mod wizard;
 
+pub mod acoustics;
+
 use crate::calc::{self, Library, Model};
 use crate::i18n::{t, tf};
 use crate::project::{DroneType, Project};
@@ -61,6 +63,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    Acoustics,
 }
 
 impl Tab {
@@ -79,6 +82,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::Acoustics => t("acoustics.tab"),
         }
     }
 
@@ -93,6 +97,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::Acoustics,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +113,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::Acoustics,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +128,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::Acoustics,
             ],
         }
     }
@@ -162,6 +169,7 @@ pub struct App {
         Option<std::sync::mpsc::Receiver<Option<crate::cad::FreeCadInstallation>>>,
     pub freecad_detecting: bool,
     pub wt_state: windtunnel::WtState,
+    pub ac_state: acoustics::AcState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -256,6 +264,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            ac_state: acoustics::AcState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -326,6 +335,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            ac_state: acoustics::AcState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
