@@ -10,6 +10,7 @@ pub mod geom3d;
 pub mod i18n;
 pub mod project;
 pub mod report;
+pub mod structfea;
 pub mod support;
 pub mod teach;
 pub mod ui;
