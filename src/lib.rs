@@ -3,6 +3,7 @@
 pub mod ai;
 pub mod cad;
 pub mod calc;
+pub mod computebudget;
 pub mod db;
 pub mod export;
 pub mod footprint;
