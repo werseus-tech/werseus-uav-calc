@@ -836,6 +836,17 @@ impl App {
             Some(super::steps::CenterSlot::WindTunnel) => {
                 super::windtunnel::show(ui, &self.project, model, &mut self.wt_state);
             }
+            Some(super::steps::CenterSlot::FlowTunnel) => {
+                let opts = self.shell.viewport.opts;
+                super::flow_tunnel::show(
+                    ui,
+                    &self.project,
+                    model,
+                    &opts,
+                    &mut self.flow_state,
+                    &mut self.wt_state,
+                );
+            }
             None => {}
         }
     }
