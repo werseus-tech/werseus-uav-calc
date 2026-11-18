@@ -59,6 +59,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("wizard.rs", include_str!("wizard.rs")),
         ("widgets.rs", include_str!("widgets.rs")),
         ("mod.rs", include_str!("mod.rs")),
+        ("topology.rs", include_str!("topology.rs")),
     ];
     const FORBIDDEN: &[&str] = &[
         "Color32::from_rgb(",
