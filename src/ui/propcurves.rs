@@ -121,12 +121,20 @@ fn plots(ui: &mut Ui, u: &PropUnit, c: &Curve) {
             ui,
             ("pc_current", t("propcurves.plot.current"), "A"),
             c,
-            |p| p.op.i_bat_a,
+            |p| p.op.i_motor_a,
             &[
                 (t("propcurves.limit.motor"), u.motor.i_max_a),
-                (t("propcurves.limit.battery"), i_pack_per_motor),
+                (t("propcurves.limit.esc"), u.esc.i_max_a),
             ],
-            |p| p.flags.motor_current || p.flags.esc_current || p.flags.battery,
+            |p| p.flags.motor_current || p.flags.esc_current,
+        );
+        plot(
+            ui,
+            ("pc_current_bat", t("propcurves.plot.current_bat"), "A"),
+            c,
+            |p| p.op.i_bat_a,
+            &[(t("propcurves.limit.battery"), i_pack_per_motor)],
+            |p| p.flags.battery,
         );
         plot(
             ui,
@@ -163,14 +171,14 @@ fn override_row(
     effective: f64,
     ov: &mut Option<f64>,
     unit: &str,
-    decimals: usize,
-    speed: f64,
+    (decimals, speed, min): (usize, f64, f64),
 ) {
     ui.label(label);
     let mut v = ov.unwrap_or(effective);
     let r = ui.add(
         egui::DragValue::new(&mut v)
             .speed(speed)
+            .range(min..=f64::MAX)
             .max_decimals(decimals)
             .suffix(format!(" {unit}")),
     );
@@ -190,15 +198,14 @@ fn motor_panel(ui: &mut Ui, u: &PropUnit, ov: &mut Overrides) {
             .color(theme::tokens(ui).text_weak),
     );
     egui::Grid::new("pc_motor").num_columns(3).show(ui, |ui| {
-        override_row(ui, "KV", u.motor.kv, &mut ov.kv, "rpm/V", 0, 1.0);
+        override_row(ui, "KV", u.motor.kv, &mut ov.kv, "rpm/V", (0, 1.0, 1.5));
         override_row(
             ui,
             t("propcurves.motor.r"),
             u.motor.r_ohm * 1000.0,
             &mut ov.r_mohm,
             "mΩ",
-            1,
-            0.5,
+            (1, 0.5, 0.001),
         );
         override_row(
             ui,
@@ -206,8 +213,7 @@ fn motor_panel(ui: &mut Ui, u: &PropUnit, ov: &mut Overrides) {
             u.motor.i0_a,
             &mut ov.i0_a,
             "A",
-            2,
-            0.05,
+            (2, 0.05, 0.0),
         );
         override_row(
             ui,
@@ -215,8 +221,7 @@ fn motor_panel(ui: &mut Ui, u: &PropUnit, ov: &mut Overrides) {
             u.motor.i_max_a,
             &mut ov.motor_i_max_a,
             "A",
-            1,
-            0.2,
+            (1, 0.2, 0.01),
         );
         override_row(
             ui,
@@ -224,8 +229,7 @@ fn motor_panel(ui: &mut Ui, u: &PropUnit, ov: &mut Overrides) {
             u.esc.i_max_a,
             &mut ov.esc_i_max_a,
             "A",
-            1,
-            0.2,
+            (1, 0.2, 0.01),
         );
         override_row(
             ui,
@@ -233,8 +237,7 @@ fn motor_panel(ui: &mut Ui, u: &PropUnit, ov: &mut Overrides) {
             u.motor.t_limit_c,
             &mut ov.t_limit_c,
             "°C",
-            0,
-            1.0,
+            (0, 1.0, 30.5),
         );
     });
 }
@@ -470,13 +473,10 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
         if ui.button(t("propcurves.airspeed_static")).clicked() {
             st.airspeed = 0.0;
         }
-        let v_cr = if st.group == Group::Lift {
-            p.mr_v_cruise
-        } else {
-            p.v_cr
-        };
-        if ui.button(t("propcurves.airspeed_cruise")).clicked() {
-            st.airspeed = v_cr;
+        // The sweep uses the airspeed along the propeller axis. That is the cruise speed for a
+        // forward propeller, but not for lift rotors, whose axis is roughly vertical.
+        if st.group == Group::Forward && ui.button(t("propcurves.airspeed_cruise")).clicked() {
+            st.airspeed = p.v_cr;
         }
     });
 

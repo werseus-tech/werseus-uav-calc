@@ -243,7 +243,12 @@ impl PropUnit {
             let r_hot = self.motor.r_ohm * (1.0 + COPPER_ALPHA * (temp - 20.0)).max(0.5);
             let n = self.solve_rps(d * v_bus, r_hot, v);
             let q = self.prop.cp(v, n) * self.rho * n * n * dia.powi(5) / (2.0 * PI);
-            let i_m = self.motor.i0_a + q / kt;
+            // A stalled motor cannot draw more than the voltage over the winding allows.
+            let i_m = if n <= 0.0 {
+                (d * v_bus / r_hot).min(self.motor.i0_a)
+            } else {
+                self.motor.i0_a + q / kt
+            };
             let thrust = self.prop.ct(v, n) * self.rho * n * n * dia.powi(4);
             let i_bat = d * i_m / eta;
             let emf = 60.0 * n / self.motor.kv.max(1.0);

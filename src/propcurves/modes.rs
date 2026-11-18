@@ -18,9 +18,10 @@
 //! * **Maximum speed**: fixed wing: highest speed where full-throttle thrust still equals drag.
 //!   Multirotor: the speed where the tilted thrust vector balances weight and parasite drag at
 //!   full throttle, limited to 90 % of the propeller's zero-thrust (pitch) speed; attitude
-//!   limits and rotor inflow effects are ignored.
+//!   limits are ignored; the rotor inflow at the tilted attitude is included.
 //! * Hotel load (avionics and payload power) is added to every mode. Energy is the usable pack
-//!   energy (capacity x depth of discharge); pack sag lowers the bus voltage and is included.
+//!   energy (capacity x depth of discharge); the time is computed from the power drawn from the cells (open-circuit voltage times
+//!   battery current), so the pack resistance loss is included.
 
 use super::model::PropUnit;
 use super::setup::Setup;
@@ -125,42 +126,86 @@ fn solved(
     r.airspeed_ms = Some(v);
     r.current_a = Some(n * op.i_bat_a);
     r.power_w = Some(power);
-    r.time_min = minutes(e_wh, power);
+    // The usable energy is open-circuit (charge x nominal voltage), so the time follows from
+    // the power drawn from the cells: open-circuit voltage times the total battery current,
+    // which includes the heat lost in the pack resistance. The hotel load is a constant power
+    // on the loaded bus, so it draws `hotel_w / v_bus` of current.
+    let i_total = n * op.i_bat_a + hotel_w / op.v_bus.max(0.1);
+    r.time_min = minutes(e_wh, unit.pack.v_oc * i_total);
     r
 }
 
 /// Highest airspeed at or above `v_start` where `throttle` still gives thrust >= drag.
-/// `None` if the thrust is already short of the drag at `v_start`.
-fn level_speed(
+/// `None` if the thrust is short of the drag everywhere on the scanned range. The drag of a
+/// fixed wing is U-shaped (induced drag near the stall speed), so the whole grid is scanned
+/// rather than stopping at the first shortfall.
+pub(super) fn level_speed(
     unit: &PropUnit,
     throttle: f64,
     drag: &dyn Fn(f64) -> f64,
     v_start: f64,
 ) -> Option<f64> {
     let excess = |v: f64| unit.operating_point(throttle, v).thrust_n - drag(v);
-    let v0 = v_start.max(1.0);
-    let e0 = excess(v0);
-    if !e0.is_finite() || e0 < 0.0 {
-        return None;
-    }
-    let (mut lo, mut hi) = (v0, v0);
-    let mut v = v0;
-    while v < 250.0 {
-        v += 1.0;
+    let ok = |v: f64| {
         let e = excess(v);
-        if e.is_finite() && e >= 0.0 {
-            lo = v;
-        } else {
-            hi = v;
-            break;
+        e.is_finite() && e >= 0.0
+    };
+    let v0 = v_start.max(1.0);
+    let mut best: Option<f64> = None;
+    let mut v = v0;
+    while v <= 250.0 {
+        if ok(v) {
+            best = Some(v);
         }
+        v += 1.0;
     }
-    if hi <= lo {
-        return Some(lo);
+    let lo0 = best?;
+    let (mut lo, mut hi) = (lo0, lo0 + 1.0);
+    if lo0 >= 250.0 || ok(hi) {
+        return Some(lo0);
     }
     for _ in 0..25 {
         let mid = 0.5 * (lo + hi);
-        if excess(mid) >= 0.0 {
+        if ok(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    Some(lo)
+}
+
+/// Multirotor maximum speed [m/s] with the rotor inflow at the tilted attitude. At speed `v`
+/// the required thrust is `sqrt(W^2 + D^2)` (`D` the parasite drag) with the rotor axis tilted
+/// by `sin(alpha) = D / T`; the axial inflow `v sin(alpha)` unloads the rotors. Returns the
+/// highest speed where full-throttle thrust still meets the requirement, limited to
+/// [`PITCH_SPEED_FRACTION`] of the propeller pitch speed at that point.
+pub(super) fn multirotor_v_max(lift: &PropUnit, weight_n: f64, f_area: f64) -> Option<f64> {
+    let n = lift.n_motors as f64;
+    let need = |v: f64| {
+        let d = 0.5 * lift.rho * f_area * v * v;
+        let t = (weight_n * weight_n + d * d).sqrt();
+        (t, d / t)
+    };
+    let op_at = |v: f64| {
+        let (t, sin_a) = need(v);
+        (t, lift.operating_point(1.0, v * sin_a))
+    };
+    let feasible = |v: f64| {
+        let (t, op) = op_at(v);
+        n * op.thrust_n >= t && PITCH_SPEED_FRACTION * op.rpm / 60.0 * lift.prop.pitch_m >= v
+    };
+    if !feasible(0.0) {
+        return None;
+    }
+    let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+    while hi < 250.0 && feasible(hi) {
+        lo = hi;
+        hi *= 2.0;
+    }
+    for _ in 0..40 {
+        let mid = 0.5 * (lo + hi);
+        if feasible(mid) {
             lo = mid;
         } else {
             hi = mid;
@@ -192,9 +237,10 @@ pub fn flight_summary(p: &Project, m: &Model, setup: &Setup) -> FlightSummary {
             None => ModeResult::blank(ModeKind::Hover, ModeStatus::Unreachable),
         };
         if p.drone_type == DroneType::Multirotor {
-            let d_a = (AGGRESSIVE_HOVER_FACTOR * d_hover.unwrap_or(1.0))
-                .clamp(AGGRESSIVE_THROTTLE_MR_MIN, 1.0);
-            aggr = solved(ModeKind::Aggressive, lift, d_a, 0.0, hotel, e_mr);
+            if let Some(dh) = d_hover {
+                let d_a = (AGGRESSIVE_HOVER_FACTOR * dh).clamp(AGGRESSIVE_THROTTLE_MR_MIN, 1.0);
+                aggr = solved(ModeKind::Aggressive, lift, d_a, 0.0, hotel, e_mr);
+            }
             // Cruise: existing forward-flight power, throttle by inverting the model.
             let p_motors = m.mr.p_total_cruise - hotel;
             cruise = match lift.throttle_for_power(p_motors / n, 0.0) {
@@ -213,19 +259,12 @@ pub fn flight_summary(p: &Project, m: &Model, setup: &Setup) -> FlightSummary {
                 _ => ModeResult::blank(ModeKind::Cruise, ModeStatus::Unreachable),
             };
             // Maximum speed: tilted full-throttle thrust vs weight and parasite drag.
-            let full = lift.operating_point(1.0, 0.0);
-            let t_total = n * full.thrust_n;
-            if t_total > m.mr.w {
-                let f_area = if p.mr_flat_plate_area > 0.0 {
-                    p.mr_flat_plate_area
-                } else {
-                    0.01
-                };
-                let d_max = (t_total * t_total - m.mr.w * m.mr.w).sqrt();
-                let v_drag = (2.0 * d_max / (lift.rho * f_area)).sqrt();
-                let v_pitch = PITCH_SPEED_FRACTION * full.rpm / 60.0 * lift.prop.pitch_m;
-                v_max = Some(v_drag.min(v_pitch));
-            }
+            let f_area = if p.mr_flat_plate_area > 0.0 {
+                p.mr_flat_plate_area
+            } else {
+                0.01
+            };
+            v_max = multirotor_v_max(lift, m.mr.w, f_area);
         }
     }
 

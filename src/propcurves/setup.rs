@@ -153,7 +153,7 @@ fn derive_motor(spec: &UnitSpec, prop: &Propeller, hot_factor: f64) -> Motor {
     let emf = (v_m - i_m * r).max(0.1);
     let i0 = (1.0 - COPPER_LOSS_SHARE) * loss / emf;
     let kv = 60.0 * n_max / emf;
-    let i_rating = spec.i_rating.unwrap_or(i_m).max(i_m * 0.5);
+    let i_rating = spec.i_rating.unwrap_or(i_m).max(i_m);
     Motor {
         kv,
         r_ohm: r / hot_factor.max(1.0),

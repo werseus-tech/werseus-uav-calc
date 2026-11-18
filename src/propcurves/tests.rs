@@ -313,6 +313,13 @@ fn flight_modes_are_finite_and_plausible() {
         if let Some(v) = f.v_max_ms {
             assert!(v.is_finite() && v > 0.0, "{name}: v_max {v}");
         }
+        let (h, a) = (&f.modes[0], &f.modes[1]);
+        if p.drone_type == DroneType::Multirotor
+            && h.status == ModeStatus::Ok
+            && a.status == ModeStatus::Ok
+        {
+            assert!(a.power_w.unwrap() > h.power_w.unwrap(), "{name}");
+        }
         // Aggressive flight burns more power than cruise or hover where both exist.
         let (a, c) = (&f.modes[1], &f.modes[2]);
         if a.status == ModeStatus::Ok && c.status == ModeStatus::Ok && p.drone_type.is_fixed_wing()
@@ -336,4 +343,99 @@ fn fixed_wing_cruise_time_is_in_the_range_of_the_existing_estimate() {
     let r = c.reference_time_min.unwrap();
     // Existing estimate assumes a constant propeller efficiency; wide documented band.
     assert!(t > 0.4 * r && t < 2.5 * r, "{t} vs {r}");
+}
+
+#[test]
+fn pack_resistance_shortens_hover_time() {
+    let (_, p, m) = samples()
+        .into_iter()
+        .find(|(n, _, _)| n == "quad_275_x.json")
+        .unwrap();
+    let s = setup_for(&p, &m);
+    let t0 = flight_summary(&p, &m, &s).modes[0].time_min.unwrap();
+    let mut s2 = s.clone();
+    s2.lift.as_mut().unwrap().pack.r_ohm *= 5.0;
+    let t1 = flight_summary(&p, &m, &s2).modes[0].time_min.unwrap();
+    assert!(
+        t1 < t0,
+        "more pack resistance must cost endurance: {t1} vs {t0}"
+    );
+}
+
+#[test]
+fn stalled_motor_loss_does_not_exceed_input_power() {
+    let (_, p, m) = samples().into_iter().next().unwrap();
+    let s = setup_for(&p, &m);
+    let u = s.forward.as_ref().unwrap();
+    let op = u.operating_point(1e-4, 0.0);
+    assert!(op.rpm == 0.0, "throttle too small to spin the motor");
+    assert!(
+        op.p_loss_w <= op.p_elec_w + 1e-9,
+        "{} vs {}",
+        op.p_loss_w,
+        op.p_elec_w
+    );
+}
+
+#[test]
+fn default_motor_is_not_flagged_at_full_throttle() {
+    for (name, p, m) in samples() {
+        let s = setup_for(&p, &m);
+        for (g, u) in units(&s) {
+            let last = sweep(u, 0.0).points.pop().unwrap();
+            assert!(
+                !last.flags.motor_current,
+                "{name} {g}: motor current flagged"
+            );
+            assert!(!last.flags.esc_current, "{name} {g}: esc current flagged");
+        }
+    }
+}
+
+#[test]
+fn level_speed_finds_the_high_speed_crossing_past_a_stall_side_shortfall() {
+    let (_, p, m) = samples().into_iter().next().unwrap();
+    let s = setup_for(&p, &m);
+    let u = s.forward.as_ref().unwrap();
+    // Drag too high at low speed (induced drag), small at higher speed.
+    let drag = |v: f64| if v < 12.0 { 1.0e6 } else { 0.5 };
+    let v = modes::level_speed(u, 1.0, &drag, 5.0).expect("reachable above the stall side");
+    assert!(v > 12.0, "{v}");
+    let never = |_: f64| 1.0e6;
+    assert!(modes::level_speed(u, 1.0, &never, 5.0).is_none());
+}
+
+#[test]
+fn multirotor_v_max_includes_rotor_inflow() {
+    let (_, p, m) = samples()
+        .into_iter()
+        .find(|(n, _, _)| n == "quad_275_x.json")
+        .unwrap();
+    let s = setup_for(&p, &m);
+    let lift = s.lift.as_ref().unwrap();
+    let f_area = if p.mr_flat_plate_area > 0.0 {
+        p.mr_flat_plate_area
+    } else {
+        0.01
+    };
+    let v = modes::multirotor_v_max(lift, m.mr.w, f_area).expect("can fly forward");
+    // Static-thrust estimate (no inflow) is an upper bound.
+    let t = lift.n_motors as f64 * lift.operating_point(1.0, 0.0).thrust_n;
+    let d = (t * t - m.mr.w * m.mr.w).sqrt();
+    let v_static = (2.0 * d / (lift.rho * f_area)).sqrt();
+    assert!(v > 0.0 && v <= v_static + 1e-6, "{v} vs {v_static}");
+}
+
+#[test]
+fn multirotor_that_cannot_hover_has_no_aggressive_mode() {
+    let (_, p, m) = samples()
+        .into_iter()
+        .find(|(n, _, _)| n == "quad_275_x.json")
+        .unwrap();
+    let s = setup_for(&p, &m);
+    let mut m2 = m.clone();
+    m2.mr.t_hover_motor *= 100.0;
+    let f = flight_summary(&p, &m2, &s);
+    assert_eq!(f.modes[0].status, ModeStatus::Unreachable);
+    assert_eq!(f.modes[1].status, ModeStatus::Unreachable);
 }
