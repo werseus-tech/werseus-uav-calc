@@ -505,6 +505,8 @@ mod tests {
             include_str!("export/xlsx.rs"),
             include_str!("support.rs"),
             include_str!("footprint.rs"),
+            include_str!("ui/thruststand.rs"),
+            include_str!("thruststand/sitl.rs"),
         ];
 
         let tr = tr_table();

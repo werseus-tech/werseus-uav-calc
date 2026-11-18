@@ -26,6 +26,7 @@ pub mod structure;
 pub mod summary;
 pub mod teach;
 pub mod theme;
+pub mod thruststand;
 pub mod type_cards;
 pub mod viewport3d;
 pub mod weight;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    ThrustStand,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::ThrustStand => t("tab_thruststand"),
         }
     }
 
@@ -93,6 +96,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::ThrustStand,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +112,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::ThrustStand,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +127,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::ThrustStand,
             ],
         }
     }
