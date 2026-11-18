@@ -308,6 +308,8 @@ pub struct PlugSpec {
     pub c_t: f64,
     pub span: f64,
     pub sweep: f64,
+    pub dihedral: f64,
+    pub twist: f64,
     pub z0: f64,
     pub z1: f64,
     pub m: [f64; 16],
@@ -321,17 +323,34 @@ impl PlugSpec {
             c_t: g.c_tip,
             span: g.span,
             sweep: g.sweep_le_deg,
+            dihedral: 0.0,
+            twist: 0.0,
             z0,
             z1,
             m: host_from_surface.matrix16(),
         }
     }
 
+    pub fn with_attitude(mut self, dihedral: f64, twist: f64) -> Self {
+        self.dihedral = dihedral;
+        self.twist = twist;
+        self
+    }
+
     pub fn is_finite(&self) -> bool {
         self.pts.iter().flatten().all(|v| v.is_finite())
-            && [self.c_r, self.c_t, self.span, self.sweep, self.z0, self.z1]
-                .iter()
-                .all(|v| v.is_finite())
+            && [
+                self.c_r,
+                self.c_t,
+                self.span,
+                self.sweep,
+                self.dihedral,
+                self.twist,
+                self.z0,
+                self.z1,
+            ]
+            .iter()
+            .all(|v| v.is_finite())
             && self.m.iter().all(|v| v.is_finite())
     }
 }

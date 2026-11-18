@@ -167,8 +167,14 @@ impl Layout {
         let wing_r = mirrored_placement(&wing_l, 2);
         if !multirotor {
             let z1 = (fprof.r_max(x_wle, x_wle + wg.c_root * 1.2) + 5.0).min(wg.span);
-            plugs.push(PlugSpec::new(&wg, 0.0, z1, &wing_l));
-            plugs.push(PlugSpec::new(&wg, -z1, 0.0, &wing_r));
+            plugs.push(
+                PlugSpec::new(&wg, 0.0, z1, &wing_l)
+                    .with_attitude(wing.dihedral_deg, wing.twist_deg),
+            );
+            plugs.push(
+                PlugSpec::new(&wg, -z1, 0.0, &wing_r)
+                    .with_attitude(wing.dihedral_deg, wing.twist_deg),
+            );
             if has(PartId::Wing) {
                 push(&mut inst, "Wing_L", PartId::Wing, false, wing_l);
                 push(&mut inst, "Wing_R", PartId::Wing, true, wing_r);
@@ -372,12 +378,15 @@ impl Layout {
             let z_b = min_lo - 2.0 - ro;
             clamp.pillar_top_mm = 0.5 * (max_lo + min_up) - z_b;
             let c_frame = Frame::translation([x_s, -y_b, z_b]);
-            clamp.saddle = Some(PlugSpec::new(
-                &wg,
-                y_b - ro - 1.0,
-                y_b + ro + 1.0,
-                &c_frame.inverse().mul(&wing_l),
-            ));
+            clamp.saddle = Some(
+                PlugSpec::new(
+                    &wg,
+                    y_b - ro - 1.0,
+                    y_b + ro + 1.0,
+                    &c_frame.inverse().mul(&wing_l),
+                )
+                .with_attitude(wing.dihedral_deg, wing.twist_deg),
+            );
             // Motorlar: köşegen = çerçeve boyu; ön/arka motor yuvaları kanadın önünde/arkasında.
             let plate = lift_mount.plate_size_mm;
             let diag = p.mr_frame_size * 1000.0;

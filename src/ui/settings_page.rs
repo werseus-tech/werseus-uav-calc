@@ -405,6 +405,12 @@ impl App {
         });
 
         ui.add_space(space::S);
+        section_header(ui, t("cadfast.settings_heading"));
+        card(ui, |ui| {
+            super::cad_fast::settings_rows(ui, &mut self.outputs_ui.fast)
+        });
+
+        ui.add_space(space::S);
         section_header(ui, t("set.cad.limits"));
         weak(ui, t("set.cad.limits.desc"));
         ui.add_space(space::XS);
@@ -433,11 +439,16 @@ impl App {
         };
         self.outputs_ui.limits = self.outputs_ui.limits.clamped();
         let limits = self.outputs_ui.limits;
+        self.outputs_ui.fast.ensure_path_loaded();
+        let py =
+            Some(self.outputs_ui.fast.python_path.trim().to_string()).filter(|s| !s.is_empty());
         persist(|s| {
             s.freecad_cmd_path = path.clone();
             s.cad_limits = limits;
+            s.python_cmd_path = py;
         });
         self.trigger_freecad_detection(path, Some(ctx.clone()));
+        self.outputs_ui.fast.detect(Some(ctx.clone()));
         self.status = t("set.cad.saved").to_string();
     }
 

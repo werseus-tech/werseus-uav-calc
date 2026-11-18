@@ -14,6 +14,15 @@ Sihirbazın son adımı **Çıktılar**'dır. FreeCAD 1.1 kuruluysa (aksi halde 
 
 Parametreleri değiştirmek için FreeCAD'de `Params` tablosunu düzenleyip `F9` ile yeniden hesaplayın.
 
+### Hızlı altyapı (build123d, varsayılan)
+
+Çıktılar adımında **CAD altyapısı** olarak **Hızlı (STEP/STL/DXF)** varsayılandır; **Düzenlenebilir FreeCAD ağacı** yukarıdaki FreeCAD yoludur. Hızlı altyapı aynı yerleşim (`Layout`), parça parametreleri ve iç yapıyla (kabuk, kaburgalar, kiriş kanalı, gövde boşluğu ve postalar, yuvalar) çalışır ve tüm parçaları tek bir Python sürecinde üretir:
+
+- Her parça için `.step` ve `.stl`; kaburgalar, postalar ve düz plakalar için yan yana dizilmiş `.dxf` profilleri (onay kutularıyla seçilir).
+- Tüm parçaların yerleştiği tek montaj `Montaj.step`; `BOM.md`, `BOM.csv` ve `Montaj_Raporu.md` FreeCAD yoluyla aynıdır.
+- build123d kurulu bir Python gerekir (`pip install build123d`, Python 3.10-3.13). Python yolu **Ayarlar > CAD** bölümünden verilebilir; boşsa PATH ve `py` başlatıcısı taranır. Bulunamazsa adım kurulum komutunu ve FreeCAD'e geçiş düğmesini gösterir.
+- Süre sınırları, iptal ve yarım dosya temizliği FreeCAD yoluyla aynıdır.
+
 ## EN
 
 The last wizard step is **Outputs**. With FreeCAD 1.1 installed (otherwise the step shows an install link):
@@ -26,3 +35,12 @@ The last wizard step is **Outputs**. With FreeCAD 1.1 installed (otherwise the s
 6. `Montaj_Raporu.md`: part pairs with volume intersection, total mass and center of gravity. **Apply CAD mass to design** updates the project's structure mass only with your confirmation; the center of gravity is only reported.
 
 To change parameters, edit the `Params` sheet in FreeCAD and recompute with `F9`.
+
+### Fast backend (build123d, default)
+
+In the Outputs step the **CAD backend** defaults to **Fast (STEP/STL/DXF)**; **Editable FreeCAD tree** is the FreeCAD path above. The fast backend uses the same layout (`Layout`), part parameters and internal structure (skin shell, ribs, spar channel, fuselage void and formers, slots) and builds all parts in one Python process:
+
+- `.step` and `.stl` per part; `.dxf` profiles laid side by side for ribs, formers and flat plates (selectable with checkboxes).
+- One assembled `Montaj.step` with every part placed; `BOM.md`, `BOM.csv` and `Montaj_Raporu.md` are the same as with FreeCAD.
+- Needs a Python with build123d (`pip install build123d`, Python 3.10-3.13). The interpreter can be set in **Settings > CAD**; if empty, PATH and the `py` launcher are searched. If none is found the step shows the install command and a switch to FreeCAD.
+- Time limits, cancel and partial-file cleanup are the same as the FreeCAD path.
