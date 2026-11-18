@@ -412,7 +412,20 @@ pub struct Airframe {
     pub skin: MaterialClass,
     /// Kullanılan motor çapı [m].
     pub motor_d_m: f64,
+    /// Seyir (itme) motorunun çapı [m]; VTOL'de `motor_d_m` kaldırma motorunundur.
+    pub motor_cruise_d_m: f64,
     pub n_motors: u32,
+}
+
+impl Airframe {
+    /// Evreye uygun motor çapı: VTOL seyirde itme motoru, aksi halde `motor_d_m`.
+    pub fn motor_d_for(&self, cruise: bool) -> f64 {
+        if cruise {
+            self.motor_cruise_d_m
+        } else {
+            self.motor_d_m
+        }
+    }
 }
 
 /// Motor çapı tahmini [m]: dış rotorlu motorun eşdeğer yoğunluğu ≈ 3500 kg/m³ ve h ≈ 0.8d
@@ -456,7 +469,12 @@ pub fn airframe(p: &Project, m: &Model, s: &RcsSettings) -> Airframe {
         })
     });
     let arm_mat = arm_class(p.mr_arm_material);
-    let skin_pass = (1.0 - s.refl(skin)).powi(2);
+    // İletken kabuk (metal, karbon) Faraday kafesi gibidir: içeri geçen güç yok sayılır.
+    let skin_pass = if matches!(skin, MaterialClass::Metal | MaterialClass::Carbon) {
+        0.0
+    } else {
+        (1.0 - s.refl(skin)).powi(2)
+    };
     let multirotor = p.drone_type == DroneType::Multirotor;
     let mut prims: Vec<Primitive> = Vec::new();
     let mut push = |part: Part, shape: Shape, material: MaterialClass, count: f64, shield: f64| {
@@ -599,7 +617,12 @@ pub fn airframe(p: &Project, m: &Model, s: &RcsSettings) -> Airframe {
                 1.0,
             );
             if with_le {
-                let tl = sweep_deg.to_radians().tan();
+                let sweep = if sweep_deg.is_finite() {
+                    sweep_deg.clamp(-80.0, 80.0)
+                } else {
+                    0.0
+                };
+                let tl = sweep.to_radians().tan();
                 let axis = unit([ex[0] * tl + ez[0], ex[1] * tl + ez[1], ex[2] * tl + ez[2]]);
                 push(
                     Part::LeadingEdge,
@@ -848,6 +871,7 @@ pub fn airframe(p: &Project, m: &Model, s: &RcsSettings) -> Airframe {
         } else {
             d_cruise
         },
+        motor_cruise_d_m: d_cruise,
         n_motors,
     }
 }
@@ -942,6 +966,32 @@ pub fn sweep(af: &Airframe, band: Band, s: &RcsSettings, n_az: usize) -> Sweep {
 mod tests {
     use super::*;
     use crate::signature::{from_db, to_db};
+
+    #[test]
+    fn conductive_skin_blocks_internal_parts() {
+        use crate::calc::{Library, evaluate};
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::FixedWingConventional);
+        let m = evaluate(&p, &Library::embedded());
+        let mut s = RcsSettings::default();
+        s.skin = Some(MaterialClass::Carbon);
+        let af = airframe(&p, &m, &s);
+        let batt: Vec<_> = af
+            .prims
+            .iter()
+            .filter(|q| q.part == Part::Battery)
+            .collect();
+        assert!(!batt.is_empty());
+        assert!(batt.iter().all(|q| q.shield == 0.0));
+        s.skin = Some(MaterialClass::Fibreglass);
+        let af = airframe(&p, &m, &s);
+        assert!(
+            af.prims
+                .iter()
+                .filter(|q| q.part == Part::Battery)
+                .all(|q| q.shield > 0.0)
+        );
+    }
 
     fn near(a: f64, b: f64, rel: f64) {
         assert!(((a - b) / b).abs() < rel, "{a} vs {b}");

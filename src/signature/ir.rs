@@ -73,7 +73,7 @@ pub fn blackbody_fraction(lambda_m: f64, t_k: f64) -> f64 {
 
 /// Kara cisim bant yayılımı [W/m²]: σT⁴·(F(λ₂T) − F(λ₁T)).
 pub fn band_exitance(band: (f64, f64), t_k: f64) -> f64 {
-    if t_k.is_nan() || t_k <= 0.0 {
+    if !t_k.is_finite() || t_k <= 0.0 {
         return 0.0;
     }
     SIGMA_SB
@@ -132,7 +132,9 @@ pub fn h_plate(v: f64, l: f64, nu: f64) -> f64 {
 
 /// Kararlı yüzey sıcaklığı [K]: q = hA(T − Ta) + εσA(T⁴ − Ta⁴), ikiye bölme ile.
 pub fn surface_temperature(q_w: f64, area: f64, h: f64, eps: f64, t_amb: f64) -> f64 {
-    if !(q_w > 0.0 && area > 0.0 && t_amb > 0.0) {
+    if !(q_w > 0.0 && area > 0.0 && t_amb > 0.0 && h.is_finite() && h >= 0.0)
+        || !(eps.is_finite() && eps >= 0.0)
+    {
         return t_amb;
     }
     let f =
@@ -441,13 +443,14 @@ pub fn evaluate(p: &Project, m: &Model, s: &IrSettings, motor_d_m: f64) -> IrRes
             true,
         );
     } else {
-        let a = spread * a_esc;
+        // Kabuk yaması: ısı tek (dış) yüzden yayılır; yama dik görülür, izdüşüm = yama alanı.
+        let a = spread * 0.5 * a_esc;
         add(
             SourceKind::Esc,
             n_mot,
             esc_loss,
             a,
-            a / PI,
+            a,
             eps_skin,
             h_plate(skin_v, a.sqrt(), nu),
             skin_v,
@@ -474,13 +477,13 @@ pub fn evaluate(p: &Project, m: &Model, s: &IrSettings, motor_d_m: f64) -> IrRes
             true,
         );
     } else {
-        let a = spread * a_batt;
+        let a = spread * lb * hb;
         add(
             SourceKind::Battery,
             1,
             batt_loss,
             a,
-            a / PI,
+            a,
             eps_skin,
             h_plate(skin_v, a.sqrt(), nu),
             skin_v,
@@ -600,5 +603,40 @@ mod tests {
                 .t_k
         };
         assert!(esc(&b) < esc(&a), "{} {}", esc(&b), esc(&a));
+    }
+
+    #[test]
+    fn hidden_patch_projection_is_not_divided_by_pi() {
+        // Fixed wing, hidden battery and ESC: izdüşüm = yama alanı; yama = yayılım x tek yüz.
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::FixedWingConventional);
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        let mut s = IrSettings::default();
+        s.battery_exposed = Some(false);
+        s.esc_exposed = Some(false);
+        let r = evaluate(&p, &m, &s, 0.03);
+        for k in [SourceKind::Esc, SourceKind::Battery] {
+            let x = r.sources.iter().find(|x| x.kind == k).unwrap();
+            assert!(!x.exposed);
+            assert!((x.proj_m2 - x.area_m2).abs() < 1e-12, "{k:?}");
+        }
+        // Gizli pilin izdüşümü, açıktaki pilin izdüşümünün yayılım katıdır (7.6 kat değil).
+        s.battery_exposed = Some(true);
+        let e = evaluate(&p, &m, &s, 0.03);
+        let proj = |r: &IrResult| {
+            r.sources
+                .iter()
+                .find(|x| x.kind == SourceKind::Battery)
+                .unwrap()
+                .proj_m2
+        };
+        assert!((proj(&r) / proj(&e) - s.skin_spread.max(1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn non_finite_inputs_are_rejected() {
+        assert_eq!(band_exitance(LWIR, f64::INFINITY), 0.0);
+        assert_eq!(surface_temperature(1.0, 0.01, f64::NAN, 0.9, 290.0), 290.0);
+        assert_eq!(surface_temperature(1.0, 0.01, 10.0, -1.0, 290.0), 290.0);
     }
 }

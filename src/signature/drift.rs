@@ -154,7 +154,7 @@ pub fn accel_bias_error(b_mg: f64, t: f64) -> f64 {
 /// Jiroskop sabit kayması kaynaklı konum hatası [m]: ⅙·g·ω·t³ (ω: °/h).
 pub fn gyro_bias_error(dph: f64, t: f64) -> f64 {
     let w = nn(dph) * PI / 180.0 / 3600.0;
-    G0 * w * t.powi(3) / 6.0
+    G0 * w * t.max(0.0).powi(3) / 6.0
 }
 
 /// ARW kaynaklı konum hatası [m]: g·N·t^{5/2}/√20 (N: °/√h → rad/√s).
@@ -337,6 +337,12 @@ pub fn monte_carlo_ins(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gyro_bias_error_is_zero_for_negative_time() {
+        assert_eq!(gyro_bias_error(1.0, -5.0), 0.0);
+        assert!(gyro_bias_error(1.0, 5.0) > 0.0);
+    }
 
     fn near(a: f64, b: f64, rel: f64) {
         assert!(((a - b) / b).abs() < rel, "{a} vs {b}");

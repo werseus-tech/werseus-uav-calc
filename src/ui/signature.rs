@@ -9,7 +9,7 @@ use crate::calc::Model;
 use crate::i18n::{t, tf};
 use crate::project::{DroneType, Project};
 use crate::signature::drift::{self, Aiding, DriftSettings, ImuGrade};
-use crate::signature::ir::{self, IrResult, IrSettings, LWIR, MWIR, Phase, SourceKind};
+use crate::signature::ir::{self, IrResult, IrSettings, Phase, SourceKind};
 use crate::signature::rcs::{self, Airframe, Band, MaterialClass, Part, RcsSettings, Sweep};
 use crate::signature::to_db;
 use egui::{DragValue, Ui};
@@ -507,7 +507,8 @@ fn show_ir(ui: &mut Ui, p: &Project, m: &Model, st: &mut SigState) {
     let tk = theme::tokens(ui);
     section(ui, t("signature.ir.title"));
     ui.label(t("signature.ir.intro"));
-    let motor_d = rcs_cache(p, m, st).airframe.motor_d_m;
+    let cruise = ir::effective_phase(p, &st.ir) == Phase::Cruise;
+    let motor_d = rcs_cache(p, m, st).airframe.motor_d_for(cruise);
     egui::CollapsingHeader::new(t("signature.settings"))
         .id_salt("sig_ir_settings")
         .default_open(false)
@@ -689,8 +690,8 @@ fn show_ir(ui: &mut Ui, p: &Project, m: &Model, st: &mut SigState) {
             for s in &r.sources {
                 let n = s.count as f64;
                 ui.label(format!("{} ×{}", source_label(s.kind), s.count));
-                ui.label(sig3(s.radiance(MWIR)));
-                ui.label(sig3(s.radiance(LWIR)));
+                ui.label(format!("{} W/sr", sig3(n * s.i_mwir)));
+                ui.label(format!("{} W/sr", sig3(n * s.i_lwir)));
                 ui.label(sig3(n * s.di_mwir));
                 ui.label(sig3(n * s.di_lwir));
                 ui.end_row();
@@ -1092,7 +1093,7 @@ fn show_drift(ui: &mut Ui, p: &Project, st: &mut SigState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signature::ir::SIGMA_SB;
+    use crate::signature::ir::{LWIR, SIGMA_SB};
 
     fn projects() -> Vec<(String, Project)> {
         let mut v = Vec::new();
