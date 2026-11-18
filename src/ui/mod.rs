@@ -21,6 +21,7 @@ pub mod outputs;
 pub mod panel_kit;
 pub mod propcurves;
 pub mod propulsion;
+pub mod regulation;
 pub mod schematic;
 pub mod settings_page;
 pub mod shell;
@@ -78,6 +79,7 @@ pub enum Tab {
     ComputeBudget,
     Acoustics,
     ThermalPower,
+    Regulation,
 }
 
 impl Tab {
@@ -103,6 +105,7 @@ impl Tab {
             Tab::ComputeBudget => t("computebudget.tab"),
             Tab::Acoustics => t("acoustics.tab"),
             Tab::ThermalPower => t("thermalpower.tab"),
+            Tab::Regulation => t("regulation.tab"),
         }
     }
 
@@ -124,6 +127,7 @@ impl Tab {
                 Tab::ComputeBudget,
                 Tab::Acoustics,
                 Tab::ThermalPower,
+                Tab::Regulation,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -146,6 +150,7 @@ impl Tab {
                 Tab::ComputeBudget,
                 Tab::Acoustics,
                 Tab::ThermalPower,
+                Tab::Regulation,
             ],
             _ => vec![
                 Tab::Summary,
@@ -167,6 +172,7 @@ impl Tab {
                 Tab::ComputeBudget,
                 Tab::Acoustics,
                 Tab::ThermalPower,
+                Tab::Regulation,
             ],
         }
     }

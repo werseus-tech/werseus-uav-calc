@@ -61,6 +61,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("widgets.rs", include_str!("widgets.rs")),
         ("mod.rs", include_str!("mod.rs")),
         ("acoustics.rs", include_str!("acoustics.rs")),
+        ("regulation.rs", include_str!("regulation.rs")),
     ];
     const FORBIDDEN: &[&str] = &[
         "Color32::from_rgb(",

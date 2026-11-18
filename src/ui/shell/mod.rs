@@ -872,6 +872,9 @@ impl App {
             Some(super::steps::CenterSlot::ThermalPower) => {
                 super::thermalpower::show(ui, &self.project, model, &mut self.tp_state);
             }
+            Some(super::steps::CenterSlot::Regulation) => {
+                super::regulation::show(ui, &self.project, model);
+            }
             None => {}
         }
     }
