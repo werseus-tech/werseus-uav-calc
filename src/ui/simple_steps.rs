@@ -39,7 +39,8 @@ pub fn step_for_tab(tab: super::Tab, dt: DroneType) -> Option<StepId> {
         | Tab::Schematic
         | Tab::WindTunnel
         | Tab::FlowTunnel
-        | Tab::FlightSim => None,
+        | Tab::FlightSim
+        | Tab::PropCurves => None,
     }
 }
 

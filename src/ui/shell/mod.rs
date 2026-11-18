@@ -857,6 +857,9 @@ impl App {
                 );
             }
             Some(super::steps::CenterSlot::FlightSim) => {}
+            Some(super::steps::CenterSlot::PropCurves) => {
+                super::propcurves::show(ui, &self.project, model);
+            }
             None => {}
         }
     }
