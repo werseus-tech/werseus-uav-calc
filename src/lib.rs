@@ -4,6 +4,7 @@ pub mod ai;
 pub mod cad;
 pub mod calc;
 pub mod db;
+pub mod downwash;
 pub mod export;
 pub mod footprint;
 pub mod geom3d;
