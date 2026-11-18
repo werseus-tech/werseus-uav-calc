@@ -5,7 +5,11 @@ use crate::calc::{Library, evaluate};
 use crate::project::{self, DroneType, Project};
 
 fn facts(mass_kg: f64, speed: f64, dim: f64) -> DesignFacts {
-    DesignFacts::new(mass_kg, speed, SpeedSource::UserOverride, dim).unwrap()
+    DesignFacts::new(mass_kg, speed, SpeedSource::UserOverride, dim, false).unwrap()
+}
+
+fn fixed_wing_facts(mass_kg: f64, speed: f64, dim: f64) -> DesignFacts {
+    DesignFacts::new(mass_kg, speed, SpeedSource::FixedWingDesign, dim, true).unwrap()
 }
 
 fn matched_id(group: &str, f: &DesignFacts) -> Option<&'static str> {
@@ -25,20 +29,14 @@ fn kinetic_energy_formula() {
 
 #[test]
 fn easa_class_mass_boundaries() {
-    // Slow and small so only mass decides.
-    let id = |m: f64| matched_id("easa_class", &facts(m, 10.0, 0.5)).unwrap();
+    // At 14.0 m/s, even 0.900 kg exceeds 80 J (88.2 J), so pure mass boundaries decide.
+    let id = |m: f64| matched_id("easa_class", &facts(m, 14.0, 0.5)).unwrap();
     assert_eq!(id(0.249), "easa_c0");
     assert_eq!(id(0.250), "easa_c1");
     assert_eq!(id(0.251), "easa_c1");
     assert_eq!(id(0.899), "easa_c1");
-    // 900 g with 10 m/s is 45 J: the 80 J alternative still keeps it in C1.
-    assert_eq!(id(0.900), "easa_c1");
-    assert_eq!(id(0.901), "easa_c1");
-    // At speed the energy exceeds 80 J, so the mass limit applies.
-    let fast = |m: f64| matched_id("easa_class", &facts(m, 18.0, 0.5)).unwrap();
-    assert_eq!(fast(0.899), "easa_c1");
-    assert_eq!(fast(0.900), "easa_c2");
-    assert_eq!(fast(0.901), "easa_c2");
+    assert_eq!(id(0.900), "easa_c2");
+    assert_eq!(id(0.901), "easa_c2");
     assert_eq!(id(3.999), "easa_c2");
     assert_eq!(id(4.0), "easa_c3");
     assert_eq!(id(24.999), "easa_c3");
@@ -52,16 +50,34 @@ fn easa_speed_and_dimension_limits() {
         matched_id("easa_class", &facts(0.2, 25.0, 0.3)),
         Some("easa_c2")
     );
-    // 3.5 kg with a 3.5 m span: too long for C2/C3, only C4 remains.
+    // C0 and C2 have no 1 m / 3 m dimension cap under (EU) 2019/945 Parts 1 & 3.
+    assert_eq!(
+        matched_id("easa_class", &facts(0.2, 10.0, 1.2)),
+        Some("easa_c0")
+    );
     assert_eq!(
         matched_id("easa_class", &facts(3.5, 15.0, 3.5)),
+        Some("easa_c2")
+    );
+    // 5 kg with a 3.5 m span: too heavy for C2, too long for C3 (3 m cap), only C4 remains.
+    assert_eq!(
+        matched_id("easa_class", &facts(5.0, 15.0, 3.5)),
         Some("easa_c4")
+    );
+    // Unmarked A1 (< 250 g) also enforces the < 19 m/s speed limit (UAS.OPEN.020(5)(a)).
+    assert_eq!(
+        matched_id("easa_unmarked", &facts(0.2, 15.0, 0.3)),
+        Some("easa_u_a1")
+    );
+    assert_eq!(
+        matched_id("easa_unmarked", &facts(0.2, 25.0, 0.3)),
+        Some("easa_u_a3")
     );
 }
 
 #[test]
 fn easa_c1_energy_alternative() {
-    // 1.2 kg at 11 m/s = 72.6 J <= 80 J: C1 by the energy alternative.
+    // 1.2 kg multirotor with explicit 11 m/s max speed = 72.6 J <= 80 J: C1 by energy alternative.
     let f = facts(1.2, 11.0, 0.6);
     assert!(f.energy_j <= 80.0);
     assert_eq!(matched_id("easa_class", &f), Some("easa_c1"));
@@ -70,6 +86,25 @@ fn easa_c1_energy_alternative() {
         matched_id("easa_class", &facts(1.2, 12.0, 0.6)),
         Some("easa_c2")
     );
+    // Heavy slow-cruising UAV (>= 4 kg) cannot use the C1 80 J waiver.
+    assert_eq!(
+        matched_id("easa_class", &facts(20.0, 2.5, 1.5)),
+        Some("easa_c3")
+    );
+    assert_eq!(
+        matched_id("easa_class", &facts(30.0, 2.0, 2.0)),
+        Some("easa_specific")
+    );
+    // Fixed-wing aircraft cannot use the C1 80 J waiver even with UserOverride speed.
+    let fw_override = DesignFacts::new(1.2, 11.0, SpeedSource::UserOverride, 1.0, true).unwrap();
+    assert_eq!(matched_id("easa_class", &fw_override), Some("easa_c2"));
+    assert_eq!(
+        matched_id("easa_class", &fixed_wing_facts(1.2, 11.0, 1.0)),
+        Some("easa_c2")
+    );
+    // Non-override multirotor cruise speed uses worst-case 19 m/s class-cap energy (216.6 J > 80 J).
+    let mr_cruise = DesignFacts::new(1.2, 11.0, SpeedSource::MultirotorDesign, 0.6, false).unwrap();
+    assert_eq!(matched_id("easa_class", &mr_cruise), Some("easa_c2"));
 }
 
 #[test]
@@ -101,23 +136,31 @@ fn faa_over_people_energy() {
         matched_id("faa_people", &facts(0.2, 20.0, 0.3)),
         Some("faa_cat1")
     );
-    // 1 kg at 5 m/s = 12.5 J <= 14.9 J.
+    // 1 kg at 5 m/s = 12.5 J <= 14.91 J (11 ft-lbf): Category 2.
     assert_eq!(
         matched_id("faa_people", &facts(1.0, 5.0, 0.5)),
-        Some("faa_cat23")
+        Some("faa_cat2")
     );
-    // 1 kg at 6 m/s = 18 J.
-    assert_eq!(matched_id("faa_people", &facts(1.0, 6.0, 0.5)), None);
+    // 1 kg at 6 m/s = 18.0 J (between 14.91 J and 33.90 J / 25 ft-lbf): Category 3.
+    assert_eq!(
+        matched_id("faa_people", &facts(1.0, 6.0, 0.5)),
+        Some("faa_cat3")
+    );
+    // 1 kg at 9 m/s = 40.5 J > 33.90 J: no over-people category.
+    assert_eq!(matched_id("faa_people", &facts(1.0, 9.0, 0.5)), None);
 }
 
 #[test]
 fn shgm_class_boundaries() {
     let id = |m: f64| matched_id("shgm_class", &facts(m, 10.0, 0.5)).unwrap();
-    assert_eq!(id(0.499), "shgm_0");
-    assert_eq!(id(0.5), "shgm_1");
-    assert_eq!(id(3.999), "shgm_1");
-    assert_eq!(id(4.0), "shgm_2");
-    assert_eq!(id(25.0), "shgm_3");
+    assert_eq!(id(0.499), "shgm_exempt");
+    assert_eq!(id(0.5), "shgm_0");
+    assert_eq!(id(3.999), "shgm_0");
+    assert_eq!(id(4.0), "shgm_1");
+    assert_eq!(id(24.999), "shgm_1");
+    assert_eq!(id(25.0), "shgm_2");
+    assert_eq!(id(149.999), "shgm_2");
+    assert_eq!(id(150.0), "shgm_3");
     // Every SHGM tier is flagged for verification.
     assert!(
         TIERS
@@ -129,14 +172,25 @@ fn shgm_class_boundaries() {
 
 #[test]
 fn margin_and_failures_are_reported() {
+    let easa = GROUPS.iter().find(|g| g.id == "easa_class").unwrap();
     let f = facts(0.24, 10.0, 0.4);
-    let r = check_group(GROUPS.iter().find(|g| g.id == "easa_class").unwrap(), &f);
+    let r = check_group(easa, &f);
     assert_eq!(r.matched_tier().unwrap().id, "easa_c0");
     assert!((r.mass_headroom_kg(&f).unwrap() - 0.01).abs() < 1e-12);
     assert_eq!(r.next_tier().unwrap().id, "easa_c1");
+    // Waived C1 (>= 0.9 kg) has no positive mass headroom under 900 g.
+    let waived = facts(1.2, 11.0, 0.6);
+    let rw = check_group(easa, &waived);
+    assert_eq!(rw.matched_tier().unwrap().id, "easa_c1");
+    assert!(rw.mass_headroom_kg(&waived).is_none());
+    // C3 (< 25 kg) skips C4 (also < 25 kg) and transitions to easa_specific.
+    let c3 = facts(10.0, 15.0, 2.0);
+    let r3 = check_group(easa, &c3);
+    assert_eq!(r3.matched_tier().unwrap().id, "easa_c3");
+    assert_eq!(r3.next_tier().unwrap().id, "easa_specific");
     // A 300 g design is blocked from C0 by mass (50 g over).
     let f = facts(0.3, 10.0, 0.4);
-    let r = check_group(GROUPS.iter().find(|g| g.id == "easa_class").unwrap(), &f);
+    let r = check_group(easa, &f);
     let blocked: Vec<_> = r.blocked_before_match().collect();
     assert_eq!(blocked.len(), 1);
     let fl = blocked[0].failures[0];
@@ -146,9 +200,20 @@ fn margin_and_failures_are_reported() {
 
 #[test]
 fn invalid_facts_are_rejected() {
-    assert!(DesignFacts::new(0.0, 10.0, SpeedSource::UserOverride, 1.0).is_none());
-    assert!(DesignFacts::new(f64::NAN, 10.0, SpeedSource::UserOverride, 1.0).is_none());
-    assert!(DesignFacts::new(1.0, f64::INFINITY, SpeedSource::UserOverride, 1.0).is_none());
+    assert!(DesignFacts::new(0.0, 10.0, SpeedSource::UserOverride, 1.0, false).is_none());
+    assert!(DesignFacts::new(f64::NAN, 10.0, SpeedSource::UserOverride, 1.0, false).is_none());
+    assert!(DesignFacts::new(1.0, f64::INFINITY, SpeedSource::UserOverride, 1.0, false).is_none());
+    assert!(DesignFacts::new(1.0, 0.0, SpeedSource::UserOverride, 1.0, false).is_none());
+    assert!(DesignFacts::new(1.0, -5.0, SpeedSource::UserOverride, 1.0, false).is_none());
+    // Zero/uncomputed speed in a Project + Model yields None.
+    let mut p = Project::default();
+    p.set_drone_type(DroneType::FixedWingConventional);
+    p.v_cr = 0.0;
+    let mut m = evaluate(&p, &Library::embedded());
+    m.perf_cr.v = 0.0;
+    m.perf_end.v = 0.0;
+    m.perf_range.v = 0.0;
+    assert!(DesignFacts::from_model(&p, &m, None).is_none());
 }
 
 #[test]
@@ -187,9 +252,19 @@ fn table_integrity() {
             );
         }
     }
-    // Every regulation.* key in the files is also present in both.
-    for key in tr.keys().filter(|k| k.starts_with("regulation.")) {
-        assert!(en.contains_key(key), "en missing {key}");
+    // Every regulation.* key in the files is non-empty and present in both languages.
+    for (src_name, src, other_name, other) in [("tr", tr, "en", en), ("en", en, "tr", tr)] {
+        for key in src.keys().filter(|k| k.starts_with("regulation.")) {
+            assert!(
+                !src[key].trim().is_empty(),
+                "{src_name}: empty value for {key}"
+            );
+            let v = other.get(key);
+            assert!(
+                v.is_some_and(|s| !s.trim().is_empty()),
+                "{other_name} missing or empty {key}"
+            );
+        }
     }
 }
 

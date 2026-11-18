@@ -8,9 +8,6 @@ use crate::calc::Model;
 use crate::project::{DroneType, Project};
 use rules::{GROUPS, Group, Tier, tiers_of};
 
-/// Standard gravity (m/s^2), used for the free-fall energy reference.
-pub const G: f64 = 9.806_65;
-
 /// Kinetic energy 1/2 m v^2 in joules (mass in kg, speed in m/s).
 pub fn kinetic_energy_j(mass_kg: f64, speed_ms: f64) -> f64 {
     0.5 * mass_kg * speed_ms * speed_ms
@@ -29,6 +26,12 @@ pub enum SpeedSource {
 }
 
 impl SpeedSource {
+    pub const ALL: [SpeedSource; 3] = [
+        SpeedSource::UserOverride,
+        SpeedSource::FixedWingDesign,
+        SpeedSource::MultirotorDesign,
+    ];
+
     pub fn key(self) -> &'static str {
         match self {
             SpeedSource::UserOverride => "regulation.speed_src.user",
@@ -46,6 +49,8 @@ pub struct DesignFacts {
     pub speed_source: SpeedSource,
     /// Largest characteristic dimension (wingspan, length or rotor tip-to-tip span), metres.
     pub dimension_m: f64,
+    /// True for fixed-wing and winged VTOL aircraft.
+    pub is_fixed_wing: bool,
     /// 1/2 m v^2 at `v_max_ms`.
     pub energy_j: f64,
     /// 1/2 m v^2 at the 19 m/s speed cap of EASA classes C0 / C1 (worst case allowed there).
@@ -59,9 +64,10 @@ impl DesignFacts {
         v_max_ms: f64,
         speed_source: SpeedSource,
         dimension_m: f64,
+        is_fixed_wing: bool,
     ) -> Option<DesignFacts> {
         let ok = |x: f64| x.is_finite() && x > 0.0;
-        if !ok(mtow_kg) || !(v_max_ms.is_finite() && v_max_ms >= 0.0) || !ok(dimension_m) {
+        if !ok(mtow_kg) || !ok(v_max_ms) || !ok(dimension_m) {
             return None;
         }
         Some(DesignFacts {
@@ -69,13 +75,14 @@ impl DesignFacts {
             v_max_ms,
             speed_source,
             dimension_m,
+            is_fixed_wing,
             energy_j: kinetic_energy_j(mtow_kg, v_max_ms),
             energy_at_class_cap_j: kinetic_energy_j(mtow_kg, rules::EASA_C01_SPEED_MS),
         })
     }
 
     /// Collects MTOW, best-estimate maximum speed and dimension from the project and model.
-    /// `speed_override` (m/s, > 0) replaces the estimate. `None` when the model has no valid mass.
+    /// `speed_override` (m/s, > 0) replaces the estimate. `None` when mass, speed or size is invalid.
     pub fn from_model(p: &Project, m: &Model, speed_override: Option<f64>) -> Option<DesignFacts> {
         let multirotor = p.drone_type == DroneType::Multirotor;
         let mtow = if multirotor {
@@ -112,7 +119,7 @@ impl DesignFacts {
             // Motor-to-motor diameter plus one propeller diameter approximates tip-to-tip span.
             dim = dim.max(best(&[p.mr_frame_size]) + best(&[p.mr_d_prop]));
         }
-        DesignFacts::new(mtow, v, src, dim)
+        DesignFacts::new(mtow, v, src, dim, p.drone_type.has_wing())
     }
 }
 
@@ -126,6 +133,13 @@ pub enum Criterion {
 }
 
 impl Criterion {
+    pub const ALL: [Criterion; 4] = [
+        Criterion::Mass,
+        Criterion::Speed,
+        Criterion::Energy,
+        Criterion::Dimension,
+    ];
+
     pub fn key(self) -> &'static str {
         match self {
             Criterion::Mass => "regulation.crit.mass",
@@ -165,7 +179,20 @@ pub fn check_tier(tier: &'static Tier, f: &DesignFacts) -> TierResult {
         });
     }
     if let Some(lt) = tier.mass_lt_kg {
-        let waived = tier.mass_waiver_energy_j.is_some_and(|e| f.energy_j <= e);
+        let waiver_eligible = tier.mass_waiver_energy_j.is_some()
+            && !(tier.mass_waiver_no_fixed_wing && f.is_fixed_wing)
+            && tier.mass_waiver_max_kg.is_none_or(|m| f.mtow_kg < m);
+        // Without a user-specified max speed, the model only provides a cruise estimate;
+        // evaluate against the worst-case class-cap energy instead of horizontal cruise speed.
+        let waiver_energy = if f.speed_source == SpeedSource::UserOverride {
+            f.energy_j
+        } else {
+            f.energy_j.max(f.energy_at_class_cap_j)
+        };
+        let waived = waiver_eligible
+            && tier
+                .mass_waiver_energy_j
+                .is_some_and(|e| waiver_energy <= e);
         if f.mtow_kg >= lt && !waived {
             failures.push(Failure {
                 criterion: Criterion::Mass,
@@ -173,13 +200,17 @@ pub fn check_tier(tier: &'static Tier, f: &DesignFacts) -> TierResult {
                 limit: lt,
                 above_max: true,
             });
-            if let Some(e) = tier.mass_waiver_energy_j {
-                failures.push(Failure {
-                    criterion: Criterion::Energy,
-                    value: f.energy_j,
-                    limit: e,
-                    above_max: true,
-                });
+            if waiver_eligible {
+                if let Some(e) = tier.mass_waiver_energy_j {
+                    if waiver_energy > e {
+                        failures.push(Failure {
+                            criterion: Criterion::Energy,
+                            value: waiver_energy,
+                            limit: e,
+                            above_max: true,
+                        });
+                    }
+                }
             }
         }
     }
@@ -234,15 +265,22 @@ impl GroupResult {
         self.matched.map(|i| self.tiers[i].tier)
     }
 
-    /// Mass headroom (kg) under the matched tier's upper mass bound, if it has one.
+    /// Mass headroom (kg) under the matched tier's upper mass bound, if not waived.
     pub fn mass_headroom_kg(&self, f: &DesignFacts) -> Option<f64> {
-        self.matched_tier()?.mass_lt_kg.map(|lt| lt - f.mtow_kg)
+        self.matched_tier()?
+            .mass_lt_kg
+            .map(|lt| lt - f.mtow_kg)
+            .filter(|&h| h > 0.0)
     }
 
-    /// The tier that comes after the matched one (what the design falls into when it grows).
+    /// The first subsequent tier with a strictly higher (or unbounded) upper mass limit.
     pub fn next_tier(&self) -> Option<&'static Tier> {
-        let i = self.matched? + 1;
-        self.tiers.get(i).map(|r| r.tier)
+        let idx = self.matched?;
+        let cur_lt = self.tiers[idx].tier.mass_lt_kg?;
+        self.tiers[idx + 1..]
+            .iter()
+            .map(|r| r.tier)
+            .find(|t| t.mass_lt_kg.is_none_or(|lt| lt > cur_lt))
     }
 
     /// Tiers listed before the matched one (or all, when none matches) with what blocks them.

@@ -13,7 +13,7 @@ use egui::{RichText, Ui};
 
 /// Mass as "249 g" below one kilogram, otherwise "4.00 kg".
 fn fmt_mass(kg: f64) -> String {
-    if kg < 1.0 {
+    if kg.abs() < 1.0 {
         format!("{} g", fmt(kg * 1000.0, 0))
     } else {
         format!("{} kg", fmt(kg, 2))
@@ -113,6 +113,7 @@ fn facts_block(ui: &mut Ui, f: &DesignFacts) {
             &[
                 fmt(crate::regulation::rules::EASA_C1_ENERGY_J, 0),
                 fmt(crate::regulation::rules::FAA_11_FTLBF_J, 1),
+                fmt(crate::regulation::rules::FAA_25_FTLBF_J, 1),
             ],
         ))
         .small()
@@ -282,5 +283,13 @@ mod tests {
             n += 1;
         }
         assert!(n > 20);
+    }
+
+    #[test]
+    fn fmt_mass_handles_sub_kg_and_negative_kg() {
+        assert_eq!(fmt_mass(0.249), "249 g");
+        assert_eq!(fmt_mass(4.0), "4.00 kg");
+        assert_eq!(fmt_mass(-0.5), "-500 g");
+        assert_eq!(fmt_mass(-1.5), "-1.50 kg");
     }
 }

@@ -21,8 +21,10 @@ pub const FAA_055_LB_KG: f64 = 0.55 * LB_KG;
 pub const FAA_55_LB_KG: f64 = 55.0 * LB_KG;
 /// 87 knots (100 mph) ground speed limit of 14 CFR 107.51 in m/s.
 pub const FAA_87_KT_MS: f64 = 87.0 * 1852.0 / 3600.0;
-/// 11 ft-lbf of transferred kinetic energy (14 CFR 107.115 injury threshold) in joules.
+/// 11 ft-lbf of transferred kinetic energy (14 CFR 107.120 Category 2 threshold) in joules.
 pub const FAA_11_FTLBF_J: f64 = 11.0 * 1.355_817_948_331_4;
+/// 25 ft-lbf of transferred kinetic energy (14 CFR 107.130 Category 3 threshold) in joules.
+pub const FAA_25_FTLBF_J: f64 = 25.0 * 1.355_817_948_331_4;
 /// Maximum speed of EASA class C0 / C1 (Delegated Regulation (EU) 2019/945).
 pub const EASA_C01_SPEED_MS: f64 = 19.0;
 /// Impact-energy criterion of EASA class C1 (alternative to the 900 g limit).
@@ -132,6 +134,10 @@ pub struct Tier {
     pub mass_lt_kg: Option<f64>,
     /// If set, the mass upper bound is waived when the impact energy is at most this (J).
     pub mass_waiver_energy_j: Option<f64>,
+    /// Exclusive upper mass bound (kg) beyond which `mass_waiver_energy_j` does not apply.
+    pub mass_waiver_max_kg: Option<f64>,
+    /// When true, `mass_waiver_energy_j` does not apply to fixed-wing / winged aircraft.
+    pub mass_waiver_no_fixed_wing: bool,
     pub speed_max_ms: Option<f64>,
     pub energy_max_j: Option<f64>,
     pub dim_max_m: Option<f64>,
@@ -554,24 +560,48 @@ static REQ_FAA_CAT1: &[Req] = &[req(
     true,
 )];
 
-static REQ_FAA_CAT23: &[Req] = &[req(
+static REQ_FAA_CAT2: &[Req] = &[req(
     K::Operations,
     L::Info,
-    "regulation.req.faa_people_cat23",
+    "regulation.req.faa_people_cat2",
     true,
 )];
 
-static REQ_SHGM_0: &[Req] = &[
+static REQ_FAA_CAT3: &[Req] = &[req(
+    K::Operations,
+    L::Info,
+    "regulation.req.faa_people_cat3",
+    true,
+)];
+
+static REQ_SHGM_EXEMPT: &[Req] = &[
     req(
         K::Registration,
-        L::Conditional,
-        "regulation.req.shgm_reg_0",
+        L::NotRequired,
+        "regulation.req.shgm_reg_exempt",
         true,
     ),
     req(K::RemoteId, L::NotRequired, "regulation.req.shgm_rid", true),
     req(
         K::PilotCompetency,
-        L::Conditional,
+        L::NotRequired,
+        "regulation.req.shgm_pilot_exempt",
+        true,
+    ),
+    req(K::Operations, L::Info, "regulation.req.shgm_ops", true),
+];
+
+static REQ_SHGM_0: &[Req] = &[
+    req(
+        K::Registration,
+        L::Required,
+        "regulation.req.shgm_reg",
+        true,
+    ),
+    req(K::RemoteId, L::NotRequired, "regulation.req.shgm_rid", true),
+    req(
+        K::PilotCompetency,
+        L::Required,
         "regulation.req.shgm_pilot_0",
         true,
     ),
@@ -609,7 +639,7 @@ static REQ_SHGM_2: &[Req] = &[
         "regulation.req.shgm_pilot_2",
         true,
     ),
-    req(K::Operations, L::Info, "regulation.req.shgm_ops", true),
+    req(K::Operations, L::Info, "regulation.req.shgm_ops_3", true),
 ];
 
 static REQ_SHGM_3: &[Req] = &[
@@ -649,6 +679,8 @@ const fn tier(
         mass_ge_kg: 0.0,
         mass_lt_kg: None,
         mass_waiver_energy_j: None,
+        mass_waiver_max_kg: None,
+        mass_waiver_no_fixed_wing: false,
         speed_max_ms: None,
         energy_max_j: None,
         dim_max_m: None,
@@ -664,8 +696,6 @@ pub static TIERS: &[Tier] = &[
     Tier {
         mass_lt_kg: Some(0.25),
         speed_max_ms: Some(EASA_C01_SPEED_MS),
-        // Characteristic dimension limit of C0 is unconfirmed.
-        dim_max_m: Some(1.0),
         ..tier(
             "easa_c0",
             "easa_class",
@@ -678,8 +708,10 @@ pub static TIERS: &[Tier] = &[
     },
     Tier {
         mass_lt_kg: Some(0.9),
-        // The 80 J alternative to the 900 g limit: exact wording is unconfirmed.
+        // The 80 J alternative to the 900 g limit: restricted to non-fixed-wing under 4 kg.
         mass_waiver_energy_j: Some(EASA_C1_ENERGY_J),
+        mass_waiver_max_kg: Some(4.0),
+        mass_waiver_no_fixed_wing: true,
         speed_max_ms: Some(EASA_C01_SPEED_MS),
         ..tier(
             "easa_c1",
@@ -693,7 +725,6 @@ pub static TIERS: &[Tier] = &[
     },
     Tier {
         mass_lt_kg: Some(4.0),
-        dim_max_m: Some(3.0),
         ..tier(
             "easa_c2",
             "easa_class",
@@ -744,6 +775,7 @@ pub static TIERS: &[Tier] = &[
     // --- EASA open category, privately built / no class mark ---------------------------------
     Tier {
         mass_lt_kg: Some(0.25),
+        speed_max_ms: Some(EASA_C01_SPEED_MS),
         ..tier(
             "easa_u_a1",
             "easa_unmarked",
@@ -847,18 +879,44 @@ pub static TIERS: &[Tier] = &[
         energy_max_j: Some(FAA_11_FTLBF_J),
         mass_lt_kg: Some(FAA_55_LB_KG),
         ..tier(
-            "faa_cat23",
+            "faa_cat2",
             "faa_people",
-            "regulation.tier.faa_cat23",
-            "regulation.tier.faa_cat23.desc",
-            REQ_FAA_CAT23,
+            "regulation.tier.faa_cat2",
+            "regulation.tier.faa_cat2.desc",
+            REQ_FAA_CAT2,
             SRC_FAA_107,
             true,
         )
     },
-    // --- Turkey SHGM: every threshold here is unconfirmed (verify) --------------------------------
+    Tier {
+        energy_max_j: Some(FAA_25_FTLBF_J),
+        mass_lt_kg: Some(FAA_55_LB_KG),
+        ..tier(
+            "faa_cat3",
+            "faa_people",
+            "regulation.tier.faa_cat3",
+            "regulation.tier.faa_cat3.desc",
+            REQ_FAA_CAT3,
+            SRC_FAA_107,
+            true,
+        )
+    },
+    // --- Turkey SHGM: SHT-İHA Art. 2 & 6 ------------------------------------------------------
     Tier {
         mass_lt_kg: Some(0.5),
+        ..tier(
+            "shgm_exempt",
+            "shgm_class",
+            "regulation.tier.shgm_exempt",
+            "regulation.tier.shgm_exempt.desc",
+            REQ_SHGM_EXEMPT,
+            SRC_SHGM,
+            true,
+        )
+    },
+    Tier {
+        mass_ge_kg: 0.5,
+        mass_lt_kg: Some(4.0),
         ..tier(
             "shgm_0",
             "shgm_class",
@@ -870,8 +928,8 @@ pub static TIERS: &[Tier] = &[
         )
     },
     Tier {
-        mass_ge_kg: 0.5,
-        mass_lt_kg: Some(4.0),
+        mass_ge_kg: 4.0,
+        mass_lt_kg: Some(25.0),
         ..tier(
             "shgm_1",
             "shgm_class",
@@ -883,8 +941,8 @@ pub static TIERS: &[Tier] = &[
         )
     },
     Tier {
-        mass_ge_kg: 4.0,
-        mass_lt_kg: Some(25.0),
+        mass_ge_kg: 25.0,
+        mass_lt_kg: Some(150.0),
         ..tier(
             "shgm_2",
             "shgm_class",
@@ -896,7 +954,7 @@ pub static TIERS: &[Tier] = &[
         )
     },
     Tier {
-        mass_ge_kg: 25.0,
+        mass_ge_kg: 150.0,
         ..tier(
             "shgm_3",
             "shgm_class",
@@ -917,6 +975,12 @@ pub fn tiers_of(group_id: &str) -> impl Iterator<Item = &'static Tier> + '_ {
 /// Every i18n key referenced by the table (used by the integrity test).
 pub fn all_keys() -> Vec<&'static str> {
     let mut keys = Vec::new();
+    for s in super::SpeedSource::ALL {
+        keys.push(s.key());
+    }
+    for c in super::Criterion::ALL {
+        keys.push(c.key());
+    }
     for a in Authority::ALL {
         keys.push(a.name_key());
     }
