@@ -9,6 +9,7 @@
 //! - [`step`]: adım listesi öğesi
 //! - [`empty`]: boş durum
 //! - [`format`]: saf biçimlendirme yardımcıları
+pub mod airfoil_preview;
 pub mod alert;
 pub mod card;
 pub mod empty;
@@ -18,6 +19,7 @@ pub mod section;
 pub mod step;
 pub mod toggle;
 
+pub use airfoil_preview::{AirfoilPreviewOptions, airfoil_preview};
 pub use alert::{badge, banner, warning_row};
 pub use card::{MetricCard, card_columns, metric_card};
 pub use empty::empty_state;

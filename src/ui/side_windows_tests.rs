@@ -66,6 +66,10 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("type_cards.rs", include_str!("type_cards.rs")),
         ("panel_kit.rs", include_str!("panel_kit.rs")),
         ("wizard.rs", include_str!("wizard.rs")),
+        (
+            "components/airfoil_preview.rs",
+            include_str!("components/airfoil_preview.rs"),
+        ),
         ("widgets.rs", include_str!("widgets.rs")),
         ("mod.rs", include_str!("mod.rs")),
         ("acoustics.rs", include_str!("acoustics.rs")),

@@ -30,19 +30,61 @@ impl Default for AirfoilProfile {
     }
 }
 
+/// Profil geometrisinden hesaplanan temel kalınlık ve kamber metrikleri.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AirfoilMetrics {
+    /// Maksimum bağıl kalınlık oranı (t/c, örn. NACA 2412 için ~0.12).
+    pub max_thickness: f64,
+    /// Maksimum kalınlığın kord üzerindeki konumu (x/c, 0..1).
+    pub max_thickness_x: f64,
+    /// Maksimum bağıl kamber oranı (m/c, örn. NACA 2412 için ~0.02).
+    pub max_camber: f64,
+    /// Maksimum kamberin kord üzerindeki konumu (x/c, 0..1).
+    pub max_camber_x: f64,
+}
+
 impl AirfoilProfile {
+    /// 4 haneli NACA kodundan yeni bir profil üretir.
+    pub fn from_naca4(code: &str, num_points: usize, closed_te: bool) -> Result<Self, String> {
+        let trimmed = code.trim();
+        let pts = generate_naca4_points(trimmed, num_points, closed_te)?;
+        Ok(Self {
+            name: format!("NACA {trimmed}"),
+            is_naca: true,
+            naca_code: trimmed.to_string(),
+            closed_te,
+            num_points,
+            points: pts,
+        })
+    }
+
     /// Kuyruk yüzeyleri için varsayılan simetrik profil (NACA 0009).
     pub fn default_tail_symmetric() -> Self {
-        let code = "0009";
-        let pts = generate_naca4_points(code, 80, true).unwrap_or_default();
-        Self {
+        Self::from_naca4("0009", 80, true).unwrap_or_else(|_| Self {
             name: "NACA 0009".into(),
             is_naca: true,
-            naca_code: code.into(),
+            naca_code: "0009".into(),
             closed_te: true,
             num_points: 80,
-            points: pts,
+            points: Vec::new(),
+        })
+    }
+
+    /// Profil koordinatlarından (veya gerekirse NACA kodundan) kalınlık ve kamber metriklerini hesaplar.
+    pub fn metrics(&self) -> Option<AirfoilMetrics> {
+        if let Some(m) = analyze_airfoil_points(&self.points) {
+            return Some(m);
         }
+        if self.is_naca && self.naca_code.len() == 4 {
+            if let Ok(pts) = generate_naca4_points(
+                &self.naca_code,
+                self.num_points.clamp(40, 200),
+                self.closed_te,
+            ) {
+                return analyze_airfoil_points(&pts);
+            }
+        }
+        None
     }
 
     /// Maksimum bağıl kalınlık oranı (t/c).
@@ -276,6 +318,118 @@ pub fn parse_selig_dat(content: &str) -> Result<AirfoilProfile, String> {
     })
 }
 
+/// Korda normalize edilip üst ve alt yüzey olarak ayrılmış profil noktaları (x: 0..1).
+pub struct AirfoilSurfaces {
+    pub upper: Vec<[f64; 2]>,
+    pub lower: Vec<[f64; 2]>,
+}
+
+/// Sonlu koordinatları [0, 1] kord aralığına normalize eder ve üst/alt yüzeylere ayırır (x: 0..1).
+pub fn split_airfoil_surfaces(points: &[[f64; 2]]) -> Option<AirfoilSurfaces> {
+    let finite: Vec<[f64; 2]> = points
+        .iter()
+        .copied()
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .collect();
+    if finite.len() < 6 {
+        return None;
+    }
+    let xmin = finite.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min);
+    let xmax = finite
+        .iter()
+        .map(|p| p[0])
+        .fold(f64::NEG_INFINITY, f64::max);
+    let chord = xmax - xmin;
+    if !chord.is_finite() || chord <= 1e-9 {
+        return None;
+    }
+    let norm: Vec<[f64; 2]> = finite
+        .into_iter()
+        .map(|p| [(p[0] - xmin) / chord, p[1] / chord])
+        .collect();
+    let le = norm
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1[0].total_cmp(&b.1[0]))
+        .map(|(i, _)| i)?;
+
+    let mut upper: Vec<[f64; 2]> = norm[..=le].iter().copied().rev().collect();
+    let mut lower: Vec<[f64; 2]> = norm[le..].to_vec();
+    if upper.len() < 2 || lower.len() < 2 {
+        return None;
+    }
+    upper.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    lower.sort_by(|a, b| a[0].total_cmp(&b[0]));
+
+    let mean_u = upper.iter().map(|p| p[1]).sum::<f64>() / upper.len() as f64;
+    let mean_l = lower.iter().map(|p| p[1]).sum::<f64>() / lower.len() as f64;
+    if mean_u < mean_l {
+        std::mem::swap(&mut upper, &mut lower);
+    }
+    Some(AirfoilSurfaces { upper, lower })
+}
+
+/// x artan yüzey nokta dizisinde doğrusal ara değerleme.
+pub fn interp_surface_y(pts: &[[f64; 2]], x: f64) -> Option<f64> {
+    if pts.is_empty() {
+        return None;
+    }
+    if x <= pts[0][0] {
+        return Some(pts[0][1]);
+    }
+    for w in pts.windows(2) {
+        if x <= w[1][0] {
+            let dx = w[1][0] - w[0][0];
+            return Some(if dx.abs() < 1e-12 {
+                0.5 * (w[0][1] + w[1][1])
+            } else {
+                w[0][1] + (w[1][1] - w[0][1]) * (x - w[0][0]) / dx
+            });
+        }
+    }
+    Some(pts[pts.len() - 1][1])
+}
+
+/// Profil koordinatlarından maksimum kalınlık (t/c ve x/c konumu) ile maksimum kamberi hesaplar.
+pub fn analyze_airfoil_points(points: &[[f64; 2]]) -> Option<AirfoilMetrics> {
+    let surfaces = split_airfoil_surfaces(points)?;
+    const SAMPLES: usize = 200;
+    let mut max_thickness = 0.0_f64;
+    let mut max_thickness_x = 0.0_f64;
+    let mut max_camber = 0.0_f64;
+    let mut max_camber_x = 0.0_f64;
+
+    for i in 1..SAMPLES {
+        let x = i as f64 / SAMPLES as f64;
+        if let (Some(yu), Some(yl)) = (
+            interp_surface_y(&surfaces.upper, x),
+            interp_surface_y(&surfaces.lower, x),
+        ) {
+            let t = yu - yl;
+            if t.is_finite() && t > max_thickness {
+                max_thickness = t;
+                max_thickness_x = x;
+            }
+            let c = (0.5 * (yu + yl)).abs();
+            if c.is_finite() && c > max_camber {
+                max_camber = c;
+                max_camber_x = x;
+            }
+        }
+    }
+
+    if !max_thickness.is_finite() || max_thickness <= 0.0 {
+        return None;
+    }
+
+    Some(AirfoilMetrics {
+        max_thickness,
+        max_thickness_x,
+        max_camber,
+        max_camber_x,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,5 +506,32 @@ CLARK Y TEST
         assert_eq!(prof.name, "CLARK Y TEST");
         assert_eq!(prof.points.len(), 10);
         assert_eq!(prof.points[0], [1.0, 0.0]);
+        assert!(prof.metrics().is_some());
+    }
+
+    #[test]
+    fn test_naca_2412_metrics_thickness_and_camber_positions() {
+        let prof = AirfoilProfile::from_naca4("2412", 120, true).unwrap();
+        let m = prof.metrics().expect("NACA 2412 metrics");
+        assert!(
+            (m.max_thickness - 0.12).abs() < 0.004,
+            "max thickness ~12%, got {}",
+            m.max_thickness
+        );
+        assert!(
+            (m.max_thickness_x - 0.30).abs() < 0.03,
+            "max thickness x/c ~30%, got {}",
+            m.max_thickness_x
+        );
+        assert!(
+            (m.max_camber - 0.02).abs() < 0.003,
+            "max camber ~2%, got {}",
+            m.max_camber
+        );
+        assert!(
+            (m.max_camber_x - 0.40).abs() < 0.03,
+            "max camber x/c ~40%, got {}",
+            m.max_camber_x
+        );
     }
 }
