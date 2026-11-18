@@ -253,6 +253,10 @@ const N_AZ: usize = 720;
 /// Tüm rotorlar × parçalar için kapalı alan ve aşağı yük.
 pub fn blockage(rotors: &[Rotor], items: &[Item], rho: f64, hub_cutout: f64) -> BlockageOut {
     let mut out = BlockageOut::default();
+    if !(rho.is_finite() && rho > 0.0) {
+        return out;
+    }
+    let depth = |it: &Item| if it.z.is_finite() { it.z.max(0.0) } else { 0.0 };
     let hub = if hub_cutout.is_finite() {
         hub_cutout.clamp(0.0, 0.9)
     } else {
@@ -278,7 +282,7 @@ pub fn blockage(rotors: &[Rotor], items: &[Item], rho: f64, hub_cutout: f64) -> 
         let cand: Vec<usize> = (0..items.len()).filter(|&i| near(&boxes[i])).collect();
         for &ii in &cand {
             let it = &items[ii];
-            let z = if it.z.is_finite() { it.z.max(0.0) } else { 0.0 };
+            let z = depth(it);
             let rs = slipstream_radius_at(0.0, vi, rot.r, z);
             let r0 = hub * rs;
             let dr = (rs - r0) / N_RAD as f64;
@@ -296,9 +300,13 @@ pub fn blockage(rotors: &[Rotor], items: &[Item], rho: f64, hub_cutout: f64) -> 
                     if !it.shape.contains(x, y) {
                         continue;
                     }
+                    // Daha sığ (üstteki) parça gölgeler; eşit derinlikte listede öndeki.
                     if cand
                         .iter()
-                        .take_while(|&&o| o < ii)
+                        .filter(|&&o| {
+                            let zo = depth(&items[o]);
+                            zo < z || (zo == z && o < ii)
+                        })
                         .any(|&o| items[o].shape.contains(x, y))
                     {
                         continue;
@@ -494,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn upper_item_shadows_lower_item() {
+    fn shallower_item_shadows_deeper_item_in_any_order() {
         let plate = Item {
             name: "plate".into(),
             kind: ItemKind::Body,
@@ -502,11 +510,27 @@ mod tests {
                 c: [0.2, 0.0],
                 r: 0.2,
             },
-            z: 0.03,
+            z: 0.01,
             cd: 1.0,
         };
-        let out = blockage(&[rotor()], &[plate, arm(0.024)], 1.225, 0.15);
-        assert!(out.hits.iter().all(|h| h.item == 0));
+        // Plate (z = 0.01) is above the arm (z = 0.03): it shadows the arm whichever comes first.
+        let out = blockage(&[rotor()], &[plate.clone(), arm(0.024)], 1.225, 0.15);
+        assert!(!out.hits.is_empty() && out.hits.iter().all(|h| h.item == 0));
+        let out = blockage(&[rotor()], &[arm(0.024), plate.clone()], 1.225, 0.15);
+        assert!(!out.hits.is_empty() && out.hits.iter().all(|h| h.item == 1));
+        // Deeper plate: the arm wins instead.
+        let deep = Item { z: 0.05, ..plate };
+        let out = blockage(&[rotor()], &[deep, arm(0.024)], 1.225, 0.15);
+        assert!(out.hits.iter().any(|h| h.item == 1));
+    }
+
+    #[test]
+    fn invalid_air_density_gives_no_blockage() {
+        for rho in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            let out = blockage(&[rotor()], &[arm(0.024)], rho, 0.15);
+            assert_eq!(out.total_force, 0.0);
+            assert!(out.hits.is_empty());
+        }
     }
 
     #[test]

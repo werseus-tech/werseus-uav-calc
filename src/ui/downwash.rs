@@ -52,7 +52,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut DwState) {
         st.view = View::Hover;
     }
     match (st.view, &out) {
-        (View::Hover, DownwashOut { hover: Some(h), .. }) => show_hover(ui, h),
+        (View::Hover, DownwashOut { hover: Some(h), .. }) => show_hover(ui, h, st.coeffs.tip_warn),
         (View::Cruise, DownwashOut { slip: Some(s), .. }) => show_slip(ui, s),
         _ => {
             ui.colored_label(theme::tokens(ui).warning, t("downwash.no_data"));
@@ -67,13 +67,13 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut DwState) {
 // Askı
 // ------------------------------------------------------------------------------------------
 
-fn show_hover(ui: &mut Ui, h: &HoverOut) {
+fn show_hover(ui: &mut Ui, h: &HoverOut, tip_warn: f64) {
     let tk = theme::tokens(ui);
     section(ui, t("downwash.hover_title"));
     ui.label(tf(
         "downwash.hover_inputs",
         &[
-            format!("{}", h.rotors.len()),
+            format!("{}", h.rotors.len() * if h.coax.is_some() { 2 } else { 1 }),
             fmt(h.weight, 1),
             fmt(h.v_i, 1),
             fmt(h.v_far, 1),
@@ -82,7 +82,7 @@ fn show_hover(ui: &mut Ui, h: &HoverOut) {
     ));
     let w = ui.available_width().max(260.0);
     let height = (w * 0.55).clamp(220.0, 420.0);
-    hover_schematic(ui, h, w, height);
+    hover_schematic(ui, h, tip_warn, w, height);
     ui.label(RichText::new(t("downwash.schematic_legend")).color(tk.text_weak));
 
     section(ui, t("downwash.table_title"));
@@ -276,7 +276,7 @@ fn draw_shape(painter: &egui::Painter, vp: &Vp, shape: &Shape, fill: Color32, st
     }
 }
 
-fn hover_schematic(ui: &mut Ui, h: &HoverOut, w: f32, height: f32) {
+fn hover_schematic(ui: &mut Ui, h: &HoverOut, tip_warn: f64, w: f32, height: f32) {
     let tk = theme::tokens(ui);
     let (rect, painter) = canvas(ui, w, height);
     let mut b = [
@@ -326,7 +326,7 @@ fn hover_schematic(ui: &mut Ui, h: &HoverOut, w: f32, height: f32) {
         painter.circle_filled(vp.pt(*q), dot, tk.warning);
     }
     for pr in &h.pairs {
-        if pr.warn(0.10) {
+        if pr.warn(tip_warn) {
             let (a, bb) = (h.rotors[pr.i], h.rotors[pr.j]);
             let col = if pr.overlap() { tk.danger } else { tk.warning };
             painter.line_segment(
@@ -484,7 +484,7 @@ fn slip_schematic(ui: &mut Ui, s: &SlipOut, w: f32, height: f32) {
         } = it.shape
         {
             let y1 = rw.min(half_span);
-            if y1 > y_min {
+            if s.cruise.s_imm > 0.0 && y1 > y_min {
                 let imm = Shape::Wing {
                     x_le_root,
                     c_root,
@@ -522,9 +522,15 @@ fn slip_schematic(ui: &mut Ui, s: &SlipOut, w: f32, height: f32) {
 // ------------------------------------------------------------------------------------------
 
 fn coeff_editor(ui: &mut Ui, c: &mut Coeffs, p: &Project) {
+    coeff_editor_open(ui, c, p, None);
+}
+
+/// `open`: bölümü zorla aç/kapat (`None`: kullanıcının durumu, varsayılan kapalı).
+fn coeff_editor_open(ui: &mut Ui, c: &mut Coeffs, p: &Project, open: Option<bool>) {
     egui::CollapsingHeader::new(RichText::new(t("downwash.coeffs_title")).strong())
         .id_salt("dw_coeffs")
         .default_open(false)
+        .open(open)
         .show(ui, |ui| {
             ui.label(RichText::new(t("downwash.coeffs_intro")).color(theme::tokens(ui).text_weak));
             let auto_cd = c.arm_cd(p);
@@ -649,7 +655,7 @@ mod tests {
                                         egui::ScrollArea::vertical().show(ui, |ui| {
                                             show(ui, p, &m, &mut st);
                                             // Katsayı bölümü açıkken de çizilsin.
-                                            coeff_editor(ui, &mut st.coeffs, p);
+                                            coeff_editor_open(ui, &mut st.coeffs, p, Some(true));
                                         });
                                     });
                                 });

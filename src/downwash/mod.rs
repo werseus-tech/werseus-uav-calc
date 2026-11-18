@@ -522,7 +522,9 @@ fn finish_hover(
     let interaction_frac = blockage::interaction_fraction(&pairs, rotors.len());
     let lost = (download_frac + interaction_frac).clamp(0.0, 0.9);
     let net_frac = 1.0 - lost;
-    let thrust_required = weight / net_frac;
+    // Dikey denge: yalnız gövde bloklaması (download) itkiyi artırır; uç açıklığı kaybı sabit
+    // güçte itki verimini düşürür, gereken itkiyi (N) değil gücü etkiler.
+    let thrust_required = weight / (1.0 - download_frac);
     // İdeal güç ∝ T^1.5 (Leishman 2006, denklem 2.19).
     let ratio = (1.0 / net_frac).powf(1.5) - 1.0;
     let p_hover = if fin(p_hover) { p_hover.max(0.0) } else { 0.0 };
@@ -657,12 +659,20 @@ fn fixed_wing_slip(p: &Project, m: &Model, c: &Coeffs, lay: &Layout) -> Option<S
             return SlipPoint::default();
         }
         let vi = induced_velocity_axial(thrust, v, rho, a);
-        let dv_w = added_velocity_at(vi, r, z_wing);
-        let r_w = slipstream_radius_at(v, vi, r, z_wing);
+        // Yalnız diskin akış yönündeki (z > 0) parçaları hava akımındadır; diskin önündeki
+        // yüzeyler (itici düzende kanat ve gövde) akımın dışındadır.
+        let (dv_w, r_w) = if z_wing > 0.0 {
+            (
+                added_velocity_at(vi, r, z_wing),
+                slipstream_radius_at(v, vi, r, z_wing),
+            )
+        } else {
+            (0.0, r)
+        };
         // Hava akımındaki kanat: |y| ∈ [d/2, r_w] (pervane gövde ekseninde).
         let y1 = r_w.min(half_span);
         let mut s_imm = 0.0;
-        if y1 > half_d {
+        if z_wing > 0.0 && y1 > half_d {
             let n = 40;
             let dy = (y1 - half_d) / n as f64;
             for k in 0..n {
@@ -675,9 +685,15 @@ fn fixed_wing_slip(p: &Project, m: &Model, c: &Coeffs, lay: &Layout) -> Option<S
         let v_w = v + dv_w;
         let dq_w = 0.5 * rho * v_w * v_w - q;
         // Gövde: kesitin hava akımında kalan oranı ≈ min(1, r/(d/2)).
-        let dv_f = added_velocity_at(vi, r, z_fuse);
-        let r_f = slipstream_radius_at(v, vi, r, z_fuse);
-        let f_frac = if half_d > 0.0 {
+        let (dv_f, r_f) = if z_fuse > 0.0 {
+            (
+                added_velocity_at(vi, r, z_fuse),
+                slipstream_radius_at(v, vi, r, z_fuse),
+            )
+        } else {
+            (0.0, r)
+        };
+        let f_frac = if z_fuse > 0.0 && half_d > 0.0 {
             (r_f / half_d).min(1.0)
         } else {
             0.0
@@ -686,6 +702,9 @@ fn fixed_wing_slip(p: &Project, m: &Model, c: &Coeffs, lay: &Layout) -> Option<S
         let dd_wing = cd0_wing * s_imm * dq_w;
         let dd_fuse = cd0_fuse_s * f_frac * dq_f;
         let dd_total = dd_wing + dd_fuse;
+        if !pos(q) {
+            return SlipPoint::default();
+        }
         let cl = w / (q * p.s);
         let dl = lift_k * cl * s_imm * dq_w;
         SlipPoint {
@@ -717,8 +736,12 @@ fn fixed_wing_slip(p: &Project, m: &Model, c: &Coeffs, lay: &Layout) -> Option<S
     let t_low = thrust_at_ideal_power(m.prop.p_ideal, v_low, rho, a, m.prop.t_static);
     let d_low = if pos(v_low) && pos(m.aero.k) {
         let q = 0.5 * rho * v_low * v_low;
-        let cl = w / (q * p.s);
-        q * p.s * (m.aero.cd0 + m.aero.k * cl * cl)
+        if pos(q) {
+            let cl = w / (q * p.s);
+            q * p.s * (m.aero.cd0 + m.aero.k * cl * cl)
+        } else {
+            0.0
+        }
     } else {
         0.0
     };
@@ -859,6 +882,86 @@ mod tests {
                 finite_slip(&s.cruise, "broken");
             }
         }
+    }
+
+    #[test]
+    fn broken_coefficients_do_not_panic_or_nan() {
+        // Primary geometry stays valid so the calculation bodies (not just the guards) run.
+        let lib = Library::embedded();
+        let bad = Coeffs {
+            cd_arm: f64::NAN,
+            arm_width: f64::NAN,
+            cd_body: f64::NAN,
+            cd_component: -1.0,
+            component_density: 0.0,
+            cd_wing: f64::INFINITY,
+            cd_fuselage: f64::NAN,
+            cd_boom: f64::NAN,
+            rotor_height: f64::NAN,
+            hub_cutout: f64::NAN,
+            tip_warn: f64::NAN,
+            tip_loss_touch: f64::NAN,
+            slip_lift_factor: f64::NAN,
+        };
+        for dt in DroneType::ALL {
+            let mut p = Project::default();
+            p.set_drone_type(dt);
+            let m = calc_eval(&p, &lib);
+            let out = evaluate(&p, &m, &bad);
+            let mut ran = false;
+            if let Some(h) = &out.hover {
+                finite_hover(h, "bad coeffs");
+                ran = true;
+            }
+            if let Some(s) = &out.slip {
+                finite_slip(&s.cruise, "bad coeffs");
+                finite_slip(&s.low, "bad coeffs");
+                ran = true;
+            }
+            assert!(ran || !dt.has_wing(), "{dt:?}: nothing computed");
+        }
+    }
+
+    #[test]
+    fn required_thrust_ignores_tip_interaction_but_power_does_not() {
+        let lib = Library::embedded();
+        let p = crate::project::load_example("quad_250_x.json").unwrap();
+        let m = calc_eval(&p, &lib);
+        let base = evaluate(&p, &m, &Coeffs::default()).hover.unwrap();
+        // Crowd the tips together: interaction loss rises, blockage download does not.
+        let crowded = Coeffs {
+            tip_loss_touch: 0.3,
+            tip_warn: 5.0,
+            ..Default::default()
+        };
+        let h = evaluate(&p, &m, &crowded).hover.unwrap();
+        assert!(h.interaction_frac > base.interaction_frac);
+        let expect = h.weight / (1.0 - h.download_frac);
+        assert!((h.thrust_required - expect).abs() < 1e-9 * expect);
+        assert!((base.thrust_required - base.weight / (1.0 - base.download_frac)).abs() < 1e-9);
+        assert!(h.extra_power_pct > base.extra_power_pct);
+    }
+
+    #[test]
+    fn surfaces_upstream_of_the_propeller_are_not_in_the_slipstream() {
+        let lib = Library::embedded();
+        let p = crate::project::load_example("flying_wing_1200mm.json").unwrap();
+        let m = calc_eval(&p, &lib);
+        let lay = Layout::new(&p, &m);
+        assert_eq!(lay.motor_mount.mount_type, "pusher");
+        let s = evaluate(&p, &m, &Coeffs::default()).slip.unwrap();
+        assert!(s.pusher);
+        for q in [&s.cruise, &s.low] {
+            assert_eq!(q.s_imm, 0.0, "{q:?}");
+            assert_eq!(q.dd_total, 0.0, "{q:?}");
+            assert_eq!(q.dl, 0.0, "{q:?}");
+            assert_eq!(q.v_at_wing, q.v, "{q:?}");
+        }
+        // A tractor on a conventional fixed wing still immerses the wing.
+        let p = crate::project::load_example("fixed_wing_2kg_1600mm.json").unwrap();
+        let m = calc_eval(&p, &lib);
+        let s = evaluate(&p, &m, &Coeffs::default()).slip.unwrap();
+        assert!(!s.pusher && s.cruise.s_imm > 0.0);
     }
 
     #[test]
