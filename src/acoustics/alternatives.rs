@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Propeller alternatives for the same required thrust, ranked by dBA.
 //!
-//! For a rotor of diameter `D` producing thrust `T = Ct rho n^2 D^4` with a fixed thrust
-//! coefficient `Ct` (the project keeps `Ct = 0.10` for its hover RPM estimate), a diameter scale
-//! factor `f = D' / D` at equal thrust gives:
+//! For a hover/static rotor of diameter `D` and blade count `B` producing thrust
+//! `T = Ct rho n^2 D^4` with `Ct` proportional to solidity (blade count `B` at fixed blade
+//! loading), a diameter scale factor `f = D' / D` and blade count `B'` at equal thrust give:
 //!
-//! * `n' = n / f^2` (rotational speed), so tip speed scales with `1 / f`;
+//! * `n' = n / f^2 * sqrt(B / B')` (rotational speed), so tip speed scales with `sqrt(B / B') / f`;
 //! * `P' = P / f` (momentum theory: `P = T^1.5 / (FM sqrt(2 rho A))`, same figure of merit).
 //!
-//! A different blade count keeps `n` and `P` (same `Ct`, a simplification: real propellers with
-//! more blades usually need a slightly lower pitch or RPM for the same thrust). The results are
-//! a suggestion table, nothing in the project is changed.
+//! For forward cruise (`forward_speed_ms > 0`), rotational speed scales at matched advance ratio
+//! (`n' = (n / f) * sqrt(B / B')`) and shaft power is kept at the baseline `T * V / eta_p` rather
+//! than dividing by `f`. The results are a suggestion table; nothing in the project is changed.
 
 use super::method::{Air, Observer, RotorSet, estimate};
 use super::sources::Source;
@@ -58,12 +58,20 @@ pub fn scaled_rotors(base: &RotorSet, diameter_factor: f64, blades: u32) -> Roto
     } else {
         1.0
     };
+    let b0 = base.blades.max(1) as f64;
+    let b1 = blades.max(1) as f64;
+    let blade_scale = (b0 / b1).sqrt();
+    let (rpm_scale, power_scale) = if base.forward_speed_ms <= 0.0 {
+        (blade_scale / (f * f), 1.0 / f)
+    } else {
+        (blade_scale / f, 1.0)
+    };
     RotorSet {
         diameter_m: base.diameter_m * f,
         blades,
         n_rotors: base.n_rotors,
-        rpm: base.rpm / (f * f),
-        shaft_power_w: base.shaft_power_w / f,
+        rpm: base.rpm * rpm_scale,
+        shaft_power_w: base.shaft_power_w * power_scale,
         forward_speed_ms: base.forward_speed_ms,
     }
 }
@@ -180,5 +188,56 @@ mod tests {
         assert!(rows.iter().any(|r| r.is_current && r.blades == 5));
         s.rotors.rpm = 0.0;
         assert!(alternatives(&s, &Air::default(), &Observer::default()).is_empty());
+    }
+
+    #[test]
+    fn cruise_scaling_matches_advance_ratio_and_preserves_power() {
+        let cruise = RotorSet {
+            diameter_m: 0.254,
+            blades: 2,
+            n_rotors: 1,
+            rpm: 7500.0,
+            shaft_power_w: 120.0,
+            forward_speed_ms: 20.0,
+        };
+        for f in DIAMETER_FACTORS {
+            let r = scaled_rotors(&cruise, f, 2);
+            let nd0 = cruise.diameter_m * cruise.rpm;
+            let nd1 = r.diameter_m * r.rpm;
+            assert!((nd0 - nd1).abs() / nd0 < 1e-12, "{f}");
+            assert!(
+                (r.shaft_power_w - cruise.shaft_power_w).abs() < 1e-12,
+                "{f}"
+            );
+        }
+    }
+
+    #[test]
+    fn more_blades_reduce_rpm_and_dba_on_10in_hover_rotor() {
+        let s = Source {
+            point: OpPoint::LiftHover,
+            rotors: RotorSet {
+                diameter_m: 0.254,
+                blades: 2,
+                n_rotors: 4,
+                rpm: 5500.0,
+                shaft_power_w: 80.0,
+                forward_speed_ms: 0.0,
+            },
+            thrust_n: 5.0,
+            max_diameter_m: None,
+        };
+        let rows = alternatives(&s, &Air::default(), &Observer::default());
+        let at_f1 = |b: u32| {
+            rows.iter()
+                .find(|r| (r.diameter_factor - 1.0).abs() < 1e-12 && r.blades == b)
+                .unwrap()
+        };
+        let b2 = at_f1(2);
+        let b3 = at_f1(3);
+        let b4 = at_f1(4);
+        assert!((b3.rpm - b2.rpm * (2.0_f64 / 3.0).sqrt()).abs() < 1e-9);
+        assert!(b3.oaspl_a < b2.oaspl_a);
+        assert!(b4.oaspl_a < b3.oaspl_a);
     }
 }

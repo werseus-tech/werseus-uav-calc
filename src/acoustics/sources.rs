@@ -92,7 +92,8 @@ pub fn points_for(dt: DroneType) -> &'static [OpPoint] {
     }
 }
 
-/// Hover RPM per lift rotor: the project override, else `sqrt(T / (Ct rho D^4))`.
+/// Hover RPM per lift rotor: the project override, else `sqrt(T / (Ct rho D^4))`, or `0.0`
+/// if inputs cannot yield a positive finite RPM.
 pub fn hover_rpm(p: &Project, m: &Model) -> f64 {
     let ovr = p.mr_hover_rpm_override;
     if ovr.is_finite() && ovr > 0.0 {
@@ -101,30 +102,39 @@ pub fn hover_rpm(p: &Project, m: &Model) -> f64 {
     let d4 = p.mr_d_prop.powi(4);
     let t = m.mr.t_hover_motor;
     let rho = m.atmo.rho;
-    if p.mr_d_prop > 0.0 && t > 0.0 && rho > 0.0 {
+    if p.mr_d_prop.is_finite()
+        && p.mr_d_prop > 0.0
+        && t.is_finite()
+        && t > 0.0
+        && rho.is_finite()
+        && rho > 0.0
+    {
         let n_sq = t / (CT_HOVER * rho * d4);
         if n_sq.is_finite() && n_sq > 0.0 {
-            return n_sq.sqrt() * 60.0;
+            let rpm = n_sq.sqrt() * 60.0;
+            if rpm.is_finite() && rpm > 0.0 {
+                return rpm;
+            }
         }
     }
-    5000.0
+    0.0
 }
 
 fn lift_source(p: &Project, m: &Model, point: OpPoint) -> Source {
     let t_hover = m.mr.t_hover_motor;
     let t_max = p.mr_t_max_motor;
-    let ratio = if point == OpPoint::LiftMax && t_hover > 0.0 && t_max > t_hover {
-        t_max / t_hover
+    let (ratio, thrust) = if point == OpPoint::LiftMax {
+        let r = if t_hover > 0.0 && t_max.is_finite() && t_max > 0.0 {
+            t_max / t_hover
+        } else {
+            0.0
+        };
+        (r, t_max)
     } else {
-        1.0
+        (1.0, t_hover)
     };
     let rpm = hover_rpm(p, m) * ratio.sqrt();
     let power = m.mr.p_shaft_motor * ratio.powf(1.5);
-    let thrust = if point == OpPoint::LiftMax {
-        t_hover.max(t_max)
-    } else {
-        t_hover
-    };
     Source {
         point,
         rotors: RotorSet {
@@ -200,10 +210,28 @@ mod tests {
             assert!(!s.is_empty());
             for x in &s {
                 let r = &x.rotors;
-                assert!(r.diameter_m > 0.0, "{dt:?} {:?}", x.point);
+                assert!(
+                    r.diameter_m.is_finite() && r.diameter_m > 0.0,
+                    "{dt:?} {:?}",
+                    x.point
+                );
                 assert!(r.rpm.is_finite() && r.rpm > 0.0, "{dt:?} {:?}", x.point);
-                assert!(r.shaft_power_w.is_finite(), "{dt:?} {:?}", x.point);
-                assert!(r.n_rotors >= 1);
+                assert!(
+                    r.shaft_power_w.is_finite() && r.shaft_power_w > 0.0,
+                    "{dt:?} {:?}",
+                    x.point
+                );
+                assert!(
+                    x.thrust_n.is_finite() && x.thrust_n > 0.0,
+                    "{dt:?} {:?}",
+                    x.point
+                );
+                assert!(
+                    r.forward_speed_ms.is_finite() && r.forward_speed_ms >= 0.0,
+                    "{dt:?} {:?}",
+                    x.point
+                );
+                assert!(r.blades >= 1 && r.n_rotors >= 1);
             }
         }
     }
@@ -229,5 +257,40 @@ mod tests {
         let m = evaluate(&p, &Library::embedded());
         assert!(source_for(&p, &m, OpPoint::Cruise, 2).is_none());
         assert!(source_for(&p, &m, OpPoint::LiftHover, 2).is_some());
+    }
+
+    #[test]
+    fn hover_rpm_returns_zero_when_inputs_invalid() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        p.mr_hover_rpm_override = 0.0;
+        let mut m = evaluate(&p, &Library::embedded());
+        m.mr.t_hover_motor = 0.0;
+        assert_eq!(hover_rpm(&p, &m), 0.0);
+        let src = source_for(&p, &m, OpPoint::LiftHover, 2).unwrap();
+        assert!(
+            !crate::acoustics::method::estimate(&src.rotors, &air_of(&m), &Default::default())
+                .valid
+        );
+
+        let mut m2 = evaluate(&p, &Library::embedded());
+        m2.atmo.rho = 0.0;
+        assert_eq!(hover_rpm(&p, &m2), 0.0);
+
+        p.mr_d_prop = 1e80;
+        assert_eq!(hover_rpm(&p, &evaluate(&p, &Library::embedded())), 0.0);
+    }
+
+    #[test]
+    fn underpowered_lift_max_uses_actual_t_max() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        let m = evaluate(&p, &Library::embedded());
+        p.mr_t_max_motor = m.mr.t_hover_motor * 0.5;
+        let hover = source_for(&p, &m, OpPoint::LiftHover, 2).unwrap();
+        let max = source_for(&p, &m, OpPoint::LiftMax, 2).unwrap();
+        assert!((max.thrust_n - p.mr_t_max_motor).abs() < 1e-12);
+        assert!(max.rotors.rpm < hover.rotors.rpm);
+        assert!(max.rotors.shaft_power_w < hover.rotors.shaft_power_w);
     }
 }

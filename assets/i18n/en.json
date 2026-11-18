@@ -2781,7 +2781,7 @@
   "acoustics.spec.tones": "Blade-pass harmonics",
   "acoustics.axis_freq": "Frequency (Hz)",
   "acoustics.axis_level": "Level (dB)",
-  "acoustics.spec_note": "Tonal lines at k times the blade-pass frequency, rolling off about 9 dB per doubling of harmonic number, on top of a broadband hump centred near ten times the blade-pass frequency.",
+  "acoustics.spec_note": "Tonal lines at k times the blade-pass frequency, rolling off about 9 dB per doubling of harmonic number, on top of a broadband hump centred near twenty times the shaft rotation frequency.",
   "acoustics.alt.title": "Quieter propeller options at the same thrust",
   "acoustics.alt.intro": "At equal thrust (T proportional to rho n^2 D^4, with the same thrust coefficient the project uses for hover RPM) a larger, slower propeller usually has a lower blade-pass frequency and is quieter. This list is a suggestion only; nothing in the project is changed.",
   "acoustics.alt.rank": "#",
@@ -2797,7 +2797,7 @@
   "acoustics.alt.note": "Note",
   "acoustics.alt.current": "Current",
   "acoustics.alt.too_big": "Larger than the frame allows",
-  "acoustics.alt.caveat": "More blades are assumed to need the same RPM and power at equal thrust, which real propellers do not exactly follow. Check frame clearance, motor KV and battery current before changing anything.",
+  "acoustics.alt.caveat": "More blades are assumed to scale RPM by sqrt(B0 / B) at fixed blade loading and equal thrust, which real propellers do not exactly follow. Check frame clearance, motor KV and battery current before changing anything.",
   "acoustics.method.title": "Method and validity",
-  "acoustics.method.body": "Tonal level: Hamilton Standard form (SAE AIR 1407) with 15.3 log10(power), -20 log10(diameter), +38.5 per unit tip Mach, -3 dB per blade above two, +10 log10(rotor count), -20 log10(distance) and an optional +3 dB ground reflection, re-anchored to 79 dB at 1 m for a 10 inch, 2-blade rotor at 100 W and Mach 0.45. Broadband level: 75 dB at 130 m/s tip speed with a 50 log10(speed) law. A-weighting follows IEC 61672. Valid for tip Mach up to about 0.7, distances from 1 m or two diameters, 2 to 6 blades, 0.1 to 1 m diameter. No directivity, atmospheric absorption, motor or airframe noise."
+  "acoustics.method.body": "Tonal level: Hamilton Standard form (SAE AIR 1407) with 15.3 log10(power), -20 log10(diameter), +38.5 per unit tip Mach above 0.45 (40 log10(M/0.45) below), -3 dB per blade above two, +10 log10(rotor count), -20 log10(distance) and an optional +3 dB ground reflection, re-anchored to 79 dB at 1 m for a 10 inch, 2-blade rotor at 100 W and Mach 0.45. Broadband level: 75 dB at 153.1 m/s tip speed with a 50 log10(speed) law. A-weighting follows IEC 61672. Valid for tip Mach up to about 0.7, distances from 1 m or two diameters, 2 to 6 blades, 0.1 to 1 m diameter. No directivity, atmospheric absorption, motor or airframe noise."
 }

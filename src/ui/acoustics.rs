@@ -292,7 +292,7 @@ fn spectrum(ui: &mut Ui, e: &Estimate) {
                     .width(2.0),
             );
             for tone in &e.spectrum.tones {
-                if tone.f <= 0.0 || !tone.f.is_finite() {
+                if !is_plottable_tone_freq(tone.f) {
                     continue;
                 }
                 let x = tone.f.log10();
@@ -305,6 +305,10 @@ fn spectrum(ui: &mut Ui, e: &Estimate) {
             }
         });
     ui.label(RichText::new(t("acoustics.spec_note")).weak());
+}
+
+fn is_plottable_tone_freq(f: f64) -> bool {
+    crate::acoustics::weighting::band_index(f).is_some()
 }
 
 fn alternatives_table(ui: &mut Ui, src: &Source, air: &method::Air, obs: &Observer) {
@@ -455,5 +459,13 @@ mod tests {
         assert_eq!(st.point, OpPoint::LiftHover);
         run_frame(&ctx, &mut |ui| show(ui, &p, &m, &mut st));
         assert_eq!(st.point, OpPoint::Cruise);
+    }
+
+    #[test]
+    fn extreme_tone_frequencies_are_excluded_from_plot() {
+        assert!(is_plottable_tone_freq(300.0));
+        assert!(!is_plottable_tone_freq(5.0));
+        assert!(!is_plottable_tone_freq(1e158));
+        assert!(!is_plottable_tone_freq(f64::NAN));
     }
 }

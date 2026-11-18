@@ -11,7 +11,7 @@
 //! L_tonal(r) = L_REF
 //!            + 15.3 log10(P / P_REF)          shaft power per rotor
 //!            - 20   log10(D / D_REF)          diameter
-//!            + 38.5 (M_h - M_REF)             helical tip Mach number
+//!            + 38.5 (M_h - M_REF)             for M_h >= M_REF, else 40 log10(M_h / M_REF)
 //!            - 3 (B - 2)                      blade count
 //!            + 10 log10(N)                    number of rotors (incoherent addition)
 //!            + 10 log10(rho / 1.225)          air density (first-order)
@@ -22,7 +22,9 @@
 //! The published coefficients (15.3, 20, 38.5, 3 per blade) come from large-aircraft propellers
 //! at 300 ft. Evaluated directly for a small UAV propeller they over-predict by tens of dB, so
 //! this module keeps the scaling exponents and re-anchors the absolute level with the
-//! small-UAS reference below. The anchor is an engineering choice, not part of AIR 1407.
+//! small-UAS reference below. Below `M_REF` the affine Mach term transitions smoothly to a
+//! dipole `40 log10(M_h / M_REF)` law so low-Mach and micro-rotors vanish physically as
+//! `M_h -> 0`. The anchor is an engineering choice, not part of AIR 1407.
 //!
 //! The broadband (vortex shedding / turbulent boundary layer) level uses the usual
 //! tip-speed law:
@@ -35,7 +37,7 @@
 //! # Constants (reference rotor: 10 inch, 2 blades, 100 W shaft power, 1 m)
 //!
 //! * `L_REF` = 79 dB tonal, `LB_REF` = 75 dB broadband (re 20 uPa, unweighted, 1 m)
-//! * `P_REF` = 100 W, `D_REF` = 0.254 m, `M_REF` = 0.45, `V_REF` = 130 m/s
+//! * `P_REF` = 100 W, `D_REF` = 0.254 m, `M_REF` = 0.45, `V_REF` = 153.1 m/s (`M_REF * 340.294`)
 //!
 //! These give about 80.5 dB (roughly 75-78 dBA) at 1 m for the reference rotor, in line with
 //! published small-rotor measurements of that size class.
@@ -45,10 +47,11 @@
 //! Tonal lines sit at `k * BPF`, k = 1..5. Each harmonic rolls off as `-30 log10(k)`
 //! (about -9 dB per doubling of harmonic number) and the five lines are normalised so their
 //! energy sum equals `L_tonal`. The broadband part is a Gaussian hump on a log-frequency
-//! axis centred at `clamp(10 * BPF, 300, 5000)` Hz with sigma = 0.45 decade, normalised so
+//! axis centred at `clamp(20 * rev_per_s, 300, 5000)` Hz with sigma = 0.45 decade, normalised so
 //! its energy sum equals `L_broadband`. Everything is gathered into 1/3-octave bands from
-//! 20 Hz to 20 kHz; overall SPL and dBA are the energy sums of those bands (A-weighting per
-//! IEC 61672-1, see [`super::weighting`]).
+//! 20 Hz to 20 kHz for plotting; overall SPL sums `L_tonal` and `L_broadband` directly, and
+//! overall dBA sums the exact A-weighted tonal lines with the A-weighted broadband bands
+//! (A-weighting per IEC 61672-1, see [`super::weighting`]).
 //!
 //! # Validity range
 //!
@@ -70,14 +73,16 @@ pub const P_REF_W: f64 = 100.0;
 pub const D_REF_M: f64 = 0.254;
 /// Reference helical tip Mach number for the tonal term.
 pub const MACH_REF: f64 = 0.45;
-/// Reference tip speed for the broadband term (m/s).
-pub const V_REF_MS: f64 = 130.0;
+/// Reference tip speed for the broadband term (m/s), consistent with `MACH_REF * 340.294`.
+pub const V_REF_MS: f64 = MACH_REF * 340.294;
 /// Reference air density (kg/m^3).
 pub const RHO_REF: f64 = 1.225;
 /// Power exponent coefficient (Hamilton Standard form).
 pub const K_POWER: f64 = 15.3;
-/// Tip Mach coefficient (Hamilton Standard form).
+/// Tip Mach coefficient above `MACH_REF` (Hamilton Standard form).
 pub const K_MACH: f64 = 38.5;
+/// Low-Mach dipole scaling coefficient (`40 log10(M / M_REF)` below `MACH_REF`).
+pub const K_MACH_LOW: f64 = 40.0;
 /// dB removed per blade above two.
 pub const K_BLADES: f64 = 3.0;
 /// Broadband tip-speed exponent (50 log10 V).
@@ -263,9 +268,9 @@ pub fn estimate(rs: &RotorSet, air: &Air, obs: &Observer) -> Estimate {
         && rs.n_rotors > 0
         && finite_pos(air.rho)
         && finite_pos(air.a_sound)
-        && rs.shaft_power_w.is_finite()
+        && finite_pos(rs.shaft_power_w)
         && rs.forward_speed_ms.is_finite()
-        && obs.distance_m.is_finite();
+        && finite_pos(obs.distance_m);
     if !ok {
         return Estimate::default();
     }
@@ -280,7 +285,13 @@ pub fn estimate(rs: &RotorSet, air: &Air, obs: &Observer) -> Estimate {
     for (i, h) in harmonics.iter_mut().enumerate() {
         *h = bpf * (i as f64 + 1.0);
     }
-    if !(vt.is_finite() && v_hel.is_finite() && bpf.is_finite() && harmonics[4].is_finite()) {
+    if !(vt.is_finite()
+        && v_hel.is_finite()
+        && tip_mach.is_finite()
+        && helical_mach.is_finite()
+        && bpf.is_finite()
+        && harmonics[4].is_finite())
+    {
         return Estimate::default();
     }
 
@@ -299,8 +310,13 @@ pub fn estimate(rs: &RotorSet, air: &Air, obs: &Observer) -> Estimate {
             0.0
         };
 
+    let mach_term = if m >= MACH_REF {
+        K_MACH * (m - MACH_REF)
+    } else {
+        K_MACH_LOW * (m.max(1e-6) / MACH_REF).log10()
+    };
     let tonal = L_TONAL_REF + K_POWER * (p / P_REF_W).log10() - 20.0 * (d / D_REF_M).log10()
-        + K_MACH * (m - MACH_REF)
+        + mach_term
         - K_BLADES * (b - 2.0)
         + common;
     let broadband = L_BROADBAND_REF
@@ -309,9 +325,15 @@ pub fn estimate(rs: &RotorSet, air: &Air, obs: &Observer) -> Estimate {
         + 20.0 * (d / D_REF_M).log10()
         + common;
 
-    let spectrum = build_spectrum(tonal, broadband, &harmonics);
-    let oaspl = db_sum(spectrum.bands.iter().map(|x| x.spl));
-    let oaspl_a = db_sum(spectrum.bands.iter().map(|x| x.spl_a));
+    let (spectrum, broadband_spl_a) = build_spectrum(tonal, broadband, &harmonics, rev_per_s);
+    let oaspl = db_sum([tonal, broadband]);
+    let oaspl_a = db_sum(
+        spectrum
+            .tones
+            .iter()
+            .map(|t| t.spl_a)
+            .chain([broadband_spl_a]),
+    );
     let out = Estimate {
         valid: true,
         tip_speed: vt,
@@ -338,13 +360,18 @@ pub fn estimate(rs: &RotorSet, air: &Air, obs: &Observer) -> Estimate {
     }
 }
 
-fn build_spectrum(tonal: f64, broadband: f64, harmonics: &[f64; N_HARMONICS]) -> Spectrum {
+fn build_spectrum(
+    tonal: f64,
+    broadband: f64,
+    harmonics: &[f64; N_HARMONICS],
+    rev_per_s: f64,
+) -> (Spectrum, f64) {
     let centres = third_octave_centres();
     let mut energy = vec![0.0_f64; centres.len()];
     let e = |l: f64| 10f64.powf(l / 10.0);
 
-    // Broadband hump, normalised to the broadband overall level.
-    let f_c = (harmonics[0] * 10.0).clamp(300.0, 5000.0).log10();
+    // Broadband hump, normalised to the broadband overall level and centred on shaft-rate Strouhal scaling.
+    let f_c = (20.0 * rev_per_s).clamp(300.0, 5000.0).log10();
     let w: Vec<f64> = centres
         .iter()
         .map(|fc| {
@@ -353,9 +380,17 @@ fn build_spectrum(tonal: f64, broadband: f64, harmonics: &[f64; N_HARMONICS]) ->
         })
         .collect();
     let wsum: f64 = w.iter().sum();
-    for (en, wi) in energy.iter_mut().zip(&w) {
-        *en += e(broadband) * wi / wsum;
+    let mut bb_a_energy = 0.0_f64;
+    for ((en, wi), fc) in energy.iter_mut().zip(&w).zip(&centres) {
+        let band_e = e(broadband) * wi / wsum;
+        *en += band_e;
+        bb_a_energy += band_e * e(a_weight_db(*fc));
     }
+    let broadband_spl_a = if bb_a_energy > 0.0 {
+        10.0 * bb_a_energy.log10()
+    } else {
+        -200.0
+    };
 
     // Tonal lines, normalised so the five lines sum to the tonal overall level.
     let norm: f64 = (1..=N_HARMONICS)
@@ -389,7 +424,7 @@ fn build_spectrum(tonal: f64, broadband: f64, harmonics: &[f64; N_HARMONICS]) ->
             }
         })
         .collect();
-    Spectrum { bands, tones }
+    (Spectrum { bands, tones }, broadband_spl_a)
 }
 
 #[cfg(test)]
@@ -478,12 +513,35 @@ mod tests {
 
     #[test]
     fn tonal_energy_is_conserved_in_bands() {
+        for rpm in [300.0, 9000.0, 750_000.0] {
+            let mut rs = base();
+            rs.rpm = rpm;
+            let e = est(&rs, 3.0, false);
+            let tones = db_sum(e.spectrum.tones.iter().map(|t| t.spl));
+            assert!((tones - e.tonal_spl).abs() < 1e-6, "rpm={rpm}");
+            let total = db_sum([e.tonal_spl, e.broadband_spl]);
+            assert!((total - e.oaspl).abs() < 1e-6, "{total} {}", e.oaspl);
+            for t in &e.spectrum.tones {
+                assert!(
+                    e.oaspl_a >= t.spl_a - 1e-9,
+                    "tone {} exceeds oaspl_a at rpm={rpm}",
+                    t.k
+                );
+            }
+        }
+        // In-band reference case also matches the band energy sum.
         let e = est(&base(), 3.0, false);
-        let tones = db_sum(e.spectrum.tones.iter().map(|t| t.spl));
-        assert!((tones - e.tonal_spl).abs() < 1e-6);
-        let total = db_sum([e.tonal_spl, e.broadband_spl]);
-        assert!((total - e.oaspl).abs() < 0.05, "{total} {}", e.oaspl);
+        let band_total = db_sum(e.spectrum.bands.iter().map(|b| b.spl));
+        assert!((band_total - e.oaspl).abs() < 0.05);
         assert!(e.oaspl_a < e.oaspl);
+
+        // A-weighted OASPL is continuous across a 1/3-octave band edge (22.39 Hz).
+        let mut r1 = base();
+        r1.rpm = 22.3 * 30.0; // BPF = 22.3 Hz
+        let mut r2 = base();
+        r2.rpm = 22.5 * 30.0; // BPF = 22.5 Hz (next band)
+        let diff = (est(&r2, 3.0, false).oaspl_a - est(&r1, 3.0, false).oaspl_a).abs();
+        assert!(diff < 0.3, "unexpected A-weighting step jump: {diff}");
     }
 
     #[test]
@@ -497,8 +555,69 @@ mod tests {
             forward_speed_ms: 0.0,
         };
         let e = est(&rs, 1.0, false);
-        assert!(e.oaspl > 78.0 && e.oaspl < 84.0, "{}", e.oaspl);
-        assert!(e.oaspl_a > 65.0 && e.oaspl_a < 82.0, "{}", e.oaspl_a);
+        let expected = db_sum([L_TONAL_REF, L_BROADBAND_REF]);
+        assert!((e.oaspl - expected).abs() < 0.05, "{}", e.oaspl);
+        assert!(e.oaspl_a > 75.0 && e.oaspl_a < 78.5, "{}", e.oaspl_a);
+    }
+
+    #[test]
+    fn non_positive_power_distance_or_tiny_sound_speed_is_invalid() {
+        for p in [0.0, -5.0] {
+            let mut rs = base();
+            rs.shaft_power_w = p;
+            assert!(!est(&rs, 10.0, false).valid);
+        }
+        for r in [0.0, -1.0] {
+            assert!(!est(&base(), r, false).valid);
+        }
+        let tiny_air = Air {
+            rho: RHO_REF,
+            a_sound: 1e-307,
+        };
+        assert!(!estimate(&base(), &tiny_air, &Observer::default()).valid);
+    }
+
+    #[test]
+    fn micro_and_low_mach_rotors_do_not_overpredict() {
+        let micro_1rpm = RotorSet {
+            diameter_m: 0.01,
+            blades: 2,
+            n_rotors: 1,
+            rpm: 1.0,
+            shaft_power_w: 1.0,
+            forward_speed_ms: 0.0,
+        };
+        let e_micro = est(&micro_1rpm, 1.0, false);
+        assert!(e_micro.valid && e_micro.oaspl < 0.0, "{}", e_micro.oaspl);
+
+        // Continuity at M = MACH_REF from below.
+        let rpm_ref = MACH_REF * 340.294 * 60.0 / (std::f64::consts::PI * D_REF_M);
+        let mut r_lo = base();
+        r_lo.n_rotors = 1;
+        r_lo.rpm = rpm_ref * (1.0 - 1e-5);
+        let mut r_hi = r_lo;
+        r_hi.rpm = rpm_ref * (1.0 + 1e-5);
+        let diff = (est(&r_hi, 1.0, false).tonal_spl - est(&r_lo, 1.0, false).tonal_spl).abs();
+        assert!(diff < 1e-3, "discontinuity at MACH_REF: {diff}");
+    }
+
+    #[test]
+    fn broadband_hump_peak_is_independent_of_blade_count() {
+        let mut r2 = base();
+        r2.blades = 2;
+        let mut r4 = base();
+        r4.blades = 4;
+        // Build pure-broadband spectra via build_spectrum directly to isolate the hump centre.
+        let (s2, _) = build_spectrum(-200.0, 60.0, &[300.0; N_HARMONICS], r2.rpm / 60.0);
+        let (s4, _) = build_spectrum(-200.0, 60.0, &[600.0; N_HARMONICS], r4.rpm / 60.0);
+        let peak = |s: &Spectrum| {
+            s.bands
+                .iter()
+                .max_by(|a, b| a.spl.total_cmp(&b.spl))
+                .unwrap()
+                .fc
+        };
+        assert!((peak(&s2) - peak(&s4)).abs() < 1e-9);
     }
 
     #[test]

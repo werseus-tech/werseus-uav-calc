@@ -2781,7 +2781,7 @@
   "acoustics.spec.tones": "Kanat geçiş harmonikleri",
   "acoustics.axis_freq": "Frekans (Hz)",
   "acoustics.axis_level": "Seviye (dB)",
-  "acoustics.spec_note": "Tonal çizgiler kanat geçiş frekansının katlarındadır ve harmonik sayısı iki katına çıkınca yaklaşık 9 dB düşer; altında kanat geçiş frekansının on katı civarında ortalanmış bir geniş bant tümseği vardır.",
+  "acoustics.spec_note": "Tonal çizgiler kanat geçiş frekansının katlarındadır ve harmonik sayısı iki katına çıkınca yaklaşık 9 dB düşer; altında şaft dönüş frekansının yirmi katı civarında ortalanmış bir geniş bant tümseği vardır.",
   "acoustics.alt.title": "Aynı itkide daha sessiz pervane seçenekleri",
   "acoustics.alt.intro": "Eşit itkide (T, rho n^2 D^4 ile orantılı; projenin askı devri için kullandığı itki katsayısıyla) daha büyük ve yavaş bir pervanenin kanat geçiş frekansı genellikle daha düşük, kendisi de daha sessizdir. Bu liste yalnızca öneridir; projede hiçbir şey değiştirilmez.",
   "acoustics.alt.rank": "#",
@@ -2797,7 +2797,7 @@
   "acoustics.alt.note": "Not",
   "acoustics.alt.current": "Mevcut",
   "acoustics.alt.too_big": "Şasinin izin verdiğinden büyük",
-  "acoustics.alt.caveat": "Eşit itkide daha çok kanadın aynı devir ve güçle çalışacağı varsayılır; gerçek pervaneler bunu tam izlemez. Bir şeyi değiştirmeden önce şasi boşluğunu, motor KV değerini ve pil akımını kontrol edin.",
+  "acoustics.alt.caveat": "Eşit itki ve sabit kanat yüklemesinde daha çok kanadın devri sqrt(B0 / B) oranında düşürdüğü varsayılır; gerçek pervaneler bunu tam izlemez. Bir şeyi değiştirmeden önce şasi boşluğunu, motor KV değerini ve pil akımını kontrol edin.",
   "acoustics.method.title": "Yöntem ve geçerlilik",
-  "acoustics.method.body": "Tonal seviye: Hamilton Standard biçimi (SAE AIR 1407); 15,3 log10(güç), -20 log10(çap), uç Mach başına +38,5, ikiden sonraki her kanat için -3 dB, +10 log10(rotor sayısı), -20 log10(uzaklık) ve isteğe bağlı +3 dB zemin yansıması; mutlak düzey, 10 inç, 2 kanatlı, 100 W ve Mach 0,45 rotor için 1 m'de 79 dB olacak şekilde yeniden ayarlanmıştır. Geniş bant seviyesi: 130 m/s uç hızında 75 dB, 50 log10(hız) yasasıyla. A-ağırlıklandırma IEC 61672'ye uyar. Uç Mach yaklaşık 0,7'ye kadar, 1 m veya iki çaptan uzak mesafelerde, 2-6 kanat ve 0,1-1 m çapta geçerlidir. Yönlülük, atmosferik sönümleme, motor ve gövde gürültüsü yoktur."
+  "acoustics.method.body": "Tonal seviye: Hamilton Standard biçimi (SAE AIR 1407); 15,3 log10(güç), -20 log10(çap), Mach 0,45 üzerinde uç Mach başına +38,5 (altında 40 log10(M/0,45)), ikiden sonraki her kanat için -3 dB, +10 log10(rotor sayısı), -20 log10(uzaklık) ve isteğe bağlı +3 dB zemin yansıması; mutlak düzey, 10 inç, 2 kanatlı, 100 W ve Mach 0,45 rotor için 1 m'de 79 dB olacak şekilde yeniden ayarlanmıştır. Geniş bant seviyesi: 153,1 m/s uç hızında 75 dB, 50 log10(hız) yasasıyla. A-ağırlıklandırma IEC 61672'ye uyar. Uç Mach yaklaşık 0,7'ye kadar, 1 m veya iki çaptan uzak mesafelerde, 2-6 kanat ve 0,1-1 m çapta geçerlidir. Yönlülük, atmosferik sönümleme, motor ve gövde gürültüsü yoktur."
 }
