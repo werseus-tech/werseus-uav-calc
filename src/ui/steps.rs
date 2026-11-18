@@ -70,6 +70,8 @@ pub enum Screen {
     /// Uçuş logu içe aktarma ve tasarım-gerçek karşılaştırması (merkez yuvası).
     FlightLog,
     SensorFov,
+    /// Uzman modundaki pervane–gövde etkileşimi (merkezde yuvada çizilir).
+    Downwash,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -93,6 +95,7 @@ pub enum CenterSlot {
     RfEmi,
     FlightLog,
     SensorFov,
+    Downwash,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -160,6 +163,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::RfEmi => Screen::RfEmi,
         Tab::FlightLog => Screen::FlightLog,
         Tab::SensorFov => Screen::SensorFov,
+        Tab::Downwash => Screen::Downwash,
     }
 }
 
@@ -195,6 +199,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::RfEmi => Some(CenterSlot::RfEmi),
         Screen::FlightLog => Some(CenterSlot::FlightLog),
         Screen::SensorFov => Some(CenterSlot::SensorFov),
+        Screen::Downwash => Some(CenterSlot::Downwash),
         _ => None,
     }
 }
@@ -213,6 +218,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::Downwash
             | Screen::SensorFov
             | Screen::FlightLog
             | Screen::Bom
@@ -248,6 +254,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Downwash
         | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
@@ -307,6 +314,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Schematic
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::Downwash
             | Screen::SensorFov
             | Screen::FlightLog
             | Screen::Bom
@@ -355,6 +363,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::Downwash
         | Screen::SensorFov
         | Screen::FlightLog
         | Screen::Bom
@@ -398,6 +407,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Downwash
         | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
@@ -480,6 +490,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Downwash
         | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
@@ -580,6 +591,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Downwash
         | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi

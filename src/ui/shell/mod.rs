@@ -899,6 +899,9 @@ impl App {
             Some(super::steps::CenterSlot::SensorFov) => {
                 super::sensorfov::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::Downwash) => {
+                super::downwash::show(ui, &self.project, model, &mut self.dw_state);
+            }
             None => {}
         }
     }
@@ -1100,5 +1103,6 @@ mod tests {
         assert_eq!(active_step(&p, Tab::Aero), Some(StepId::Aero));
         assert_eq!(active_step(&p, Tab::WindTunnel), None);
         assert_eq!(active_step(&p, Tab::RfEmi), None);
+        assert_eq!(active_step(&p, Tab::Downwash), None);
     }
 }

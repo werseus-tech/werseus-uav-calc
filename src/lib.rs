@@ -7,6 +7,7 @@ pub mod calc;
 pub mod computebudget;
 pub mod controltuning;
 pub mod db;
+pub mod downwash;
 pub mod export;
 pub mod flightlog;
 pub mod footprint;

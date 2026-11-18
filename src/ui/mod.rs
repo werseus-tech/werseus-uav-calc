@@ -9,6 +9,7 @@ pub mod components;
 pub mod computebudget;
 pub mod controltuning;
 pub mod design_point;
+pub mod downwash;
 pub mod endurance;
 pub mod flightlog;
 pub mod flightsim;
@@ -96,6 +97,7 @@ pub enum Tab {
     RfEmi,
     FlightLog,
     SensorFov,
+    Downwash,
 }
 
 impl Tab {
@@ -130,6 +132,7 @@ impl Tab {
             Tab::RfEmi => t("tab_rfemi"),
             Tab::FlightLog => t("tab_flightlog"),
             Tab::SensorFov => t("tab_sensorfov"),
+            Tab::Downwash => t("tab_downwash"),
         }
     }
 
@@ -160,6 +163,7 @@ impl Tab {
                 Tab::RfEmi,
                 Tab::FlightLog,
                 Tab::SensorFov,
+                Tab::Downwash,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -191,6 +195,7 @@ impl Tab {
                 Tab::RfEmi,
                 Tab::FlightLog,
                 Tab::SensorFov,
+                Tab::Downwash,
             ],
             _ => vec![
                 Tab::Summary,
@@ -221,6 +226,7 @@ impl Tab {
                 Tab::RfEmi,
                 Tab::FlightLog,
                 Tab::SensorFov,
+                Tab::Downwash,
             ],
         }
     }
@@ -267,6 +273,7 @@ pub struct App {
     pub tp_state: thermalpower::TpState,
     pub bom_state: bom::BomUiState,
     pub rel_state: reliability::ReliabilityUi,
+    pub dw_state: downwash::DwState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -371,6 +378,7 @@ impl App {
             tp_state: thermalpower::TpState::default(),
             bom_state: bom::BomUiState::default(),
             rel_state: reliability::ReliabilityUi::default(),
+            dw_state: downwash::DwState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -449,6 +457,7 @@ impl App {
             tp_state: thermalpower::TpState::default(),
             bom_state: bom::BomUiState::default(),
             rel_state: reliability::ReliabilityUi::default(),
+            dw_state: downwash::DwState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

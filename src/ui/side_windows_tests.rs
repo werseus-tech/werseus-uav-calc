@@ -70,6 +70,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("controltuning.rs", include_str!("controltuning.rs")),
         ("bom.rs", include_str!("bom.rs")),
         ("rfemi.rs", include_str!("rfemi.rs")),
+        ("downwash.rs", include_str!("downwash.rs")),
     ];
     const FORBIDDEN: &[&str] = &[
         "Color32::from_rgb(",
