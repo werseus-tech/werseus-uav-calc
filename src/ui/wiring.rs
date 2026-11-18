@@ -7,7 +7,7 @@ use super::widgets::{fmt, section};
 use crate::calc::Model;
 use crate::i18n::{t, tf};
 use crate::project::{DroneType, Project};
-use crate::wiring::harness::{Func, Harness, Settings, block_layout};
+use crate::wiring::harness::{Func, Harness, Settings, Wire, WireKind, block_layout};
 use crate::wiring::pinout::PresetId;
 use crate::wiring::pinout::{
     Conflict, PRESETS, Warning, assign, pool_size, preset, requirements, slot_name, to_csv,
@@ -16,13 +16,20 @@ use crate::wiring::pinout::{
 use egui::{Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use std::collections::HashMap;
 
+/// Kablonun kararlı kimliği (sıra numarası değil): tür, indeks, faz.
+type LenKey = (WireKind, Option<u32>, Option<u8>);
+
+fn len_key(w: &Wire) -> LenKey {
+    (w.kind, w.idx, w.phase)
+}
+
 #[derive(Clone)]
 struct WState {
     drone: DroneType,
     preset: PresetId,
     slack_pct: f64,
     limit_pct: f64,
-    lens: HashMap<usize, f64>,
+    lens: HashMap<LenKey, f64>,
     pins: HashMap<String, usize>,
     message: Option<String>,
 }
@@ -62,8 +69,8 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
     ui.add_space(space::XS);
 
     let mut h = Harness::default_for(p, m);
-    for (k, l) in &st.lens {
-        if let Some(w) = h.wires.get_mut(*k) {
+    for w in h.wires.iter_mut() {
+        if let Some(l) = st.lens.get(&len_key(w)) {
             w.length_override_m = Some(*l);
         }
     }
@@ -104,6 +111,16 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
             col,
             tf("wiring.worst_drop_fmt", &[fmt(rep.worst_drop_pct, 2)]),
         );
+        ui.separator();
+        let ccol = if rep.chain_drop_pct > 2.0 * st.limit_pct {
+            tk.warning
+        } else {
+            tk.text_weak
+        };
+        ui.colored_label(
+            ccol,
+            tf("wiring.chain_drop_fmt", &[fmt(rep.chain_drop_pct, 2)]),
+        );
         if rep.n_over_limit > 0 {
             ui.separator();
             ui.colored_label(
@@ -137,7 +154,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
                 ui.strong(t(c));
             }
             ui.end_row();
-            for (k, (w, r)) in h.wires.iter().zip(&rep.rows).enumerate() {
+            for (w, r) in h.wires.iter().zip(&rep.rows) {
                 ui.label(h.wire_label(w));
                 ui.label(format!(
                     "{} -> {}",
@@ -155,7 +172,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
                     )
                     .changed()
                 {
-                    st.lens.insert(k, len);
+                    st.lens.insert(len_key(w), len);
                 }
                 ui.label(format!("{} A", fmt(w.current_a, 2)));
                 match r.awg {
@@ -318,6 +335,7 @@ fn conflict_text(c: &Conflict) -> String {
         ),
         Conflict::Duplicate { slot } => tf("wiring.conflict.duplicate_fmt", &[slot.as_str()]),
         Conflict::MotorNotCapable { req } => tf("wiring.conflict.motor_cap_fmt", &[req.as_str()]),
+        Conflict::Unassigned { req } => tf("wiring.conflict.unassigned_fmt", &[req.as_str()]),
     }
 }
 

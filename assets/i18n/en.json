@@ -4163,6 +4163,8 @@
   "wiring.conflict.motors_fmt": "Not enough motor outputs: {0} motors, {1} motor outputs.",
   "wiring.conflict.duplicate_fmt": "{0} is assigned to more than one function.",
   "wiring.conflict.motor_cap_fmt": "{0} is on an output that cannot drive a motor.",
+  "wiring.conflict.unassigned_fmt": "{0} has no free output or pin.",
+  "wiring.chain_drop_fmt": "Battery to motor total drop: {0} %",
   "wiring.kind.output": "PWM/DShot output",
   "wiring.kind.uart": "UART",
   "wiring.kind.i2c": "I²C",

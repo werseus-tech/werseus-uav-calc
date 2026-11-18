@@ -151,7 +151,7 @@ pub enum Func {
     Rf,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum WireKind {
     BatteryMain,
     EscPower,
@@ -330,6 +330,8 @@ pub struct Report {
     pub worst_drop_pct: f64,
     pub worst_idx: Option<usize>,
     pub n_over_limit: usize,
+    /// Pil, ESC, motor zincirinin birikmiş gerilim düşümü (%): ana hat + en kötü ESC hattı + en kötü faz kablosu.
+    pub chain_drop_pct: f64,
 }
 
 #[derive(Clone, Debug)]
@@ -357,7 +359,7 @@ fn inst_pos(lay: &Layout, label: &str) -> Option<[f64; 3]> {
 fn connector_for(kind: WireKind, i: f64) -> Connector {
     match kind {
         WireKind::BatteryMain | WireKind::EscPower | WireKind::PdbToFc | WireKind::VtxPower => {
-            if i < 3.0 {
+            if i <= 1.0 {
                 Connector::JstGh
             } else {
                 power_connector(i)
@@ -429,15 +431,13 @@ impl Harness {
                 m.mr.motor_coords.clone()
             };
             for k in 0..m.mr.n_motors.max(1) as usize {
-                let mut pos = if let Some(q) = inst_pos(&lay, &format!("MrMotorMount_{k}")) {
+                let pos = if let Some(q) = inst_pos(&lay, &format!("MrMotorMount_{k}")) {
                     q
                 } else {
                     let c = coords[k % coords.len()];
-                    [c.0, c.1, 0.0]
+                    let dz = if k >= coords.len() { -0.03 } else { 0.0 }; // koaksiyel alt motor
+                    [c.0, c.1, dz]
                 };
-                if k >= coords.len() {
-                    pos[2] -= 0.03; // koaksiyel alt motor
-                }
                 motors.push((pos, i_lift));
             }
             bus_i = i_lift * motors.len() as f64;
@@ -470,7 +470,8 @@ impl Harness {
                     motors.push((pos, i_lift));
                 }
                 motors.push((mp, i_prop));
-                bus_i = (i_lift * 4.0).max(i_prop);
+                // Geçişte kaldırma ve itme motorları birlikte çalışır.
+                bus_i = i_lift * 4.0 + i_prop;
             } else {
                 motors.push((mp, i_prop));
                 bus_i = i_prop;
@@ -643,7 +644,19 @@ impl Harness {
             None,
             None,
         );
-        w(WireKind::PdbToFc, n_pdb, n_fc, 2, 2.0, 2.0, 5.0, None, None);
+        // FC üzerinden beslenen 5 V yüklerin toplamı (FC kendisi 0.3 A).
+        let i_fc = 0.3 + 0.2 + 0.15 + 0.5 + 0.03 + 0.3 + servo_nodes.len() as f64;
+        w(
+            WireKind::PdbToFc,
+            n_pdb,
+            n_fc,
+            2,
+            2.0,
+            i_fc,
+            5.0,
+            None,
+            None,
+        );
         w(WireKind::Receiver, n_fc, n_rx, 4, 2.0, 0.2, 5.0, None, None);
         w(WireKind::Gps, n_fc, n_gps, 4, 2.0, 0.15, 5.0, None, None);
         w(
@@ -826,8 +839,20 @@ impl Harness {
             }
             rows.push(row);
         }
+        let max_of = |kind: WireKind| {
+            self.wires
+                .iter()
+                .zip(&rows)
+                .filter(|(w, _)| w.kind == kind)
+                .map(|(_, r)| r.drop_pct)
+                .fold(0.0, f64::max)
+        };
+        let chain = max_of(WireKind::BatteryMain)
+            + max_of(WireKind::EscPower)
+            + max_of(WireKind::MotorPhase);
         Report {
             rows,
+            chain_drop_pct: chain,
             mass_g: mass,
             worst_drop_pct: worst,
             worst_idx,
@@ -997,6 +1022,57 @@ mod tests {
         assert_eq!(power_connector(60.0), Connector::Xt60);
         assert_eq!(power_connector(90.0), Connector::Xt90);
         assert_eq!(power_connector(90.1), Connector::As150);
+        // JST-GH yalnızca yaklaşık 1 A'e kadar.
+        assert_eq!(connector_for(WireKind::VtxPower, 1.0), Connector::JstGh);
+        assert_ne!(connector_for(WireKind::PdbToFc, 2.5), Connector::JstGh);
+        assert_eq!(connector_for(WireKind::EscPower, 12.0), Connector::Xt30);
+    }
+
+    #[test]
+    fn pdb_to_fc_carries_downstream_loads() {
+        let (_, _, h) = build(DroneType::FixedWingConventional);
+        let w = h
+            .wires
+            .iter()
+            .find(|w| w.kind == WireKind::PdbToFc)
+            .unwrap();
+        let servos = h.count(WireKind::Servo) as f64;
+        assert!(w.current_a >= servos + 1.0, "{}", w.current_a);
+    }
+
+    #[test]
+    fn quadplane_bus_includes_forward_motor() {
+        let (_, _, h) = build(DroneType::VtolQuadplane);
+        let w = h
+            .wires
+            .iter()
+            .find(|w| w.kind == WireKind::BatteryMain)
+            .unwrap();
+        let sum: f64 = h
+            .wires
+            .iter()
+            .filter(|w| w.kind == WireKind::EscPower)
+            .map(|w| w.current_a)
+            .sum();
+        assert!((w.current_a - sum).abs() < 1e-9);
+    }
+
+    #[test]
+    fn chain_drop_accumulates_stages() {
+        let (_, _, h) = build(DroneType::Multirotor);
+        let rep = h.evaluate(&Settings::default());
+        let stage = |k: WireKind| {
+            h.wires
+                .iter()
+                .zip(&rep.rows)
+                .filter(|(w, _)| w.kind == k)
+                .map(|(_, r)| r.drop_pct)
+                .fold(0.0, f64::max)
+        };
+        let sum =
+            stage(WireKind::BatteryMain) + stage(WireKind::EscPower) + stage(WireKind::MotorPhase);
+        assert!((rep.chain_drop_pct - sum).abs() < 1e-9);
+        assert!(rep.chain_drop_pct >= rep.worst_drop_pct - 1e-9);
     }
 
     #[test]

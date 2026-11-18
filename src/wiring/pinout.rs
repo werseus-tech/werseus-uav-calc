@@ -222,6 +222,8 @@ pub enum Conflict {
     Duplicate { slot: String },
     /// Motor, DShot/motor yapamayan çıkışa atanmış.
     MotorNotCapable { req: String },
+    /// İhtiyaca hiç yuva atanamadı.
+    Unassigned { req: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,7 +322,10 @@ pub fn assign(pre: &Preset, reqs: &[Req], overrides: &HashMap<String, usize>) ->
     }
     for (k, r) in reqs.iter().enumerate() {
         match slots[k] {
-            None => flagged[k] = true,
+            None => {
+                flagged[k] = true;
+                conflicts.push(Conflict::Unassigned { req: r.label() });
+            }
             Some(s) => {
                 if used.get(&(r.kind.pool(), s)).copied().unwrap_or(0) > 1 {
                     flagged[k] = true;
@@ -478,6 +483,48 @@ mod tests {
             out.conflicts
                 .iter()
                 .any(|c| matches!(c, Conflict::MotorOutputs { .. }))
+        );
+    }
+
+    #[test]
+    fn servos_filling_motor_outputs_leave_motor_unassigned() {
+        let h = harness(DroneType::VtolQuadplane);
+        let reqs = requirements(&h);
+        let pre = preset(PresetId::F7);
+        let mut ov = HashMap::new();
+        for (n, r) in reqs.iter().filter(|r| r.kind == ReqKind::Servo).enumerate() {
+            ov.insert(r.id.clone(), n);
+        }
+        let out = assign(&pre, &reqs, &ov);
+        let unassigned = out.rows.iter().filter(|r| r.slot.is_none()).count();
+        let flagged = out
+            .conflicts
+            .iter()
+            .filter(|c| matches!(c, Conflict::Unassigned { .. }))
+            .count();
+        assert!(unassigned > 0, "senaryo atanamayan satir uretmedi");
+        assert_eq!(unassigned, flagged);
+        assert!(
+            out.rows
+                .iter()
+                .filter(|r| r.slot.is_none())
+                .all(|r| r.conflict)
+        );
+    }
+
+    #[test]
+    fn motor_on_non_motor_output_is_flagged() {
+        let reqs = requirements(&harness(DroneType::Multirotor));
+        let pre = preset(PresetId::F7);
+        assert!(pre.outputs > pre.motor_outputs);
+        let motor = reqs.iter().find(|r| r.kind == ReqKind::Motor).unwrap();
+        let mut ov = HashMap::new();
+        ov.insert(motor.id.clone(), pre.outputs - 1);
+        let out = assign(&pre, &reqs, &ov);
+        assert!(
+            out.conflicts
+                .iter()
+                .any(|c| matches!(c, Conflict::MotorNotCapable { .. }))
         );
     }
 

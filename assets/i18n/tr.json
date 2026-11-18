@@ -4163,6 +4163,8 @@
   "wiring.conflict.motors_fmt": "Motor çıkışı yetmiyor: {0} motor, {1} motor çıkışı var.",
   "wiring.conflict.duplicate_fmt": "{0} birden fazla işleve atanmış.",
   "wiring.conflict.motor_cap_fmt": "{0} motor yapamayan bir çıkışa atanmış.",
+  "wiring.conflict.unassigned_fmt": "{0} için boş çıkış veya pin kalmadı.",
+  "wiring.chain_drop_fmt": "Pilden motora toplam düşüm: % {0}",
   "wiring.kind.output": "PWM/DShot çıkışı",
   "wiring.kind.uart": "UART",
   "wiring.kind.i2c": "I²C",
