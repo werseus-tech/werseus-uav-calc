@@ -4,6 +4,7 @@ pub mod aero;
 pub mod aero_simple;
 pub mod ai;
 pub mod components;
+pub mod computebudget;
 pub mod design_point;
 pub mod endurance;
 pub mod flightsim;
@@ -70,6 +71,7 @@ pub enum Tab {
     FlightSim,
     PropCurves,
     StructFea,
+    ComputeBudget,
 }
 
 impl Tab {
@@ -92,6 +94,7 @@ impl Tab {
             Tab::FlightSim => t("flightsim.tab"),
             Tab::PropCurves => t("propcurves.tab"),
             Tab::StructFea => t("structfea.tab"),
+            Tab::ComputeBudget => t("computebudget.tab"),
         }
     }
 
@@ -110,6 +113,7 @@ impl Tab {
                 Tab::FlightSim,
                 Tab::PropCurves,
                 Tab::StructFea,
+                Tab::ComputeBudget,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -129,6 +133,7 @@ impl Tab {
                 Tab::FlightSim,
                 Tab::PropCurves,
                 Tab::StructFea,
+                Tab::ComputeBudget,
             ],
             _ => vec![
                 Tab::Summary,
@@ -147,6 +152,7 @@ impl Tab {
                 Tab::FlightSim,
                 Tab::PropCurves,
                 Tab::StructFea,
+                Tab::ComputeBudget,
             ],
         }
     }
@@ -188,6 +194,7 @@ pub struct App {
     pub freecad_detecting: bool,
     pub wt_state: windtunnel::WtState,
     pub flow_state: flow_tunnel::FlowUiState,
+    pub cb_state: computebudget::CbState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -286,6 +293,7 @@ impl App {
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
             flow_state: flow_tunnel::FlowUiState::default(),
+            cb_state: computebudget::CbState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -358,6 +366,7 @@ impl App {
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
             flow_state: flow_tunnel::FlowUiState::default(),
+            cb_state: computebudget::CbState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

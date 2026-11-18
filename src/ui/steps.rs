@@ -47,6 +47,8 @@ pub enum Screen {
     PropCurves,
     /// Structural strength and vibration screen (beam model; drawn in the centre slot).
     StructFea,
+    /// Onboard computer budget panel (renders in the centre slot).
+    ComputeBudget,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -58,6 +60,7 @@ pub enum CenterSlot {
     FlightSim,
     PropCurves,
     StructFea,
+    ComputeBudget,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -113,6 +116,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::FlightSim => Screen::FlightSim,
         Tab::PropCurves => Screen::PropCurves,
         Tab::StructFea => Screen::StructFea,
+        Tab::ComputeBudget => Screen::ComputeBudget,
     }
 }
 
@@ -136,6 +140,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::FlightSim => Some(CenterSlot::FlightSim),
         Screen::PropCurves => Some(CenterSlot::PropCurves),
         Screen::StructFea => Some(CenterSlot::StructFea),
+        Screen::ComputeBudget => Some(CenterSlot::ComputeBudget),
         _ => None,
     }
 }
@@ -146,6 +151,7 @@ pub fn has_inputs(screen: Screen) -> bool {
         screen,
         Screen::Outputs
             | Screen::WindTunnel
+            | Screen::ComputeBudget
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
@@ -177,6 +183,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => &[],
@@ -214,6 +221,7 @@ pub fn has_formulas(screen: Screen) -> bool {
         screen,
         Screen::Outputs
             | Screen::WindTunnel
+            | Screen::ComputeBudget
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
@@ -252,6 +260,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         Screen::MrStructure
         | Screen::Outputs
         | Screen::WindTunnel
+        | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
@@ -291,6 +300,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => return,
@@ -361,6 +371,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => {}
@@ -449,6 +460,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => {}

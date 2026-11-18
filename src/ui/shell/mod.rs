@@ -863,6 +863,9 @@ impl App {
             Some(super::steps::CenterSlot::StructFea) => {
                 super::structfea::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::ComputeBudget) => {
+                super::computebudget::show(ui, &self.project, model, &mut self.cb_state);
+            }
             None => {}
         }
     }
