@@ -49,6 +49,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("ai.rs", include_str!("ai.rs")),
         ("teach.rs", include_str!("teach.rs")),
         ("windtunnel.rs", include_str!("windtunnel.rs")),
+        ("swarm.rs", include_str!("swarm.rs")),
         ("formulas.rs", include_str!("formulas.rs")),
         ("help.rs", include_str!("help.rs")),
         ("schematic.rs", include_str!("schematic.rs")),

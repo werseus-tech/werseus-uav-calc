@@ -11,6 +11,7 @@ pub mod i18n;
 pub mod project;
 pub mod report;
 pub mod support;
+pub mod swarm;
 pub mod teach;
 pub mod ui;
 pub mod windtunnel;
