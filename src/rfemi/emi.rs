@@ -144,7 +144,7 @@ impl Scene {
             .collect();
         let finite = |q: P3| q.iter().all(|v| v.is_finite());
         let mut motors: Vec<P3> = motors.into_iter().filter(|q| finite(*q)).collect();
-        let (center, mut anchors);
+        let (center, mut anchors, length_mm, radius_mm);
         if multirotor {
             let r_plate = lay.mr_plate.plate_radius_mm.max(20.0);
             let reach = motors
@@ -154,20 +154,33 @@ impl Scene {
             if motors.is_empty() {
                 motors.push([reach, 0.0, 0.0]);
             }
+            let m0 = motors[0];
+            let r_m0 = (m0[0] * m0[0] + m0[1] * m0[1]).sqrt();
+            let arm_end = if r_m0 > 1e-6 {
+                [
+                    m0[0] + 25.0 * m0[0] / r_m0,
+                    m0[1] + 25.0 * m0[1] / r_m0,
+                    m0[2],
+                ]
+            } else {
+                [m0[0] + 25.0, m0[1], m0[2]]
+            };
             center = [0.0, 0.0, 5.0];
+            length_mm = 0.0;
+            radius_mm = r_plate;
             anchors = vec![
-                (AntennaLoc::Nose, [r_plate, 0.0, 0.0]),
-                (AntennaLoc::Tail, [-r_plate, 0.0, 0.0]),
+                (AntennaLoc::Nose, [-r_plate, 0.0, 0.0]),
+                (AntennaLoc::Tail, [r_plate, 0.0, 0.0]),
                 (AntennaLoc::WingtipL, [0.0, reach, 0.0]),
                 (AntennaLoc::WingtipR, [0.0, -reach, 0.0]),
                 (AntennaLoc::FuselageTop, [0.0, 0.0, 40.0]),
                 (AntennaLoc::Belly, [0.0, 0.0, -15.0]),
-                (AntennaLoc::ArmEnd, motors[0]),
+                (AntennaLoc::ArmEnd, arm_end),
                 (AntennaLoc::Inside, center),
             ];
         } else {
             if motors.is_empty() {
-                motors.push([0.0, 0.0, 0.0]);
+                motors.push([-30.0, 0.0, 0.0]);
             }
             let wg = lay.wing.geom();
             let span = wg.span.max(1.0);
@@ -176,11 +189,18 @@ impl Scene {
             let (y_tip, z_tip) = (span * dih.cos(), span * dih.sin());
             let x_mid = 0.45 * length;
             center = [0.4 * length, 0.0, 0.0];
+            length_mm = length;
+            radius_mm = radius;
             let lift = lay
                 .instances
                 .iter()
                 .find(|i| i.id == PartId::LiftMotorMount)
-                .map(|i| i.frame.t);
+                .map(|i| i.frame.t)
+                .filter(|q| finite(*q))
+                .map(|q| {
+                    let sign = if q[1] >= 0.0 { 1.0 } else { -1.0 };
+                    [q[0], q[1] + 25.0 * sign, q[2]]
+                });
             anchors = vec![
                 (AntennaLoc::Nose, [0.0, 0.0, 0.0]),
                 (AntennaLoc::Tail, [length, 0.0, 0.0]),
@@ -188,7 +208,10 @@ impl Scene {
                 (AntennaLoc::WingtipR, [x_tip, -y_tip, z_tip]),
                 (AntennaLoc::FuselageTop, [x_mid, 0.0, radius]),
                 (AntennaLoc::Belly, [x_mid, 0.0, -radius]),
-                (AntennaLoc::ArmEnd, lift.unwrap_or([length, 0.0, 0.0])),
+                (
+                    AntennaLoc::ArmEnd,
+                    lift.unwrap_or([length + 25.0, 0.0, 0.0]),
+                ),
                 (AntennaLoc::Inside, center),
             ];
         }
@@ -227,8 +250,8 @@ impl Scene {
         Scene {
             anchors,
             sources,
-            length_mm: length,
-            radius_mm: radius,
+            length_mm,
+            radius_mm,
             multirotor,
         }
     }
@@ -251,6 +274,15 @@ impl Scene {
             b: None,
         });
         s
+    }
+
+    /// Video bağı varsa `loc` konumunda VTX kaynağını da içeren kaynak listesini döndürür.
+    pub fn sources_for(&self, links: &[Link], vtx_loc: AntennaLoc) -> Vec<Source> {
+        if links.iter().any(|l| l.kind == LinkKind::Video) {
+            self.sources_with_vtx(vtx_loc)
+        } else {
+            self.sources.clone()
+        }
     }
 }
 
@@ -337,9 +369,9 @@ pub struct Report {
     pub warnings: Vec<Warning>,
 }
 
-/// Bir TX'in n. harmoniği alıcı bandına düşüyor mu?
-pub fn harmonic_hits(f_tx_mhz: f64, n: u32, f_rx_mhz: f64, bw_rx_mhz: f64) -> bool {
-    (f_tx_mhz * n as f64 - f_rx_mhz).abs() <= bw_rx_mhz / 2.0
+/// Bir TX'in n. harmoniği (verici bant genişliği dahil) alıcı bandına düşüyor mu?
+pub fn harmonic_hits(f_tx_mhz: f64, bw_tx_mhz: f64, n: u32, f_rx_mhz: f64, bw_rx_mhz: f64) -> bool {
+    (f_tx_mhz * n as f64 - f_rx_mhz).abs() <= (n as f64 * bw_tx_mhz + bw_rx_mhz) / 2.0
 }
 
 fn f0(x: f64) -> String {
@@ -351,7 +383,7 @@ fn f1(x: f64) -> String {
 
 pub fn analyze(links: &[Link], scene: &Scene, cfg: &EmiConfig) -> Report {
     let mut rep = Report::default();
-    let sources = scene.sources_with_vtx(cfg.vtx_loc);
+    let sources = scene.sources_for(links, cfg.vtx_loc);
 
     // Mesafe kuralları.
     for (i, l) in links.iter().enumerate() {
@@ -403,16 +435,14 @@ pub fn analyze(links: &[Link], scene: &Scene, cfg: &EmiConfig) -> Report {
                     key: "rfemi.w.carbon_inside",
                     args: vec![l.name.clone()],
                 }),
-                AntennaLoc::Belly if l.kind != LinkKind::Video => rep.warnings.push(Warning {
-                    severity: if gnss {
-                        Severity::Danger
-                    } else {
-                        Severity::Warn
-                    },
+                AntennaLoc::Belly if gnss => rep.warnings.push(Warning {
+                    severity: Severity::Danger,
                     key: "rfemi.w.carbon_belly",
                     args: vec![l.name.clone(), loc],
                 }),
-                AntennaLoc::FuselageTop if l.kind == LinkKind::Video => {
+                AntennaLoc::FuselageTop
+                    if matches!(l.kind, LinkKind::Video | LinkKind::Rc | LinkKind::Telemetry) =>
+                {
                     rep.warnings.push(Warning {
                         severity: Severity::Warn,
                         key: "rfemi.w.carbon_top_video",
@@ -450,17 +480,18 @@ pub fn analyze(links: &[Link], scene: &Scene, cfg: &EmiConfig) -> Report {
         }
     }
 
-    // Harmonikler ve aynı banttaki kaynak/alıcı çiftleri.
+    // Harmonikler, TX-RX anten mesafesi ve GNSS yakını verici kontrolleri.
     for (i, tx) in links.iter().enumerate() {
         if !tx.kind.onboard_tx() {
             continue;
         }
+        let tx_pt = scene.point(tx.loc);
         for (j, rx) in links.iter().enumerate() {
             if i == j || !rx.kind.onboard_rx() {
                 continue;
             }
             for n in 2..=3u32 {
-                if harmonic_hits(tx.f_mhz, n, rx.f_mhz, rx.bw_mhz) {
+                if harmonic_hits(tx.f_mhz, tx.bw_mhz, n, rx.f_mhz, rx.bw_mhz) {
                     rep.warnings.push(Warning {
                         severity: Severity::Warn,
                         key: "rfemi.w.harmonic",
@@ -474,18 +505,46 @@ pub fn analyze(links: &[Link], scene: &Scene, cfg: &EmiConfig) -> Report {
                     });
                 }
             }
-            if (tx.f_mhz - rx.f_mhz).abs() <= (tx.bw_mhz + rx.bw_mhz) / 2.0 {
-                rep.warnings.push(Warning {
-                    severity: Severity::Warn,
-                    key: "rfemi.w.co_band",
-                    args: vec![tx.name.clone(), rx.name.clone()],
-                });
-            }
             if rx.kind == LinkKind::Gnss && (1100.0..=1400.0).contains(&tx.f_mhz) {
                 rep.warnings.push(Warning {
                     severity: Severity::Warn,
                     key: "rfemi.w.near_gnss",
                     args: vec![tx.name.clone(), f0(tx.f_mhz)],
+                });
+            }
+            let covered_by_vtx_source = tx.kind == LinkKind::Video && tx.loc == cfg.vtx_loc;
+            let symmetric_dup = rx.kind.onboard_tx() && tx.kind.onboard_rx() && i > j;
+            if !covered_by_vtx_source && !symmetric_dup {
+                let cm = dist(tx_pt, scene.point(rx.loc)) / 10.0;
+                let thr = if rx.kind == LinkKind::Gnss {
+                    cfg.gnss_vtx_cm
+                } else {
+                    cfg.other_vtx_cm
+                };
+                if cm < thr {
+                    let key = if rx.kind == LinkKind::Gnss {
+                        "rfemi.w.gnss_close"
+                    } else {
+                        "rfemi.w.ant_close"
+                    };
+                    rep.warnings.push(Warning {
+                        severity: Severity::Warn,
+                        key,
+                        args: vec![rx.name.clone(), tx.name.clone(), f1(cm), f1(thr)],
+                    });
+                }
+            }
+        }
+    }
+    // Aynı frekans bandındaki bağ çiftleri.
+    for i in 0..links.len() {
+        for j in (i + 1)..links.len() {
+            let (a, b) = (&links[i], &links[j]);
+            if (a.f_mhz - b.f_mhz).abs() <= (a.bw_mhz + b.bw_mhz) / 2.0 {
+                rep.warnings.push(Warning {
+                    severity: Severity::Warn,
+                    key: "rfemi.w.co_band",
+                    args: vec![a.name.clone(), b.name.clone()],
                 });
             }
         }
@@ -536,16 +595,27 @@ mod tests {
 
     #[test]
     fn harmonic_433_hits_868_band() {
-        assert!(harmonic_hits(433.0, 2, 868.0, 7.0));
-        assert!(harmonic_hits(433.92, 2, 868.0, 7.0));
-        assert!(!harmonic_hits(433.0, 3, 868.0, 7.0));
-        // 1.3 GHz ikinci harmonik 2.6 GHz, 2.4 GHz bandının dışında; 1.25 GHz içinde.
-        assert!(!harmonic_hits(1300.0, 2, 2440.0, 80.0));
-        assert!(harmonic_hits(1220.0, 2, 2440.0, 80.0));
+        assert!(harmonic_hits(433.0, 2.0, 2, 868.0, 7.0));
+        assert!(harmonic_hits(433.92, 2.0, 2, 868.0, 7.0));
+        assert!(!harmonic_hits(433.0, 2.0, 3, 868.0, 7.0));
+        // 1.3 GHz dar bant ikinci harmonik 2.6 GHz, 2.4 GHz bandının dışında; 1.25 GHz içinde.
+        assert!(!harmonic_hits(1300.0, 10.0, 2, 2440.0, 80.0));
+        assert!(harmonic_hits(1220.0, 10.0, 2, 2440.0, 80.0));
+        // 1.2 GHz video ön ayarı (1280 MHz, bw 100 MHz) 2.4 GHz (2440 MHz, bw 80 MHz) ile çakışır.
+        let g12 = Band::Ghz1_2.info();
+        let g24 = Band::Ghz2_4.info();
+        assert!(harmonic_hits(
+            g12.f_mhz, g12.bw_mhz, 2, g24.f_mhz, g24.bw_mhz
+        ));
         // 5.8 GHz harmoniği hiçbir bağın bandına düşmez.
+        let g58 = Band::Ghz5_8.info();
         for b in Band::ALL {
             let i = b.info();
-            assert!(!harmonic_hits(5800.0, 2, i.f_mhz, i.bw_mhz), "{}", i.label);
+            assert!(
+                !harmonic_hits(g58.f_mhz, g58.bw_mhz, 2, i.f_mhz, i.bw_mhz),
+                "{}",
+                i.label
+            );
         }
     }
 
@@ -555,6 +625,13 @@ mod tests {
         tel.f_mhz = 433.0;
         let rc = Link::typical(LinkKind::Rc); // 868 MHz
         let rep = analyze(&[tel, rc], &manual_scene(), &EmiConfig::default());
+        assert!(rep.warnings.iter().any(|w| w.key == "rfemi.w.harmonic"));
+
+        let mut vtx = Link::typical(LinkKind::Video);
+        vtx.apply_band(Band::Ghz1_2);
+        let mut rc24 = Link::typical(LinkKind::Rc);
+        rc24.apply_band(Band::Ghz2_4);
+        let rep = analyze(&[vtx, rc24], &manual_scene(), &EmiConfig::default());
         assert!(rep.warnings.iter().any(|w| w.key == "rfemi.w.harmonic"));
     }
 
@@ -572,12 +649,15 @@ mod tests {
         let sc = manual_scene();
         let mut gnss = Link::typical(LinkKind::Gnss);
         gnss.loc = AntennaLoc::FuselageTop; // (250, 0, 50)
+        let mut vtx = Link::typical(LinkKind::Video);
+        vtx.loc = AntennaLoc::Tail; // (500, 0, 0): 25.5 cm
         let mut cfg = EmiConfig {
             vtx_loc: AntennaLoc::Belly, // (250, 0, -50): 10 cm
             ..EmiConfig::default()
         };
+        let links = [gnss, vtx];
         let has = |cfg: &EmiConfig| {
-            analyze(std::slice::from_ref(&gnss), &sc, cfg)
+            analyze(&links, &sc, cfg)
                 .warnings
                 .iter()
                 .any(|w| w.key == "rfemi.w.gnss_close")
@@ -586,6 +666,51 @@ mod tests {
         assert!(has(&cfg));
         cfg.gnss_vtx_cm = 9.5;
         assert!(!has(&cfg));
+    }
+
+    #[test]
+    fn vtx_source_absent_without_video_and_tx_antenna_checked() {
+        let sc = manual_scene();
+        let mut gnss = Link::typical(LinkKind::Gnss);
+        gnss.name = "GNSS".into();
+        gnss.loc = AntennaLoc::FuselageTop;
+        let cfg = EmiConfig {
+            vtx_loc: AntennaLoc::FuselageTop,
+            ..EmiConfig::default()
+        };
+        // Video bağı yokken VTX kaynağı eklenmez.
+        let rep = analyze(std::slice::from_ref(&gnss), &sc, &cfg);
+        assert!(rep.rows.iter().all(|r| r.source.kind != SourceKind::Vtx));
+        assert!(!rep.warnings.iter().any(|w| w.key == "rfemi.w.gnss_close"));
+
+        // Video anteni ile GNSS aynı noktadayken cfg.vtx_loc uzakta olsa bile uyarır.
+        let mut vtx = Link::typical(LinkKind::Video);
+        vtx.name = "Video".into();
+        vtx.loc = AntennaLoc::FuselageTop;
+        let far_cfg = EmiConfig {
+            vtx_loc: AntennaLoc::Tail,
+            ..EmiConfig::default()
+        };
+        let rep = analyze(&[gnss.clone(), vtx], &sc, &far_cfg);
+        assert!(
+            rep.warnings
+                .iter()
+                .any(|w| w.key == "rfemi.w.gnss_close" && w.args[1] == "Video")
+        );
+
+        // Telemetri verici anteni ile RC alıcı anteni aynı noktadayken uyarır.
+        let mut tel = Link::typical(LinkKind::Telemetry);
+        tel.name = "Tel".into();
+        tel.loc = AntennaLoc::Tail;
+        let mut rc = Link::typical(LinkKind::Rc);
+        rc.name = "RC".into();
+        rc.loc = AntennaLoc::Tail;
+        let rep = analyze(&[tel, rc], &sc, &EmiConfig::default());
+        assert!(
+            rep.warnings
+                .iter()
+                .any(|w| w.key == "rfemi.w.ant_close" && w.args[0] == "RC" && w.args[1] == "Tel")
+        );
     }
 
     #[test]
@@ -611,6 +736,13 @@ mod tests {
                 .iter()
                 .any(|w| w.key == "rfemi.w.carbon_belly" && w.severity == Severity::Danger)
         );
+        gnss.loc = AntennaLoc::FuselageTop;
+        let rep = analyze(std::slice::from_ref(&gnss), &sc, &cfg);
+        assert!(
+            !rep.warnings
+                .iter()
+                .any(|w| w.key == "rfemi.w.carbon_top_video")
+        );
         gnss.loc = AntennaLoc::Inside;
         let rep = analyze(std::slice::from_ref(&gnss), &sc, &cfg);
         assert!(
@@ -618,10 +750,97 @@ mod tests {
                 .iter()
                 .any(|w| w.key == "rfemi.w.carbon_inside")
         );
+        // RC ve Telemetri gövde altında uyarı vermez, gövde üstünde yer istasyonu gölgelemesi verir.
+        for k in [LinkKind::Rc, LinkKind::Telemetry, LinkKind::Video] {
+            let mut l = Link::typical(k);
+            l.loc = AntennaLoc::Belly;
+            let rep = analyze(std::slice::from_ref(&l), &sc, &cfg);
+            assert!(
+                !rep.warnings.iter().any(|w| w.key == "rfemi.w.carbon_belly"),
+                "{k:?}"
+            );
+            l.loc = AntennaLoc::FuselageTop;
+            let rep = analyze(std::slice::from_ref(&l), &sc, &cfg);
+            assert!(
+                rep.warnings
+                    .iter()
+                    .any(|w| w.key == "rfemi.w.carbon_top_video"),
+                "{k:?}"
+            );
+        }
         let mut rc = Link::typical(LinkKind::Rc);
         rc.pol_angle_deg = 70.0;
         let rep = analyze(&[rc], &sc, &EmiConfig::default());
         assert!(rep.warnings.iter().any(|w| w.key == "rfemi.w.pol_mismatch"));
+    }
+
+    #[test]
+    fn co_band_unordered_pairs() {
+        let sc = manual_scene();
+        let mut t1 = Link::typical(LinkKind::Telemetry);
+        t1.name = "Tel1".into();
+        let mut t2 = Link::typical(LinkKind::Telemetry);
+        t2.name = "Tel2".into();
+        t2.loc = AntennaLoc::Tail;
+        t1.loc = AntennaLoc::Nose;
+        let rep = analyze(&[t1, t2], &sc, &EmiConfig::default());
+        let co: Vec<_> = rep
+            .warnings
+            .iter()
+            .filter(|w| w.key == "rfemi.w.co_band")
+            .collect();
+        assert_eq!(co.len(), 1);
+
+        let mut r1 = Link::typical(LinkKind::Rc);
+        r1.loc = AntennaLoc::Nose;
+        let mut r2 = Link::typical(LinkKind::Rc);
+        r2.loc = AntennaLoc::Tail;
+        let rep = analyze(&[r1, r2], &sc, &EmiConfig::default());
+        assert_eq!(
+            rep.warnings
+                .iter()
+                .filter(|w| w.key == "rfemi.w.co_band")
+                .count(),
+            1
+        );
+
+        let mut v1 = Link::typical(LinkKind::Video);
+        v1.loc = AntennaLoc::Nose;
+        let mut v2 = Link::typical(LinkKind::Video);
+        v2.loc = AntennaLoc::Tail;
+        let rep = analyze(&[v1, v2], &sc, &EmiConfig::default());
+        assert_eq!(
+            rep.warnings
+                .iter()
+                .filter(|w| w.key == "rfemi.w.co_band")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn multirotor_scene_uses_plate_dims_and_nose_left() {
+        let lib = Library::embedded();
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        p.l_fuse = 2.0; // Sabit kanat değeri multirotoru bozmamalı.
+        let m = evaluate(&p, &lib);
+        let lay = Layout::new(&p, &m);
+        let sc = Scene::new(&p, &lay);
+        assert_eq!(sc.length_mm, 0.0);
+        assert!((sc.radius_mm - lay.mr_plate.plate_radius_mm.max(20.0)).abs() < 1e-9);
+        assert!(sc.point(AntennaLoc::Nose)[0] < sc.point(AntennaLoc::Tail)[0]);
+        let (_, x1, _, _) = plan_bounds(&sc, &[]);
+        assert!(x1 < 500.0, "{x1}");
+    }
+
+    #[test]
+    fn fresnel_warning_triggers_when_ground_antenna_low() {
+        let sc = manual_scene();
+        let mut rc = Link::typical(LinkKind::Rc);
+        rc.h_ground_m = 0.0;
+        let rep = analyze(&[rc], &sc, &EmiConfig::default());
+        assert!(rep.warnings.iter().any(|w| w.key == "rfemi.w.fresnel"));
     }
 
     fn default_links() -> Vec<Link> {
@@ -663,6 +882,15 @@ mod tests {
                 assert!(q.iter().all(|v| v.is_finite()), "{:?} {l:?}", p.drone_type);
             }
             assert_eq!(sc.anchors.len(), AntennaLoc::ALL.len());
+            assert!(
+                sc.point(AntennaLoc::Nose)[0] < sc.point(AntennaLoc::Tail)[0],
+                "{:?}",
+                p.drone_type
+            );
+            let arm = sc.point(AntennaLoc::ArmEnd);
+            for s in sc.sources.iter().filter(|s| s.kind == SourceKind::Motor) {
+                assert!(dist(arm, s.a) > 1.0, "{:?}", p.drone_type);
+            }
             let links = default_links();
             for carbon in [false, true] {
                 let cfg = EmiConfig {
@@ -674,12 +902,35 @@ mod tests {
                     assert!(r.cm.is_finite() && r.cm >= 0.0);
                 }
                 for w in &rep.warnings {
-                    assert!(w.args.iter().all(|a| !a.contains("NaN")), "{}", w.key);
+                    assert!(
+                        w.args
+                            .iter()
+                            .all(|a| !a.contains("NaN") && !a.to_ascii_lowercase().contains("inf")),
+                        "{}",
+                        w.key
+                    );
                     assert_ne!(t(w.key), w.key, "çeviri eksik: {}", w.key);
                 }
             }
             let (x0, x1, y0, y1) = plan_bounds(&sc, &[]);
             assert!([x0, x1, y0, y1].iter().all(|v| v.is_finite()) && x1 > x0 && y1 > y0);
+        }
+        for lang in [crate::i18n::Lang::Tr, crate::i18n::Lang::En] {
+            for key in [
+                "rfemi.w.gnss_close",
+                "rfemi.w.ant_close",
+                "rfemi.w.carbon_inside",
+                "rfemi.w.carbon_belly",
+                "rfemi.w.carbon_top_video",
+                "rfemi.w.margin_neg",
+                "rfemi.w.fresnel",
+                "rfemi.w.pol_mismatch",
+                "rfemi.w.harmonic",
+                "rfemi.w.co_band",
+                "rfemi.w.near_gnss",
+            ] {
+                assert_ne!(crate::i18n::t_lang(key, lang), key, "çeviri eksik: {key}");
+            }
         }
     }
 }

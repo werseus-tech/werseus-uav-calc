@@ -35,9 +35,9 @@ pub fn min_height_60_m(d_m: f64, f_mhz: f64) -> f64 {
     0.6 * fresnel_mid_m(d_m, f_mhz)
 }
 
-/// İki ışın (zemin yansıması) modelinin kırılma uzaklığı (m): 4 h1 h2 / λ.
+/// İki ışın (zemin yansıması) modelinin kırılma uzaklığı (m): 4π h1 h2 / λ.
 pub fn two_ray_breakpoint_m(h1_m: f64, h2_m: f64, f_mhz: f64) -> f64 {
-    4.0 * h1_m.max(0.0) * h2_m.max(0.0) / wavelength_m(f_mhz)
+    4.0 * std::f64::consts::PI * h1_m.max(0.0) * h2_m.max(0.0) / wavelength_m(f_mhz)
 }
 
 /// İki ışın modelinde yol kaybı (dB): 40log10(d) - 20log10(h1 h2) (anten kazançları hariç).
@@ -262,7 +262,7 @@ pub struct LinkResult {
     pub max_range_km: Option<f64>,
     pub fresnel_mid_m: f64,
     pub min_height_m: f64,
-    /// Yol ortasında doğrudan hattın zeminden yüksekliği (düz zemin, m).
+    /// Düz zeminde Fresnel açıklığı için etkin yükseklik (m): sqrt(h_ground * h_air).
     pub clearance_m: f64,
     pub two_ray_breakpoint_m: f64,
     /// Kırılma uzaklığından sonra iki ışın kaybı serbest uzaydan fazlaysa fark (dB).
@@ -306,7 +306,7 @@ pub fn compute(l: &Link) -> LinkResult {
         (
             fresnel_mid_m(d_m, l.f_mhz),
             min_height_60_m(d_m, l.f_mhz),
-            (l.h_ground_m + l.h_air_m) / 2.0,
+            (l.h_ground_m.max(0.0) * l.h_air_m.max(0.0)).sqrt(),
             bp,
             extra,
         )
@@ -386,5 +386,37 @@ mod tests {
             assert!(r.rx_dbm.is_finite() && r.margin_db.is_finite(), "{k:?}");
             assert!(r.fresnel_mid_m.is_finite() && r.two_ray_extra_db.is_finite());
         }
+    }
+
+    #[test]
+    fn two_ray_extra_loss_is_positive_past_breakpoint() {
+        let mut l = Link::typical(LinkKind::Rc);
+        // 868 MHz, h_ground=1.5 m, h_air=100 m -> kırılma ~5458 m.
+        let r_before = compute(&l);
+        assert!((r_before.two_ray_breakpoint_m - 5457.6).abs() < 2.0);
+        assert_eq!(r_before.two_ray_extra_db, 0.0);
+
+        l.dist_km = 10.0;
+        let r_after = compute(&l);
+        assert!(
+            r_after.two_ray_extra_db > 5.0,
+            "{}",
+            r_after.two_ray_extra_db
+        );
+    }
+
+    #[test]
+    fn fresnel_clearance_uses_geometric_mean() {
+        let mut l = Link::typical(LinkKind::Rc);
+        l.h_ground_m = 0.0;
+        l.h_air_m = 100.0;
+        let r = compute(&l);
+        assert_eq!(r.clearance_m, 0.0);
+        assert!(r.clearance_m < r.min_height_m);
+
+        l.h_ground_m = 0.5;
+        let r = compute(&l);
+        assert!((r.clearance_m - 50.0f64.sqrt()).abs() < 1e-9);
+        assert!(r.clearance_m < r.min_height_m);
     }
 }

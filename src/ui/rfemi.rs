@@ -6,8 +6,9 @@ use super::theme::{self, space};
 use super::widgets::fmt;
 use crate::cad::layout::Layout;
 use crate::calc::Model;
-use crate::i18n::{t, tf};
-use crate::project::Project;
+use crate::calc::mr_structure::MrArmMaterialPreset;
+use crate::i18n::{Lang, current_lang, t, t_lang, tf};
+use crate::project::{DroneType, Project};
 use crate::rfemi::emi::{
     self, AntennaLoc, EmiConfig, Scene, Severity, SourceKind, analyze, plan_bounds,
 };
@@ -20,6 +21,9 @@ struct RfState {
     cfg: EmiConfig,
     add_kind: LinkKind,
     inited: bool,
+    last_drone: Option<DroneType>,
+    last_carbon: Option<bool>,
+    last_lang: Option<Lang>,
 }
 
 impl Default for RfState {
@@ -29,7 +33,25 @@ impl Default for RfState {
             cfg: EmiConfig::default(),
             add_kind: LinkKind::Rc,
             inited: false,
+            last_drone: None,
+            last_carbon: None,
+            last_lang: None,
         }
+    }
+}
+
+fn default_carbon(p: &Project) -> bool {
+    let mat = p.material_id.to_lowercase();
+    let body_cf = mat.contains("carbon") || mat.contains("cf");
+    if p.drone_type == DroneType::Multirotor {
+        matches!(
+            p.mr_arm_material,
+            MrArmMaterialPreset::PultrudedCf
+                | MrArmMaterialPreset::RollWrappedCf
+                | MrArmMaterialPreset::CfPetg
+        ) || body_cf
+    } else {
+        body_cf
     }
 }
 
@@ -55,13 +77,14 @@ fn status_of(s: Severity) -> Status {
     }
 }
 
-fn drag(ui: &mut Ui, v: &mut f64, lo: f64, hi: f64, speed: f64, suffix: &str) {
+fn drag(ui: &mut Ui, v: &mut f64, lo: f64, hi: f64, speed: f64, suffix: &str) -> bool {
     ui.add(
         egui::DragValue::new(v)
             .range(lo..=hi)
             .speed(speed)
             .suffix(suffix),
-    );
+    )
+    .changed()
 }
 
 fn pol_combo(ui: &mut Ui, salt: (usize, &str), v: &mut Pol) {
@@ -87,12 +110,31 @@ fn loc_combo(ui: &mut Ui, salt: (usize, &str), v: &mut AntennaLoc) {
 pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
     let id = egui::Id::unique("rfemi_state");
     let mut st: RfState = ui.data_mut(|d| d.get_temp(id)).unwrap_or_default();
+    let lang = current_lang();
+    let carbon = default_carbon(p);
     if !st.inited {
         st.inited = true;
         st.links = LinkKind::ALL.iter().map(|k| new_link(*k)).collect();
-        // Karbon varsayılanı: çok kollu araçta plakalar/kollar, diğerlerinde gövde malzemesi.
-        let mat = p.material_id.to_lowercase();
-        st.cfg.carbon_body = mat.contains("carbon") || mat.contains("cf");
+        st.cfg.carbon_body = carbon;
+        st.last_drone = Some(p.drone_type);
+        st.last_carbon = Some(carbon);
+        st.last_lang = Some(lang);
+    } else {
+        if st.last_drone != Some(p.drone_type) || st.last_carbon != Some(carbon) {
+            st.cfg.carbon_body = carbon;
+            st.last_drone = Some(p.drone_type);
+            st.last_carbon = Some(carbon);
+        }
+        if let Some(prev) = st.last_lang
+            && prev != lang
+        {
+            for l in &mut st.links {
+                if l.name == t_lang(l.kind.key(), prev) {
+                    l.name = t_lang(l.kind.key(), lang).to_string();
+                }
+            }
+            st.last_lang = Some(lang);
+        }
     }
     body(ui, p, m, &mut st);
     ui.data_mut(|d| d.insert_temp(id, st));
@@ -195,29 +237,7 @@ fn body(ui: &mut Ui, p: &Project, m: &Model, st: &mut RfState) {
     egui::CollapsingHeader::new(t("rfemi.thresholds"))
         .id_salt("rfemi_thr")
         .show(ui, |ui| {
-            egui::Grid::new("rfemi_thr_grid").show(ui, |ui| {
-                let c = &mut st.cfg;
-                for (k, v) in [
-                    ("rfemi.thr.gnss_vtx", &mut c.gnss_vtx_cm),
-                    ("rfemi.thr.gnss_esc", &mut c.gnss_esc_cm),
-                    ("rfemi.thr.gnss_motor", &mut c.gnss_motor_cm),
-                    ("rfemi.thr.gnss_power", &mut c.gnss_power_cm),
-                    ("rfemi.thr.other_vtx", &mut c.other_vtx_cm),
-                    ("rfemi.thr.other_esc", &mut c.other_esc_cm),
-                ] {
-                    ui.label(t_dyn(k));
-                    drag(ui, v, 0.0, 100.0, 0.5, " cm");
-                    ui.end_row();
-                }
-            });
-            if ui.button(t("rfemi.thr.reset")).clicked() {
-                let keep = (st.cfg.vtx_loc, st.cfg.carbon_body);
-                st.cfg = EmiConfig {
-                    vtx_loc: keep.0,
-                    carbon_body: keep.1,
-                    ..EmiConfig::default()
-                };
-            }
+            thresholds_grid(ui, &mut st.cfg);
         });
 
     let rep = analyze(&st.links, &scene, &st.cfg);
@@ -230,27 +250,7 @@ fn body(ui: &mut Ui, p: &Project, m: &Model, st: &mut RfState) {
     egui::CollapsingHeader::new(t("rfemi.distances"))
         .id_salt("rfemi_dist")
         .show(ui, |ui| {
-            egui::Grid::new("rfemi_dist_grid")
-                .striped(true)
-                .show(ui, |ui| {
-                    for h in [
-                        "rfemi.col.antenna",
-                        "rfemi.col.source",
-                        "rfemi.col.dist",
-                        "rfemi.col.limit",
-                    ] {
-                        ui.label(egui::RichText::new(t_dyn(h)).strong());
-                    }
-                    ui.end_row();
-                    for r in &rep.rows {
-                        ui.label(&st.links[r.link].name);
-                        ui.label(r.source.label());
-                        let c = if r.violated() { tk.danger } else { tk.text };
-                        ui.label(egui::RichText::new(format!("{} cm", fmt(r.cm, 1))).color(c));
-                        ui.label(format!("{} cm", fmt(r.threshold_cm.unwrap_or(0.0), 1)));
-                        ui.end_row();
-                    }
-                });
+            distances_grid(ui, &st.links, &rep, tk);
         });
 
     // --- Uyarılar
@@ -267,6 +267,55 @@ fn body(ui: &mut Ui, p: &Project, m: &Model, st: &mut RfState) {
 /// Çeviri anahtarı yalnızca bu dosyadaki sabit listelerden gelir.
 fn t_dyn(key: &'static str) -> &'static str {
     t(key)
+}
+
+fn thresholds_grid(ui: &mut Ui, cfg: &mut EmiConfig) {
+    egui::Grid::new("rfemi_thr_grid").show(ui, |ui| {
+        for (k, v) in [
+            ("rfemi.thr.gnss_vtx", &mut cfg.gnss_vtx_cm),
+            ("rfemi.thr.gnss_esc", &mut cfg.gnss_esc_cm),
+            ("rfemi.thr.gnss_motor", &mut cfg.gnss_motor_cm),
+            ("rfemi.thr.gnss_power", &mut cfg.gnss_power_cm),
+            ("rfemi.thr.other_vtx", &mut cfg.other_vtx_cm),
+            ("rfemi.thr.other_esc", &mut cfg.other_esc_cm),
+        ] {
+            ui.label(t_dyn(k));
+            drag(ui, v, 0.0, 100.0, 0.5, " cm");
+            ui.end_row();
+        }
+    });
+    if ui.button(t("rfemi.thr.reset")).clicked() {
+        let keep = (cfg.vtx_loc, cfg.carbon_body);
+        *cfg = EmiConfig {
+            vtx_loc: keep.0,
+            carbon_body: keep.1,
+            ..EmiConfig::default()
+        };
+    }
+}
+
+fn distances_grid(ui: &mut Ui, links: &[Link], rep: &emi::Report, tk: &theme::Tokens) {
+    egui::Grid::new("rfemi_dist_grid")
+        .striped(true)
+        .show(ui, |ui| {
+            for h in [
+                "rfemi.col.antenna",
+                "rfemi.col.source",
+                "rfemi.col.dist",
+                "rfemi.col.limit",
+            ] {
+                ui.label(egui::RichText::new(t_dyn(h)).strong());
+            }
+            ui.end_row();
+            for r in &rep.rows {
+                ui.label(&links[r.link].name);
+                ui.label(r.source.label());
+                let c = if r.violated() { tk.danger } else { tk.text };
+                ui.label(egui::RichText::new(format!("{} cm", fmt(r.cm, 1))).color(c));
+                ui.label(format!("{} cm", fmt(r.threshold_cm.unwrap_or(0.0), 1)));
+                ui.end_row();
+            }
+        });
 }
 
 fn link_editor(ui: &mut Ui, i: usize, l: &mut Link, remove: &mut Option<usize>) {
@@ -295,10 +344,14 @@ fn link_editor(ui: &mut Ui, i: usize, l: &mut Link, remove: &mut Option<usize>) 
             });
             ui.end_row();
             ui.label(t("rfemi.f.freq"));
-            drag(ui, &mut l.f_mhz, 1.0, 12000.0, 1.0, " MHz");
+            if drag(ui, &mut l.f_mhz, 1.0, 12000.0, 1.0, " MHz") {
+                l.band = Band::Custom;
+            }
             ui.end_row();
             ui.label(t("rfemi.f.bw"));
-            drag(ui, &mut l.bw_mhz, 0.1, 500.0, 0.5, " MHz");
+            if drag(ui, &mut l.bw_mhz, 0.1, 500.0, 0.5, " MHz") {
+                l.band = Band::Custom;
+            }
             ui.end_row();
             if l.fixed_rx_dbm.is_none() {
                 ui.label(t("rfemi.f.tx_power"));
@@ -375,8 +428,13 @@ fn plan(ui: &mut Ui, scene: &Scene, st: &RfState, rep: &emi::Report) {
         egui::Stroke::new(1.0, tk.border),
         egui::StrokeKind::Inside,
     );
-    let vtx = scene.point(st.cfg.vtx_loc);
-    let (x0, x1, y0, y1) = plan_bounds(scene, &[vtx]);
+    let has_video = st.links.iter().any(|l| l.kind == LinkKind::Video);
+    let extra = if has_video {
+        vec![scene.point(st.cfg.vtx_loc)]
+    } else {
+        Vec::new()
+    };
+    let (x0, x1, y0, y1) = plan_bounds(scene, &extra);
     let (dx, dy) = ((x1 - x0).max(1.0), (y1 - y0).max(1.0));
     let margin = 28.0f32;
     let scale = ((rect.width() - 2.0 * margin) as f64 / dx)
@@ -427,7 +485,7 @@ fn plan(ui: &mut Ui, scene: &Scene, st: &RfState, rep: &emi::Report) {
             SourceKind::Vtx => tk.accent,
         }
     };
-    let all = scene.sources_with_vtx(st.cfg.vtx_loc);
+    let all = scene.sources_for(&st.links, st.cfg.vtx_loc);
     for s in &all {
         let c = src_color(s.kind);
         match (s.kind, s.b) {
@@ -526,6 +584,8 @@ mod tests {
             let mut p = Project::default();
             p.set_drone_type(dt);
             let m = crate::calc::evaluate(&p, &Library::embedded());
+            let lay = Layout::new(&p, &m);
+            let scene = Scene::new(&p, &lay);
             for choice in [ThemeChoice::Dark, ThemeChoice::Light] {
                 for lang in [crate::i18n::Lang::Tr, crate::i18n::Lang::En] {
                     let ctx = egui::Context::default();
@@ -535,6 +595,17 @@ mod tests {
                             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
                                 egui::CentralPanel::default().show(ui, |ui| {
                                     show(ui, &p, &m);
+                                    let mut cfg = EmiConfig::default();
+                                    let mut links: Vec<Link> =
+                                        LinkKind::ALL.iter().map(|k| new_link(*k)).collect();
+                                    let rep = analyze(&links, &scene, &cfg);
+                                    let tk = theme::tokens(ui);
+                                    thresholds_grid(ui, &mut cfg);
+                                    distances_grid(ui, &links, &rep, tk);
+                                    let mut remove = None;
+                                    for (i, l) in links.iter_mut().enumerate() {
+                                        link_editor(ui, i, l, &mut remove);
+                                    }
                                 });
                             });
                             out.textures_delta.clear();
@@ -543,5 +614,38 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn default_carbon_checks_multirotor_arm_material_and_refreshes_lang() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        p.mr_arm_material = MrArmMaterialPreset::PultrudedCf;
+        assert!(default_carbon(&p));
+        p.mr_arm_material = MrArmMaterialPreset::Al6061;
+        assert!(!default_carbon(&p));
+
+        let m = crate::calc::evaluate(&p, &Library::embedded());
+        let ctx = egui::Context::default();
+        theme::install(&ctx, ThemeChoice::Dark);
+        let id = egui::Id::unique("rfemi_state");
+
+        crate::i18n::with_lang(Lang::En, || {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| show(ui, &p, &m));
+            });
+            out.textures_delta.clear();
+        });
+        let st_en: RfState = ctx.data(|d| d.get_temp(id)).unwrap();
+        assert_eq!(st_en.links[0].name, t_lang(LinkKind::Rc.key(), Lang::En));
+
+        crate::i18n::with_lang(Lang::Tr, || {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| show(ui, &p, &m));
+            });
+            out.textures_delta.clear();
+        });
+        let st_tr: RfState = ctx.data(|d| d.get_temp(id)).unwrap();
+        assert_eq!(st_tr.links[0].name, t_lang(LinkKind::Rc.key(), Lang::Tr));
     }
 }
