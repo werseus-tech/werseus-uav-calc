@@ -26,6 +26,7 @@ pub mod simple_steps;
 pub mod stability;
 pub mod step_ui;
 pub mod steps;
+pub mod structfea;
 pub mod structure;
 pub mod summary;
 pub mod teach;
@@ -68,6 +69,7 @@ pub enum Tab {
     FlowTunnel,
     FlightSim,
     PropCurves,
+    StructFea,
 }
 
 impl Tab {
@@ -89,6 +91,7 @@ impl Tab {
             Tab::FlowTunnel => t("tab_flowtunnel"),
             Tab::FlightSim => t("flightsim.tab"),
             Tab::PropCurves => t("propcurves.tab"),
+            Tab::StructFea => t("structfea.tab"),
         }
     }
 
@@ -106,6 +109,7 @@ impl Tab {
                 Tab::Schematic,
                 Tab::FlightSim,
                 Tab::PropCurves,
+                Tab::StructFea,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -124,6 +128,7 @@ impl Tab {
                 Tab::Schematic,
                 Tab::FlightSim,
                 Tab::PropCurves,
+                Tab::StructFea,
             ],
             _ => vec![
                 Tab::Summary,
@@ -141,6 +146,7 @@ impl Tab {
                 Tab::Schematic,
                 Tab::FlightSim,
                 Tab::PropCurves,
+                Tab::StructFea,
             ],
         }
     }

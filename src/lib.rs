@@ -13,6 +13,7 @@ pub mod project;
 pub mod propcurves;
 pub mod report;
 pub mod sim;
+pub mod structfea;
 pub mod support;
 pub mod teach;
 pub mod ui;

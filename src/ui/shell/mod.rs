@@ -860,6 +860,9 @@ impl App {
             Some(super::steps::CenterSlot::PropCurves) => {
                 super::propcurves::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::StructFea) => {
+                super::structfea::show(ui, &self.project, model);
+            }
             None => {}
         }
     }

@@ -45,6 +45,8 @@ pub enum Screen {
     FlightSim,
     /// Uzman modundaki itki eğrileri sekmesi (merkezde yuvada çizilir).
     PropCurves,
+    /// Structural strength and vibration screen (beam model; drawn in the centre slot).
+    StructFea,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -55,6 +57,7 @@ pub enum CenterSlot {
     FlowTunnel,
     FlightSim,
     PropCurves,
+    StructFea,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -109,6 +112,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::FlowTunnel => Screen::FlowTunnel,
         Tab::FlightSim => Screen::FlightSim,
         Tab::PropCurves => Screen::PropCurves,
+        Tab::StructFea => Screen::StructFea,
     }
 }
 
@@ -131,6 +135,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::FlowTunnel => Some(CenterSlot::FlowTunnel),
         Screen::FlightSim => Some(CenterSlot::FlightSim),
         Screen::PropCurves => Some(CenterSlot::PropCurves),
+        Screen::StructFea => Some(CenterSlot::StructFea),
         _ => None,
     }
 }
@@ -145,6 +150,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlightSim
             | Screen::Schematic
             | Screen::PropCurves
+            | Screen::StructFea
     )
 }
 
@@ -174,6 +180,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => &[],
+        Screen::StructFea => &[],
     }
 }
 
@@ -212,6 +219,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Schematic
             | Screen::MrStructure
             | Screen::PropCurves
+            | Screen::StructFea
     )
 }
 
@@ -248,6 +256,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlightSim
         | Screen::Schematic
         | Screen::PropCurves => {}
+        Screen::StructFea => {}
     }
 }
 
@@ -285,6 +294,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => return,
+        Screen::StructFea => return,
     };
     step_ui::intro(ui, title, what, hlp);
 }
@@ -354,6 +364,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => {}
+        Screen::StructFea => {}
     }
 }
 
@@ -441,6 +452,7 @@ pub fn results(
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::PropCurves => {}
+        Screen::StructFea => {}
     }
     if matches!(screen, Screen::Stability | Screen::MrCg) {
         super::massprops::panel(ui, p, m);
