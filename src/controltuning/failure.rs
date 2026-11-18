@@ -15,7 +15,7 @@
 //! in ℝ^d are the normals of all (d−1)-subsets of generators, and the support function is
 //! `h(n) = Σ max(0, n·b_i)`, so `ρ = min_n (h(n) − n·G)` over those normals.
 //!
-//! Classification per failure case:
+//! Classification per failure case (ρ normalised, "> 0" meaning above [`MIN_MARGIN`] = 2 %):
 //! * full — ρ > 0 in (thrust, roll, pitch, yaw): hover with full attitude and yaw control;
 //! * no yaw — ρ ≤ 0 in 4-D but ρ > 0 in the (thrust, roll, pitch) projection: hover with
 //!   attitude control possible, but no (or zero-margin) yaw authority. The standard PNPNPN
