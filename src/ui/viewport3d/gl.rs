@@ -13,9 +13,17 @@
 //!
 //! GL durumu: egui her geri çağrıdan sonra kendi durumunu yeniden kurar (`prepare_painting`);
 //! burada ayrıca değiştirdiğimiz her şeyi (çerçeve tamponu, derinlik, makas, VAO) geri alırız.
-use crate::geom3d::{PartKind, Scene};
+use crate::geom3d::{Mat4, Mesh, PartKind, Scene};
 use eframe::glow::{self, HasContext};
 use std::sync::Arc;
+
+/// Per-frame transforms and visibility for individual moving parts (flight simulator).
+#[derive(Clone, Default)]
+pub struct DynamicParts {
+    pub control_models: Vec<[f32; 16]>,
+    pub prop_models: Vec<[f32; 16]>,
+    pub disc_alphas: Vec<f32>,
+}
 
 /// Bir karede çizim için gereken her şey (UI iş parçacığında hazırlanır, kopyalanır).
 #[derive(Clone)]
@@ -44,14 +52,22 @@ pub struct FrameData {
     pub colors: Vec<(PartKind, [f32; 4])>,
     pub scene: Arc<Scene>,
     pub scene_version: u64,
+    /// Optional per-part transforms for moving control surfaces and spinning props.
+    pub dynamic: Option<DynamicParts>,
     /// Zemin ızgarası çizgileri (x,y,z çiftleri) ve ana çizgi ayrımı.
     pub grid: Arc<GridData>,
     /// İsteğe bağlı dünya ortamı ağı (uçuş simülatörü arazi/pist/şehir).
     pub world: Option<Arc<crate::sim::terrain::WorldMesh>>,
+    pub world_kind: f32,
     pub world_vp: [f32; 16],
+    pub world_inv_vp: [f32; 16],
     pub world_eye: [f32; 3],
     pub world_light: [f32; 3],
     pub world_fill: [f32; 3],
+    pub sky_zenith: [f32; 3],
+    pub sky_mid: [f32; 3],
+    pub fog_color: [f32; 3],
+    pub fog_range: [f32; 2],
 }
 
 #[derive(Default)]
@@ -61,12 +77,21 @@ pub struct GridData {
     pub version: u64,
 }
 
-struct GpuMesh {
-    kind: PartKind,
+struct GpuBuf {
     vao: glow::VertexArray,
     vbo: glow::Buffer,
     ibo: glow::Buffer,
     count: i32,
+}
+
+struct GpuMesh {
+    kind: PartKind,
+    buf: GpuBuf,
+}
+
+struct GpuRotorMesh {
+    prop: Option<GpuBuf>,
+    disc: Option<GpuBuf>,
 }
 
 struct GpuLines {
@@ -98,12 +123,19 @@ struct Target {
 pub struct Renderer {
     program: glow::Program,
     u_vp: Option<glow::UniformLocation>,
+    u_model: Option<glow::UniformLocation>,
+    u_inv_vp: Option<glow::UniformLocation>,
     u_color: Option<glow::UniformLocation>,
     u_light: Option<glow::UniformLocation>,
     u_eye: Option<glow::UniformLocation>,
     u_fill: Option<glow::UniformLocation>,
     u_sky: Option<glow::UniformLocation>,
     u_gcol: Option<glow::UniformLocation>,
+    u_sky_zenith: Option<glow::UniformLocation>,
+    u_sky_mid: Option<glow::UniformLocation>,
+    u_fog_col: Option<glow::UniformLocation>,
+    u_fog_range: Option<glow::UniformLocation>,
+    u_world_kind: Option<glow::UniformLocation>,
     u_mat: Option<glow::UniformLocation>,
     u_mode: Option<glow::UniformLocation>,
     u_shadow: Option<glow::UniformLocation>,
@@ -114,6 +146,8 @@ pub struct Renderer {
     a_nrm: Option<u32>,
     a_col: Option<u32>,
     meshes: Vec<GpuMesh>,
+    control_meshes: Vec<Option<GpuBuf>>,
+    rotor_meshes: Vec<GpuRotorMesh>,
     scene_version: u64,
     lines: Option<GpuLines>,
     grid_version: u64,
@@ -129,6 +163,8 @@ in vec3 a_pos;
 in vec3 a_nrm;
 in vec4 a_col;
 uniform mat4 u_vp;
+uniform mat4 u_model;
+uniform mat4 u_inv_vp;
 uniform float u_mode;
 uniform vec4 u_shadow;
 uniform float u_ground;
@@ -138,20 +174,35 @@ out vec3 v_pos;
 out vec2 v_uv;
 out vec4 v_col;
 void main() {
-    vec3 p = a_pos + u_off;
+    if (u_mode > 2.5) {
+        vec4 wp = u_inv_vp * vec4(a_pos.xy, 1.0, 1.0);
+        v_pos = wp.xyz / max(abs(wp.w), 1e-5) * sign(wp.w == 0.0 ? 1.0 : wp.w);
+        v_nrm = vec3(0.0, 0.0, 1.0);
+        v_uv = a_pos.xy;
+        v_col = vec4(1.0);
+        gl_Position = vec4(a_pos.xy, 0.9999, 1.0);
+        return;
+    }
     if (u_mode > 1.5) {
         // Zemin lekesi: birim kare (-1..1) → elips kutusu, zemin düzleminde.
-        p = vec3(u_shadow.xy + a_pos.xy * u_shadow.zw, u_ground);
+        vec3 p = vec3(u_shadow.xy + a_pos.xy * u_shadow.zw, u_ground);
+        v_nrm = a_nrm;
+        v_pos = p;
+        v_uv = a_pos.xy;
+        v_col = a_col;
+        gl_Position = u_vp * vec4(p, 1.0);
+        return;
     }
-    v_nrm = a_nrm;
-    v_pos = p;
+    vec4 wp = u_model * vec4(a_pos + u_off, 1.0);
+    v_nrm = mat3(u_model) * a_nrm;
+    v_pos = wp.xyz;
     v_uv = a_pos.xy;
     v_col = a_col;
-    gl_Position = u_vp * vec4(p, 1.0);
+    gl_Position = u_vp * wp;
 }
 "#;
 
-// u_mode: 0 = aydınlatmasız (çizgiler), 1 = aydınlatmalı parça, 2 = zemin gölgesi.
+// u_mode: 0 = unlit lines, 1 = lit mesh, 2 = ground contact shadow, 3 = sky dome gradient.
 const FS: &str = r#"
 precision highp float;
 in vec3 v_nrm;
@@ -164,10 +215,114 @@ uniform vec3 u_fill;
 uniform vec3 u_eye;
 uniform vec3 u_sky;
 uniform vec3 u_gcol;
+uniform vec3 u_sky_zenith;
+uniform vec3 u_sky_mid;
+uniform vec3 u_fog_col;
+uniform vec2 u_fog_range;
+uniform float u_world_kind;
 uniform vec2 u_mat;
 uniform float u_mode;
 out vec4 o_color;
+
+float hash21(vec2 p) {
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 3; i++) {
+        v += a * vnoise(p);
+        p = p * 2.03 + vec2(17.1, 31.7);
+        a *= 0.5;
+    }
+    return v;
+}
+
+vec3 shade_world_albedo(vec3 base, vec3 n) {
+    float wk = u_world_kind;
+    if (v_pos.z < 0.15 && n.z > 0.85) {
+        if (v_col.g > v_col.r * 1.12) {
+            float nc = fbm(v_pos.xy * 0.09);
+            float nf = vnoise(v_pos.xy * 0.65);
+            float stripe = 0.0;
+            if (wk < 1.5) {
+                stripe = 0.045 * sin(v_pos.y * 0.70 + nc * 1.5) * smoothstep(0.25, 0.80, nc);
+            }
+            return base * (0.86 + 0.26 * nc + 0.08 * (nf - 0.5) + stripe);
+        }
+        if (v_pos.z > 0.032 && max(v_col.r, v_col.g) > 0.52) {
+            float g = vnoise(v_pos.xy * 4.5);
+            return base * (0.86 + 0.16 * g);
+        }
+        if (max(v_col.r, v_col.b) < 0.48) {
+            float grain = vnoise(v_pos.xy * 3.5) * 0.65 + vnoise(v_pos.xy * 13.0) * 0.35;
+            vec3 res = base * (0.86 + 0.28 * grain);
+            if (wk > 0.5 && wk < 2.5 && v_pos.x > -22.0 && v_pos.x < 242.0 && abs(v_pos.y) < 7.8) {
+                float td1 = exp(-pow((v_pos.x - 24.0) / 18.0, 2.0));
+                float td2 = exp(-pow((v_pos.x - 198.0) / 18.0, 2.0));
+                float tracks = exp(-pow((abs(v_pos.y) - 1.35) / 0.55, 2.0));
+                float streak = vnoise(vec2(v_pos.x * 0.22, v_pos.y * 2.5));
+                float rubber = (td1 + td2) * tracks * smoothstep(0.25, 0.85, streak);
+                float center = 0.12 * exp(-v_pos.y * v_pos.y * 0.18);
+                res *= (1.0 - 0.34 * rubber - center);
+            }
+            return res;
+        }
+    }
+    if (wk > 1.5 && wk < 2.5 && v_pos.z > 0.15) {
+        if (abs(n.z) < 0.35 && !(v_col.b > v_col.r * 1.4 && v_col.r < 0.25)) {
+            float wg = vnoise(vec2(v_pos.x + v_pos.y, v_pos.z) * 1.4);
+            float floor_band = smoothstep(0.0, 0.14, abs(fract(v_pos.z / 3.8) - 0.5));
+            float ao = mix(0.68, 1.0, smoothstep(0.0, 6.5, v_pos.z));
+            return base * ao * (0.90 + 0.14 * wg) * mix(0.88, 1.0, floor_band);
+        }
+        if (n.z > 0.85) {
+            float rg = fbm(v_pos.xy * 0.45);
+            return base * (0.84 + 0.28 * rg);
+        }
+    }
+    if (wk > 2.5 && v_pos.z > 0.05) {
+        if (v_col.b > 0.65 && v_col.r > 0.60) {
+            return base * (0.94 + 0.10 * vnoise(v_pos.xy * 0.35));
+        }
+        if (v_col.g > v_col.r * 1.08) {
+            return base * (0.85 + 0.28 * fbm(v_pos.xy * 0.09));
+        }
+        float strata = fbm(vec2(v_pos.x * 0.06 + v_pos.y * 0.06, v_pos.z * 0.22));
+        float crag = vnoise(v_pos.xy * 0.28);
+        return base * (0.76 + 0.36 * strata + 0.12 * crag);
+    }
+    return base;
+}
+
 void main() {
+    if (u_mode > 2.5) {
+        vec3 dir = normalize(v_pos - u_eye);
+        float h = clamp(dir.z, 0.0, 1.0);
+        vec3 sky_c = mix(u_fog_col, u_sky_mid, smoothstep(0.0, 0.28, h));
+        sky_c = mix(sky_c, u_sky_zenith, smoothstep(0.18, 0.88, h));
+        float sun = pow(max(dot(dir, normalize(u_light)), 0.0), 28.0);
+        sky_c += vec3(1.0, 0.94, 0.80) * (0.28 * sun);
+        if (dir.z < 0.0) {
+            sky_c = mix(u_fog_col, u_gcol, clamp(-dir.z * 4.0, 0.0, 0.65));
+        }
+        o_color = vec4(sky_c, 1.0);
+        return;
+    }
     if (u_mode > 1.5) {
         // Süper elips uzaklığı: uçak izine yakın, kenarları yumuşak leke.
         vec2 q = abs(v_uv);
@@ -182,16 +337,29 @@ void main() {
         vec3 n = normalize(v_nrm);
         vec3 v = normalize(u_eye - v_pos);
         if (dot(n, v) < 0.0) { n = -n; }
+        if (u_world_kind >= -0.5) {
+            base = shade_world_albedo(base, n);
+        }
         vec3 amb = mix(u_gcol, u_sky, 0.5 + 0.5 * n.z);
         float kd = max(dot(n, u_light), 0.0);
         float fd = max(dot(n, u_fill), 0.0);
-        vec3 diff = amb * 0.60 + vec3(1.0, 0.97, 0.92) * (0.52 * kd) + vec3(0.80, 0.88, 1.0) * (0.20 * fd);
-        float s1 = pow(max(dot(n, normalize(u_light + v)), 0.0), u_mat.y);
-        float s2 = pow(max(dot(n, normalize(u_fill + v)), 0.0), u_mat.y);
-        // Parlama yalnız ışığa bakan yüzde (kd > 0): arkadaki yansıma sızmasın.
-        float spec = u_mat.x * (s1 * step(0.001, kd) + 0.35 * s2 * step(0.001, fd));
-        float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.10;
-        c = base * diff + vec3(spec + rim);
+        if (u_world_kind >= -0.5) {
+            vec3 diff = amb * 0.58 + vec3(1.0, 0.96, 0.90) * (0.58 * kd) + vec3(0.78, 0.86, 1.0) * (0.18 * fd);
+            c = base * diff;
+            if (u_fog_range.y > u_fog_range.x) {
+                float dist = length(u_eye - v_pos);
+                float fog_t = smoothstep(u_fog_range.x, u_fog_range.y, dist);
+                c = mix(c, u_fog_col, fog_t);
+            }
+        } else {
+            vec3 diff = amb * 0.60 + vec3(1.0, 0.97, 0.92) * (0.52 * kd) + vec3(0.80, 0.88, 1.0) * (0.20 * fd);
+            float s1 = pow(max(dot(n, normalize(u_light + v)), 0.0), u_mat.y);
+            float s2 = pow(max(dot(n, normalize(u_fill + v)), 0.0), u_mat.y);
+            // Parlama yalnız ışığa bakan yüzde (kd > 0): arkadaki yansıma sızmasın.
+            float spec = u_mat.x * (s1 * step(0.001, kd) + 0.35 * s2 * step(0.001, fd));
+            float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.10;
+            c = base * diff + vec3(spec + rim);
+        }
     }
     o_color = vec4(c, u_color.a * v_col.a);
 }
@@ -281,12 +449,19 @@ impl Renderer {
             while gl.get_error() != glow::NO_ERROR {}
             Ok(Self {
                 u_vp: gl.get_uniform_location(program, "u_vp"),
+                u_model: gl.get_uniform_location(program, "u_model"),
+                u_inv_vp: gl.get_uniform_location(program, "u_inv_vp"),
                 u_color: gl.get_uniform_location(program, "u_color"),
                 u_light: gl.get_uniform_location(program, "u_light"),
                 u_eye: gl.get_uniform_location(program, "u_eye"),
                 u_fill: gl.get_uniform_location(program, "u_fill"),
                 u_sky: gl.get_uniform_location(program, "u_sky"),
                 u_gcol: gl.get_uniform_location(program, "u_gcol"),
+                u_sky_zenith: gl.get_uniform_location(program, "u_sky_zenith"),
+                u_sky_mid: gl.get_uniform_location(program, "u_sky_mid"),
+                u_fog_col: gl.get_uniform_location(program, "u_fog_col"),
+                u_fog_range: gl.get_uniform_location(program, "u_fog_range"),
+                u_world_kind: gl.get_uniform_location(program, "u_world_kind"),
                 u_mat: gl.get_uniform_location(program, "u_mat"),
                 u_mode: gl.get_uniform_location(program, "u_mode"),
                 u_shadow: gl.get_uniform_location(program, "u_shadow"),
@@ -298,6 +473,8 @@ impl Renderer {
                 a_nrm,
                 a_col,
                 meshes: Vec::new(),
+                control_meshes: Vec::new(),
+                rotor_meshes: Vec::new(),
                 scene_version: u64::MAX,
                 lines: None,
                 grid_version: u64::MAX,
@@ -340,51 +517,84 @@ impl Renderer {
         }
     }
 
+    unsafe fn free_buf(gl: &glow::Context, b: GpuBuf) {
+        unsafe {
+            gl.delete_vertex_array(b.vao);
+            gl.delete_buffer(b.vbo);
+            gl.delete_buffer(b.ibo);
+        }
+    }
+
     fn free_meshes(&mut self, gl: &glow::Context) {
         unsafe {
             for m in self.meshes.drain(..) {
-                gl.delete_vertex_array(m.vao);
-                gl.delete_buffer(m.vbo);
-                gl.delete_buffer(m.ibo);
+                Self::free_buf(gl, m.buf);
             }
+            for c in self.control_meshes.drain(..).flatten() {
+                Self::free_buf(gl, c);
+            }
+            for r in self.rotor_meshes.drain(..) {
+                if let Some(p) = r.prop {
+                    Self::free_buf(gl, p);
+                }
+                if let Some(d) = r.disc {
+                    Self::free_buf(gl, d);
+                }
+            }
+        }
+    }
+
+    fn upload_mesh(&self, gl: &glow::Context, m: &Mesh) -> Result<Option<GpuBuf>, String> {
+        if m.is_empty() || !m.is_valid() {
+            return Ok(None);
+        }
+        let mut inter = Vec::with_capacity(m.positions.len() * 6);
+        for (p, n) in m.positions.iter().zip(&m.normals) {
+            inter.extend_from_slice(p);
+            inter.extend_from_slice(n);
+        }
+        unsafe {
+            let vao = gl.create_vertex_array()?;
+            gl.bind_vertex_array(Some(vao));
+            let vbo = gl.create_buffer()?;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &f32_bytes(&inter), glow::STATIC_DRAW);
+            let ibo = gl.create_buffer()?;
+            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+            gl.buffer_data_u8_slice(
+                glow::ELEMENT_ARRAY_BUFFER,
+                &u32_bytes(&m.indices),
+                glow::STATIC_DRAW,
+            );
+            self.bind_attribs(gl, 24, true, false);
+            gl.bind_vertex_array(None);
+            Ok(Some(GpuBuf {
+                vao,
+                vbo,
+                ibo,
+                count: m.indices.len() as i32,
+            }))
         }
     }
 
     fn upload_scene(&mut self, gl: &glow::Context, scene: &Scene) -> Result<(), String> {
         self.free_meshes(gl);
-        unsafe {
-            for part in &scene.parts {
-                let m = &part.mesh;
-                if m.is_empty() || !m.is_valid() {
-                    continue;
-                }
-                let mut inter = Vec::with_capacity(m.positions.len() * 6);
-                for (p, n) in m.positions.iter().zip(&m.normals) {
-                    inter.extend_from_slice(p);
-                    inter.extend_from_slice(n);
-                }
-                let vao = gl.create_vertex_array()?;
-                gl.bind_vertex_array(Some(vao));
-                let vbo = gl.create_buffer()?;
-                gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
-                gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &f32_bytes(&inter), glow::STATIC_DRAW);
-                let ibo = gl.create_buffer()?;
-                gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
-                gl.buffer_data_u8_slice(
-                    glow::ELEMENT_ARRAY_BUFFER,
-                    &u32_bytes(&m.indices),
-                    glow::STATIC_DRAW,
-                );
-                self.bind_attribs(gl, 24, true, false);
-                gl.bind_vertex_array(None);
+        for part in &scene.parts {
+            if let Some(buf) = self.upload_mesh(gl, &part.mesh)? {
                 self.meshes.push(GpuMesh {
                     kind: part.kind,
-                    vao,
-                    vbo,
-                    ibo,
-                    count: m.indices.len() as i32,
+                    buf,
                 });
             }
+        }
+        for ctl in &scene.controls {
+            let buf = self.upload_mesh(gl, &ctl.mesh)?;
+            self.control_meshes.push(buf);
+        }
+        for rot in &scene.rotors {
+            let prop = self.upload_mesh(gl, &rot.prop)?;
+            let disc = self.upload_mesh(gl, &rot.disc)?;
+            self.rotor_meshes.push(GpuRotorMesh { prop, disc });
         }
         Ok(())
     }
@@ -642,10 +852,62 @@ impl Renderer {
             gl.disable(glow::BLEND);
 
             gl.use_program(Some(self.program));
+            let ident = Mat4::IDENTITY.to_cols_array();
+            gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, &ident);
             gl.uniform_3_f32(self.u_sky.as_ref(), f.sky[0], f.sky[1], f.sky[2]);
             gl.uniform_3_f32(self.u_gcol.as_ref(), f.ground[0], f.ground[1], f.ground[2]);
+            gl.uniform_3_f32(
+                self.u_sky_zenith.as_ref(),
+                f.sky_zenith[0],
+                f.sky_zenith[1],
+                f.sky_zenith[2],
+            );
+            gl.uniform_3_f32(
+                self.u_sky_mid.as_ref(),
+                f.sky_mid[0],
+                f.sky_mid[1],
+                f.sky_mid[2],
+            );
+            gl.uniform_3_f32(
+                self.u_fog_col.as_ref(),
+                f.fog_color[0],
+                f.fog_color[1],
+                f.fog_color[2],
+            );
+            gl.uniform_2_f32(self.u_fog_range.as_ref(), f.fog_range[0], f.fog_range[1]);
+
+            if self.world.is_some() {
+                if self.shadow_quad.is_none() {
+                    self.shadow_quad = Some(make_quad(gl, self.a_pos, self.a_nrm, self.a_col)?);
+                }
+                if let Some((vao, _)) = &self.shadow_quad {
+                    gl.disable(glow::DEPTH_TEST);
+                    gl.depth_mask(false);
+                    gl.uniform_matrix_4_f32_slice(self.u_inv_vp.as_ref(), false, &f.world_inv_vp);
+                    gl.uniform_3_f32(
+                        self.u_eye.as_ref(),
+                        f.world_eye[0],
+                        f.world_eye[1],
+                        f.world_eye[2],
+                    );
+                    gl.uniform_3_f32(
+                        self.u_light.as_ref(),
+                        f.world_light[0],
+                        f.world_light[1],
+                        f.world_light[2],
+                    );
+                    gl.uniform_1_f32(self.u_mode.as_ref(), 3.0);
+                    gl.bind_vertex_array(Some(*vao));
+                    gl.draw_arrays(glow::TRIANGLES, 0, 6);
+                    gl.depth_mask(true);
+                    gl.enable(glow::DEPTH_TEST);
+                }
+            }
+
             if let Some(world) = &self.world {
                 gl.uniform_matrix_4_f32_slice(self.u_vp.as_ref(), false, &f.world_vp);
+                gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, &ident);
+                gl.uniform_1_f32(self.u_world_kind.as_ref(), f.world_kind);
                 gl.uniform_3_f32(
                     self.u_light.as_ref(),
                     f.world_light[0],
@@ -671,7 +933,10 @@ impl Renderer {
                 gl.bind_vertex_array(Some(world.vao));
                 gl.draw_elements(glow::TRIANGLES, world.count, glow::UNSIGNED_INT, 0);
             }
+            gl.uniform_1_f32(self.u_world_kind.as_ref(), -1.0);
+            gl.uniform_2_f32(self.u_fog_range.as_ref(), 0.0, 0.0);
             gl.uniform_matrix_4_f32_slice(self.u_vp.as_ref(), false, &f.view_proj);
+            gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, &ident);
             gl.uniform_3_f32(
                 self.u_light.as_ref(),
                 f.light_dir[0],
@@ -705,17 +970,49 @@ impl Renderer {
             // Alfası 1'den küçük renkler (Yapı biçiminde dış yüzey, pervane diski) son geçişte.
             let is_clear =
                 |k: PartKind| k.translucent() || color_of(k).is_some_and(|c| c[3] < 0.999);
+            let has_dyn = f.dynamic.is_some();
             // 1) Opak parçalar
             gl.uniform_1_f32(self.u_mode.as_ref(), 1.0);
-            for m in self.meshes.iter().filter(|m| !is_clear(m.kind)) {
+            for m in self.meshes.iter().filter(|m| {
+                !is_clear(m.kind)
+                    && !(has_dyn && matches!(m.kind, PartKind::Control | PartKind::Prop))
+            }) {
                 let Some(c) = color_of(m.kind) else { continue };
                 let o = off_of(m.kind);
                 gl.uniform_3_f32(self.u_off.as_ref(), o[0], o[1], o[2]);
                 let mt = mat_of(m.kind);
                 gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
                 gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
-                gl.bind_vertex_array(Some(m.vao));
-                gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
+                gl.bind_vertex_array(Some(m.buf.vao));
+                gl.draw_elements(glow::TRIANGLES, m.buf.count, glow::UNSIGNED_INT, 0);
+            }
+            if let Some(dynp) = &f.dynamic {
+                gl.uniform_3_f32(self.u_off.as_ref(), 0.0, 0.0, 0.0);
+                if let Some(c) = color_of(PartKind::Control) {
+                    let mt = mat_of(PartKind::Control);
+                    gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
+                    gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
+                    for (idx, buf_opt) in self.control_meshes.iter().enumerate() {
+                        let Some(buf) = buf_opt else { continue };
+                        let mat = dynp.control_models.get(idx).unwrap_or(&ident);
+                        gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, mat);
+                        gl.bind_vertex_array(Some(buf.vao));
+                        gl.draw_elements(glow::TRIANGLES, buf.count, glow::UNSIGNED_INT, 0);
+                    }
+                }
+                if let Some(c) = color_of(PartKind::Prop) {
+                    let mt = mat_of(PartKind::Prop);
+                    gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
+                    gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
+                    for (idx, rot) in self.rotor_meshes.iter().enumerate() {
+                        let Some(buf) = &rot.prop else { continue };
+                        let mat = dynp.prop_models.get(idx).unwrap_or(&ident);
+                        gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, mat);
+                        gl.bind_vertex_array(Some(buf.vao));
+                        gl.draw_elements(glow::TRIANGLES, buf.count, glow::UNSIGNED_INT, 0);
+                    }
+                }
+                gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, &ident);
             }
             gl.uniform_3_f32(self.u_off.as_ref(), 0.0, 0.0, 0.0);
             // 1b) Zemin temas gölgesi (derinliğe yazmadan, ızgaranın altında)
@@ -781,15 +1078,37 @@ impl Renderer {
             );
             gl.depth_mask(false);
             gl.uniform_1_f32(self.u_mode.as_ref(), 1.0);
-            for m in self.meshes.iter().filter(|m| is_clear(m.kind)) {
+            if let Some(dynp) = &f.dynamic {
+                if let Some(c) = color_of(PartKind::Rotor) {
+                    let mt = mat_of(PartKind::Rotor);
+                    gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
+                    gl.uniform_3_f32(self.u_off.as_ref(), 0.0, 0.0, 0.0);
+                    gl.uniform_matrix_4_f32_slice(self.u_model.as_ref(), false, &ident);
+                    for (idx, rot) in self.rotor_meshes.iter().enumerate() {
+                        let Some(buf) = &rot.disc else { continue };
+                        let alpha = dynp.disc_alphas.get(idx).copied().unwrap_or(0.0);
+                        if alpha <= 0.005 {
+                            continue;
+                        }
+                        gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3] * alpha);
+                        gl.bind_vertex_array(Some(buf.vao));
+                        gl.draw_elements(glow::TRIANGLES, buf.count, glow::UNSIGNED_INT, 0);
+                    }
+                }
+            }
+            for m in self
+                .meshes
+                .iter()
+                .filter(|m| is_clear(m.kind) && !(has_dyn && m.kind == PartKind::Rotor))
+            {
                 let Some(c) = color_of(m.kind) else { continue };
                 let o = off_of(m.kind);
                 gl.uniform_3_f32(self.u_off.as_ref(), o[0], o[1], o[2]);
                 let mt = mat_of(m.kind);
                 gl.uniform_2_f32(self.u_mat.as_ref(), mt[0], mt[1]);
                 gl.uniform_4_f32(self.u_color.as_ref(), c[0], c[1], c[2], c[3]);
-                gl.bind_vertex_array(Some(m.vao));
-                gl.draw_elements(glow::TRIANGLES, m.count, glow::UNSIGNED_INT, 0);
+                gl.bind_vertex_array(Some(m.buf.vao));
+                gl.draw_elements(glow::TRIANGLES, m.buf.count, glow::UNSIGNED_INT, 0);
             }
             gl.bind_vertex_array(None);
             gl.depth_mask(true);

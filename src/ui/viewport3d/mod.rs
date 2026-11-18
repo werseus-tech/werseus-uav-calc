@@ -611,6 +611,7 @@ pub fn show(
         colors,
         scene: st.scene.clone(),
         scene_version: st.scene_version,
+        dynamic: None,
         grid: if st.show_grid {
             st.grid.clone()
         } else {
@@ -620,10 +621,16 @@ pub fn show(
             })
         },
         world: None,
+        world_kind: -1.0,
         world_vp: [0.0; 16],
+        world_inv_vp: [0.0; 16],
         world_eye: [0.0; 3],
         world_light: [0.0; 3],
         world_fill: [0.0; 3],
+        sky_zenith: [0.0; 3],
+        sky_mid: [0.0; 3],
+        fog_color: [0.0; 3],
+        fog_range: [0.0; 2],
     };
     let renderer = st.renderer.clone();
     let failed_flag = st.gl_failed.clone();

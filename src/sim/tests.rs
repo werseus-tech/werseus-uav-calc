@@ -479,17 +479,21 @@ fn terrain_height_is_deterministic_and_finite() {
         assert!(env.ground_height(f64::NAN, 0.0).is_finite());
         assert!(env.ground_height(f64::INFINITY, -10.0).is_finite());
 
-        let m1 = WorldMesh::build(env, 0.0, 0.0, false, 1);
-        let m2 = WorldMesh::build(env, 0.0, 0.0, false, 1);
-        assert!(m1.is_valid(), "{env:?} invalid mesh");
-        assert!(m1.triangle_count() > 0, "{env:?} empty mesh");
-        assert!(
-            m1.triangle_count() <= terrain::WORLD_TRIANGLE_CAP,
-            "{env:?} tris {}",
-            m1.triangle_count()
-        );
-        assert_eq!(m1.positions, m2.positions);
-        assert_eq!(m1.indices, m2.indices);
+        for dark in [false, true] {
+            let m1 = WorldMesh::build(env, 0.0, 0.0, dark, 1);
+            let m2 = WorldMesh::build(env, 0.0, 0.0, dark, 1);
+            assert!(m1.is_valid(), "{env:?} dark={dark} invalid mesh");
+            assert!(m1.triangle_count() > 0, "{env:?} dark={dark} empty mesh");
+            assert!(
+                m1.triangle_count() <= terrain::WORLD_TRIANGLE_CAP,
+                "{env:?} dark={dark} tris {}",
+                m1.triangle_count()
+            );
+            assert_eq!(m1.positions, m2.positions);
+            assert_eq!(m1.normals, m2.normals);
+            assert_eq!(m1.colors, m2.colors);
+            assert_eq!(m1.indices, m2.indices);
+        }
     }
     // Mountains must have non-trivial elevation outside the flat valley.
     let mut peak = 0.0_f64;

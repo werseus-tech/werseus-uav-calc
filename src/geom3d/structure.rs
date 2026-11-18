@@ -14,10 +14,30 @@ pub struct SparSpec {
     pub od: f32,
 }
 
+/// Role of a hinged control surface for flight-simulator deflection mapping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum ControlRole {
+    #[default]
+    Aileron,
+    Elevator,
+    Rudder,
+    Ruddervator,
+    Elevon,
+}
+
+/// 3D hinge line (in the unmirrored half's coordinates) for a control surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ControlHinge {
+    pub role: ControlRole,
+    pub pivot: Vec3,
+    pub axis: Vec3,
+}
+
 /// Menteşeli kontrol yüzeyi: menteşe çizgisi (kord oranı), açıklık aralığı (0..1) ve menteşe
 /// aralığı [m] (ön yüzey ile kontrol yüzeyi arasındaki ve uç yüzlerdeki boşluk).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ControlSpec {
+    pub role: ControlRole,
     pub hinge_frac: f32,
     pub f0: f32,
     pub f1: f32,
@@ -325,11 +345,20 @@ impl Piece<'_> {
 /// Yüzeyin yarı parçaları: dış deri (verilen tür), kontrol yüzeyi, kaburgalar ve kiriş.
 /// Yapı tanımı yoksa yalnız dış deri döner. Ayna çağıran tarafta yapılır.
 pub fn surface_parts(s: &SurfaceSpec, kind: PartKind) -> Vec<(PartKind, Mesh)> {
+    surface_parts_with_hinge(s, kind).0
+}
+
+/// Like [`surface_parts`], also returning the 3D hinge line of the unmirrored control surface
+/// when a valid control surface mesh was generated.
+pub fn surface_parts_with_hinge(
+    s: &SurfaceSpec,
+    kind: PartKind,
+) -> (Vec<(PartKind, Mesh)>, Option<ControlHinge>) {
     let Some(st) = &s.structure else {
-        return vec![(kind, surface_half(s))];
+        return (vec![(kind, surface_half(s))], None);
     };
     let Some(l) = Loft::new(s) else {
-        return Vec::new();
+        return (Vec::new(), None);
     };
     let prof = resample_profile(&s.profile, 48);
     let nrm = profile_normals(&prof);
@@ -340,6 +369,7 @@ pub fn surface_parts(s: &SurfaceSpec, kind: PartKind) -> Vec<(PartKind, Mesh)> {
     let root_cap = !s.mirrored;
     let mut skin = Mesh::new();
     let mut ctl = Mesh::new();
+    let mut hinge: Option<ControlHinge> = None;
     let c_avg = 0.5 * (l.c_root + l.c_tip);
     // Geçerli kontrol yüzeyi (aralıklar ve menteşe makul değilse hiç çizilmez).
     let control = st.control.filter(|c| {
@@ -402,6 +432,17 @@ pub fn surface_parts(s: &SurfaceSpec, kind: PartKind) -> Vec<(PartKind, Mesh)> {
                     face: Some((a, b, -1.0)),
                 }
                 .emit(&mut ctl);
+                let y_mid = 0.5 * (a[1] + b[1]);
+                let p0 = l.point(c.f0 + dg, [c.hinge_frac, y_mid]);
+                let p1 = l.point(c.f1 - dg, [c.hinge_frac, y_mid]);
+                let axis = (p1 - p0).normalized();
+                if axis != Vec3::ZERO {
+                    hinge = Some(ControlHinge {
+                        role: c.role,
+                        pivot: p0,
+                        axis,
+                    });
+                }
             }
         }
     }
@@ -488,7 +529,7 @@ pub fn surface_parts(s: &SurfaceSpec, kind: PartKind) -> Vec<(PartKind, Mesh)> {
         push_cylinder(&mut spar, a, b, r, 16, true);
     }
     parts.push((PartKind::Spar, spar));
-    parts
+    (parts, hinge)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -634,6 +675,7 @@ mod tests {
 
     fn ctl() -> ControlSpec {
         ControlSpec {
+            role: ControlRole::Aileron,
             hinge_frac: 0.7,
             f0: 0.5,
             f1: 0.95,
@@ -714,6 +756,7 @@ mod tests {
     #[test]
     fn invalid_control_is_ignored_and_plain_surface_has_no_structure() {
         let bad = ControlSpec {
+            role: ControlRole::Aileron,
             hinge_frac: 0.7,
             f0: 0.6,
             f1: 0.62,

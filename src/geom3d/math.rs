@@ -216,6 +216,139 @@ impl Mat4 {
         }
     }
 
+    /// Right-handed rotation by `angle_rad` around arbitrary unit `axis`.
+    /// Returns identity if `axis` is zero/non-finite or `angle_rad` is non-finite.
+    pub fn rotation_axis(axis: Vec3, angle_rad: f32) -> Mat4 {
+        if !angle_rad.is_finite() {
+            return Mat4::IDENTITY;
+        }
+        let u = axis.normalized();
+        if u == Vec3::ZERO {
+            return Mat4::IDENTITY;
+        }
+        let (s, c) = angle_rad.sin_cos();
+        let t = 1.0 - c;
+        Mat4 {
+            cols: [
+                [
+                    t * u.x * u.x + c,
+                    t * u.x * u.y + s * u.z,
+                    t * u.x * u.z - s * u.y,
+                    0.0,
+                ],
+                [
+                    t * u.x * u.y - s * u.z,
+                    t * u.y * u.y + c,
+                    t * u.y * u.z + s * u.x,
+                    0.0,
+                ],
+                [
+                    t * u.x * u.z + s * u.y,
+                    t * u.y * u.z - s * u.x,
+                    t * u.z * u.z + c,
+                    0.0,
+                ],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        }
+    }
+
+    /// Right-handed rotation by `angle_rad` around the 3D line through `pivot` along `axis`.
+    pub fn rotation_around(pivot: Vec3, axis: Vec3, angle_rad: f32) -> Mat4 {
+        if !pivot.is_finite() || !angle_rad.is_finite() || angle_rad == 0.0 {
+            return Mat4::IDENTITY;
+        }
+        let r = Mat4::rotation_axis(axis, angle_rad);
+        Mat4::translation(pivot) * r * Mat4::translation(-pivot)
+    }
+
+    /// Matrix inverse (cofactor expansion). Returns `None` if singular or non-finite.
+    pub fn inverse(&self) -> Option<Mat4> {
+        let m = self.to_cols_array();
+        let mut inv = [0.0_f32; 16];
+        inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15]
+            + m[9] * m[7] * m[14]
+            + m[13] * m[6] * m[11]
+            - m[13] * m[7] * m[10];
+        inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15]
+            - m[8] * m[7] * m[14]
+            - m[12] * m[6] * m[11]
+            + m[12] * m[7] * m[10];
+        inv[8] = m[4] * m[9] * m[15] - m[4] * m[11] * m[13] - m[8] * m[5] * m[15]
+            + m[8] * m[7] * m[13]
+            + m[12] * m[5] * m[11]
+            - m[12] * m[7] * m[9];
+        inv[12] = -m[4] * m[9] * m[14] + m[4] * m[10] * m[13] + m[8] * m[5] * m[14]
+            - m[8] * m[6] * m[13]
+            - m[12] * m[5] * m[10]
+            + m[12] * m[6] * m[9];
+        inv[1] = -m[1] * m[10] * m[15] + m[1] * m[11] * m[14] + m[9] * m[2] * m[15]
+            - m[9] * m[3] * m[14]
+            - m[13] * m[2] * m[11]
+            + m[13] * m[3] * m[10];
+        inv[5] = m[0] * m[10] * m[15] - m[0] * m[11] * m[14] - m[8] * m[2] * m[15]
+            + m[8] * m[3] * m[14]
+            + m[12] * m[2] * m[11]
+            - m[12] * m[3] * m[10];
+        inv[9] = -m[0] * m[9] * m[15] + m[0] * m[11] * m[13] + m[8] * m[1] * m[15]
+            - m[8] * m[3] * m[13]
+            - m[12] * m[1] * m[11]
+            + m[12] * m[3] * m[9];
+        inv[13] = m[0] * m[9] * m[14] - m[0] * m[10] * m[13] - m[8] * m[1] * m[14]
+            + m[8] * m[2] * m[13]
+            + m[12] * m[1] * m[10]
+            - m[12] * m[2] * m[9];
+        inv[2] = m[1] * m[6] * m[15] - m[1] * m[7] * m[14] - m[5] * m[2] * m[15]
+            + m[5] * m[3] * m[14]
+            + m[13] * m[2] * m[7]
+            - m[13] * m[3] * m[6];
+        inv[6] = -m[0] * m[6] * m[15] + m[0] * m[7] * m[14] + m[4] * m[2] * m[15]
+            - m[4] * m[3] * m[14]
+            - m[12] * m[2] * m[7]
+            + m[12] * m[3] * m[6];
+        inv[10] = m[0] * m[5] * m[15] - m[0] * m[7] * m[13] - m[4] * m[1] * m[15]
+            + m[4] * m[3] * m[13]
+            + m[12] * m[1] * m[7]
+            - m[12] * m[3] * m[5];
+        inv[14] = -m[0] * m[5] * m[14] + m[0] * m[6] * m[13] + m[4] * m[1] * m[14]
+            - m[4] * m[2] * m[13]
+            - m[12] * m[1] * m[6]
+            + m[12] * m[2] * m[5];
+        inv[3] = -m[1] * m[6] * m[11] + m[1] * m[7] * m[10] + m[5] * m[2] * m[11]
+            - m[5] * m[3] * m[10]
+            - m[9] * m[2] * m[7]
+            + m[9] * m[3] * m[6];
+        inv[7] = m[0] * m[6] * m[11] - m[0] * m[7] * m[10] - m[4] * m[2] * m[11]
+            + m[4] * m[3] * m[10]
+            + m[8] * m[2] * m[7]
+            - m[8] * m[3] * m[6];
+        inv[11] = -m[0] * m[5] * m[11] + m[0] * m[7] * m[9] + m[4] * m[1] * m[11]
+            - m[4] * m[3] * m[9]
+            - m[8] * m[1] * m[7]
+            + m[8] * m[3] * m[5];
+        inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10]
+            + m[4] * m[2] * m[9]
+            + m[8] * m[1] * m[6]
+            - m[8] * m[2] * m[5];
+
+        let det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return None;
+        }
+        let inv_det = 1.0 / det;
+        let mut cols = [[0.0_f32; 4]; 4];
+        for c in 0..4 {
+            for r in 0..4 {
+                let v = inv[c * 4 + r] * inv_det;
+                if !v.is_finite() {
+                    return None;
+                }
+                cols[c][r] = v;
+            }
+        }
+        Some(Mat4 { cols })
+    }
+
     /// Right-handed view matrix (camera looks along -Z in view space), like gluLookAt.
     pub fn look_at(eye: Vec3, target: Vec3, up: Vec3) -> Mat4 {
         let f = (target - eye).normalized();
@@ -433,5 +566,44 @@ mod tests {
         assert!(approx(arr[12], 1.5));
         assert!(approx(arr[13], 2.5));
         assert!(approx(arr[14], 3.5));
+    }
+
+    #[test]
+    fn rotation_around_keeps_hinge_line_fixed_and_rotates_trailing_edge() {
+        let pivot = Vec3::new(-0.2, 0.4, 0.05);
+        let axis = Vec3::new(-0.3, 0.9, 0.1).normalized();
+        let angle = 0.35_f32;
+        let m = Mat4::rotation_around(pivot, axis, angle);
+
+        // Points along the hinge line remain fixed.
+        for s in [-0.5_f32, 0.0, 0.8] {
+            let p = pivot + axis * s;
+            assert!(approx_vec3(m.transform_point(p), p));
+        }
+        // Rotation around +Y by +angle moves trailing edge (-X) upward (+Z).
+        let my = Mat4::rotation_around(Vec3::new(-0.2, 0.0, 0.0), Vec3::Y, 0.35);
+        let te = Vec3::new(-0.3, 0.0, 0.0);
+        let moved = my.transform_point(te);
+        assert!(moved.z > 0.03);
+        assert!(approx((moved - Vec3::new(-0.2, 0.0, 0.0)).length(), 0.1));
+    }
+
+    #[test]
+    fn inverse_roundtrips_perspective_view() {
+        let view = Mat4::look_at(
+            Vec3::new(-5.0, -3.0, 2.0),
+            Vec3::new(1.0, 0.0, 0.5),
+            Vec3::Z,
+        );
+        let proj = Mat4::perspective(0.9, 1.6, 0.1, 1000.0);
+        let vp = proj * view;
+        let inv = vp.inverse().expect("vp invertible");
+        let prod = vp * inv;
+        for c in 0..4 {
+            for r in 0..4 {
+                let want = if c == r { 1.0 } else { 0.0 };
+                assert!((prod.cols[c][r] - want).abs() < 1e-4, "{c} {r}");
+            }
+        }
     }
 }

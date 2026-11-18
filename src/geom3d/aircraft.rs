@@ -8,7 +8,9 @@
 use super::math::Vec3;
 use super::mesh::{Mesh, push_box, push_cylinder, push_disc, push_flat_cap, push_grid};
 use super::parts::{push_fuselage, push_propeller, push_wheel};
-use super::structure::{FuselageStructure, SurfaceStructure, fuselage_shell, surface_parts};
+use super::structure::{
+    ControlRole, FuselageStructure, SurfaceStructure, fuselage_shell, surface_parts_with_hinge,
+};
 
 /// Taşıyıcı yüzey (kanat, yatay/V kuyruk, dikey kuyruk, winglet) — tek yarı tanımlanır.
 #[derive(Clone, Debug, PartialEq)]
@@ -148,10 +150,32 @@ pub struct Part {
     pub mesh: Mesh,
 }
 
+/// Individual hinged control surface mesh + its 3D hinge line (for flight simulator animation).
+#[derive(Clone, Debug)]
+pub struct ControlPart {
+    pub role: ControlRole,
+    /// False for left (+Y) or centreline (rudder); true for mirrored right (-Y) panel.
+    pub is_right: bool,
+    pub hinge_pivot: Vec3,
+    pub hinge_axis: Vec3,
+    pub mesh: Mesh,
+}
+
+/// Individual propeller / rotor assembly (blade mesh + translucent spin disc) with hub & spin axis.
+#[derive(Clone, Debug)]
+pub struct RotorPart {
+    pub center: Vec3,
+    pub axis: Vec3,
+    pub prop: Mesh,
+    pub disc: Mesh,
+}
+
 /// Üretilen sahne: türe göre birleştirilmiş mesh'ler + işaret noktaları + sınır kutusu.
 #[derive(Clone, Debug, Default)]
 pub struct Scene {
     pub parts: Vec<Part>,
+    pub controls: Vec<ControlPart>,
+    pub rotors: Vec<RotorPart>,
     pub cg: Option<Vec3>,
     pub np: Option<Vec3>,
     pub bounds_min: Vec3,
@@ -409,6 +433,8 @@ pub fn fuselage_profile(f: &FuselageSpec, n: usize) -> Vec<(f32, f32)> {
 pub fn build(spec: &AircraftSpec) -> Scene {
     let mut by_kind: Vec<(PartKind, Mesh)> =
         PartKind::ALL.iter().map(|k| (*k, Mesh::new())).collect();
+    let mut controls: Vec<ControlPart> = Vec::new();
+    let mut rotors: Vec<RotorPart> = Vec::new();
     let mut add = |kind: PartKind, m: &Mesh| {
         if let Some(slot) = by_kind.iter_mut().find(|(k, _)| *k == kind) {
             slot.1.append(m);
@@ -416,10 +442,41 @@ pub fn build(spec: &AircraftSpec) -> Scene {
     };
 
     for (kind, s) in &spec.surfaces {
-        for (k, half) in surface_parts(s, *kind) {
+        let (subparts, hinge) = surface_parts_with_hinge(s, *kind);
+        for (k, half) in subparts {
             add(k, &half);
             if s.mirrored {
                 add(k, &mirror_y(&half));
+            }
+            if k == PartKind::Control {
+                if let Some(h) = hinge {
+                    let mut left_mesh = half.clone();
+                    left_mesh.drop_non_finite_triangles();
+                    if !left_mesh.is_empty() {
+                        controls.push(ControlPart {
+                            role: h.role,
+                            is_right: false,
+                            hinge_pivot: h.pivot,
+                            hinge_axis: h.axis,
+                            mesh: left_mesh,
+                        });
+                    }
+                    if s.mirrored {
+                        let mut right_mesh = mirror_y(&half);
+                        right_mesh.drop_non_finite_triangles();
+                        if !right_mesh.is_empty() {
+                            // Mirroring across Y=0 flips orientation, so reverse the right hinge axis
+                            // to (-hx, hy, -hz): positive angle still deflects trailing edge upward.
+                            controls.push(ControlPart {
+                                role: h.role,
+                                is_right: true,
+                                hinge_pivot: Vec3::new(h.pivot.x, -h.pivot.y, h.pivot.z),
+                                hinge_axis: Vec3::new(-h.axis.x, h.axis.y, -h.axis.z).normalized(),
+                                mesh: right_mesh,
+                            });
+                        }
+                    }
+                }
             }
         }
     }
@@ -483,12 +540,22 @@ pub fn build(spec: &AircraftSpec) -> Scene {
             add(PartKind::Motor, &m);
         }
         if finite_pos(r.radius) {
-            let mut m = Mesh::new();
-            push_propeller(&mut m, r.center, axis, r.radius, r.blades, 0.0);
-            add(PartKind::Prop, &m);
-            let mut m = Mesh::new();
-            push_disc(&mut m, r.center + axis * 0.004, axis, r.radius, 40);
-            add(PartKind::Rotor, &m);
+            let mut m_prop = Mesh::new();
+            push_propeller(&mut m_prop, r.center, axis, r.radius, r.blades, 0.0);
+            add(PartKind::Prop, &m_prop);
+            let mut m_disc = Mesh::new();
+            push_disc(&mut m_disc, r.center + axis * 0.004, axis, r.radius, 40);
+            add(PartKind::Rotor, &m_disc);
+            m_prop.drop_non_finite_triangles();
+            m_disc.drop_non_finite_triangles();
+            if !m_prop.is_empty() || !m_disc.is_empty() {
+                rotors.push(RotorPart {
+                    center: r.center,
+                    axis,
+                    prop: m_prop,
+                    disc: m_disc,
+                });
+            }
         }
     }
     for w in &spec.wheels {
@@ -526,6 +593,8 @@ pub fn build(spec: &AircraftSpec) -> Scene {
     }
     Scene {
         parts,
+        controls,
+        rotors,
         cg: spec.cg.filter(|v| v.is_finite()),
         np: spec.np.filter(|v| v.is_finite()),
         bounds_min: bmin,

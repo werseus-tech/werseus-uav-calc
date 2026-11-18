@@ -554,26 +554,27 @@ impl WorldMesh {
     }
 }
 
+fn grass_color_at(x: f64, y: f64, shade: f32) -> [f32; 4] {
+    let n_fine = 0.5 + 0.5 * fbm2(ENV_SEED ^ 0x77, x * 0.014, y * 0.014, 4);
+    let n_patch = 0.5 + 0.5 * fbm2(ENV_SEED ^ 0x99, x * 0.0045 + 11.3, y * 0.0045 - 7.1, 3);
+    let c_lush = scale_col([0.19, 0.39, 0.16, 1.0], shade);
+    let c_meadow = scale_col([0.26, 0.47, 0.20, 1.0], shade);
+    let c_dry = scale_col([0.33, 0.44, 0.21, 1.0], shade);
+    let base = mix_col(c_lush, c_meadow, n_fine as f32);
+    mix_col(base, c_dry, (n_patch * 0.48) as f32)
+}
+
 fn build_grass_grid(m: &mut WorldMesh, cx: f64, cy: f64, cells: i32, step: f64, shade: f32) {
     let qx = (cx / step).round() * step;
     let qy = (cy / step).round() * step;
     let half = cells / 2;
-    let c_a = scale_col([0.23, 0.43, 0.19, 1.0], shade);
-    let c_b = scale_col([0.28, 0.49, 0.22, 1.0], shade);
     for ix in -half..half {
         for iy in -half..half {
             let x0 = qx + ix as f64 * step;
             let x1 = x0 + step;
             let y0 = qy + iy as f64 * step;
             let y1 = y0 + step;
-            let n = 0.5
-                + 0.5
-                    * value_noise2(
-                        ENV_SEED ^ 0x77,
-                        (x0 + step * 0.5) * 0.018,
-                        (y0 + step * 0.5) * 0.018,
-                    );
-            let col = mix_col(c_a, c_b, n as f32);
+            let col = grass_color_at(x0 + step * 0.5, y0 + step * 0.5, shade);
             m.push_ned_rect(x0, x1, y0, y1, 0.0, col);
         }
     }
@@ -595,8 +596,9 @@ fn push_tree(m: &mut WorldMesh, x_ned: f64, y_ned: f64, h: f32, shade: f32, seed
         trunk_col,
     );
     let r = h * (0.36 + 0.12 * rand01(seed) as f32);
-    let leaf_base = scale_col([0.16, 0.36, 0.15, 1.0], shade);
-    let leaf_tip = scale_col([0.22, 0.44, 0.19, 1.0], shade);
+    let tone = 0.85 + 0.30 * rand01(seed ^ 0x5A) as f32;
+    let leaf_base = scale_col([0.15, 0.34, 0.14, 1.0], shade * tone);
+    let leaf_tip = scale_col([0.23, 0.45, 0.19, 1.0], shade * tone);
     let apex = [rx, ry, h];
     let p0 = [rx - r, ry - r, trunk_h];
     let p1 = [rx + r, ry - r, trunk_h];
@@ -615,7 +617,7 @@ fn push_tree(m: &mut WorldMesh, x_ned: f64, y_ned: f64, h: f32, shade: f32, seed
 }
 
 fn build_open_field(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
-    build_grass_grid(m, cx, cy, 30, 45.0, shade);
+    build_grass_grid(m, cx, cy, 36, 37.5, shade);
     // Scattered procedural trees outside the spawn clearing.
     let tree_step = 42.0;
     let qx = (cx / tree_step).round() as i64;
@@ -645,15 +647,25 @@ fn build_open_field(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
 }
 
 fn build_runway(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
-    build_grass_grid(m, cx, cy, 30, 45.0, shade);
+    build_grass_grid(m, cx, cy, 36, 37.5, shade);
 
     let asphalt = scale_col([0.19, 0.20, 0.22, 1.0], shade);
+    let asphalt_center = scale_col([0.14, 0.15, 0.17, 1.0], shade);
     let asphalt_pad = scale_col([0.23, 0.24, 0.26, 1.0], shade);
-    let marking = scale_col([0.92, 0.93, 0.90, 1.0], shade);
+    let marking = scale_col([0.84, 0.85, 0.80, 1.0], shade);
 
-    // Main runway (-20..240 m N, -7.5..7.5 m E) and side apron.
+    // Main runway (-20..240 m N, -7.5..7.5 m E), darker worn centre and side apron.
     m.push_ned_rect(-20.0, 240.0, -7.5, 7.5, 0.02, asphalt);
+    m.push_ned_rect(-18.0, 238.0, -2.4, 2.4, 0.023, asphalt_center);
     m.push_ned_rect(-20.0, 15.0, 7.5, 22.0, 0.018, asphalt_pad);
+    m.push_ned_rect(
+        -4.0,
+        2.0,
+        7.5,
+        16.0,
+        0.024,
+        scale_col([0.78, 0.72, 0.36, 1.0], shade),
+    );
 
     // Edge lines.
     m.push_ned_rect(-18.0, 238.0, -7.25, -6.95, 0.035, marking);
@@ -668,6 +680,12 @@ fn build_runway(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
         }
     }
 
+    // Touchdown aiming-point blocks.
+    for x0 in [16.0_f64, 194.0_f64] {
+        m.push_ned_rect(x0, x0 + 10.0, 2.6, 3.8, 0.036, marking);
+        m.push_ned_rect(x0, x0 + 10.0, -3.8, -2.6, 0.036, marking);
+    }
+
     // Dashed centreline along y = 0.
     let mut x = -4.0;
     while x < 220.0 {
@@ -676,11 +694,69 @@ fn build_runway(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
     }
 }
 
+fn push_soft_building_shadow(
+    m: &mut WorldMesh,
+    b: &BuildingBox,
+    block_bounds: [f64; 4],
+    sidewalk_col: [f32; 4],
+) {
+    if !m.can_add_tris(8) {
+        return;
+    }
+    let pad = 2.4_f64;
+    let [bx0, bx1, by0, by1] = block_bounds;
+    let sx0 = (b.min_x - pad).max(bx0) as f32;
+    let sx1 = (b.max_x + pad).min(bx1) as f32;
+    let sy0 = (b.min_y - pad).max(by0) as f32;
+    let sy1 = (b.max_y + pad).min(by1) as f32;
+    let (x0, x1) = (b.min_x as f32, b.max_x as f32);
+    let (ry0, ry1) = (-b.max_y as f32, -b.min_y as f32);
+    let (sry0, sry1) = (-sy1, -sy0);
+    let z = 0.017_f32;
+    let n = [0.0, 0.0, 1.0];
+    let inner = scale_col(sidewalk_col, 0.45);
+    let outer = sidewalk_col;
+    // 4 tapered AO shadow quads around the building footprint.
+    let strips = [
+        ([x0, ry0, z], [x1, ry0, z], [sx1, sry0, z], [sx0, sry0, z]),
+        ([x1, ry0, z], [x1, ry1, z], [sx1, sry1, z], [sx1, sry0, z]),
+        ([x1, ry1, z], [x0, ry1, z], [sx0, sry1, z], [sx1, sry1, z]),
+        ([x0, ry1, z], [x0, ry0, z], [sx0, sry0, z], [sx0, sry1, z]),
+    ];
+    for (ia, ib, ob, oa) in strips {
+        let i0 = m.push_vertex(ia, n, inner);
+        let i1 = m.push_vertex(ib, n, inner);
+        let i2 = m.push_vertex(ob, n, outer);
+        let i3 = m.push_vertex(oa, n, outer);
+        m.indices.extend_from_slice(&[i0, i1, i2, i0, i2, i3]);
+    }
+}
+
+fn building_palette(seed: u64, shade: f32) -> ([f32; 4], [f32; 4]) {
+    let tone = 0.90 + 0.20 * rand01(seed ^ 0x44) as f32;
+    let base_wall = match (seed >> 8) % 5 {
+        0 => [0.64, 0.59, 0.51, 1.0], // warm limestone
+        1 => [0.43, 0.48, 0.56, 1.0], // cool slate
+        2 => [0.54, 0.55, 0.56, 1.0], // concrete
+        3 => [0.57, 0.43, 0.37, 1.0], // muted terracotta
+        _ => [0.39, 0.47, 0.55, 1.0], // architectural glass-grey
+    };
+    let base_roof = match (seed >> 16) % 3 {
+        0 => [0.28, 0.29, 0.32, 1.0], // dark tar
+        1 => [0.38, 0.39, 0.41, 1.0], // gravel
+        _ => [0.34, 0.36, 0.39, 1.0], // slate roof
+    };
+    (
+        scale_col(base_wall, shade * tone),
+        scale_col(base_roof, shade),
+    )
+}
+
 fn build_city(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
     // Base asphalt street plane.
-    let asphalt = scale_col([0.19, 0.20, 0.23, 1.0], shade);
-    let sidewalk = scale_col([0.36, 0.37, 0.39, 1.0], shade);
-    let park_grass = scale_col([0.24, 0.44, 0.20, 1.0], shade);
+    let asphalt = scale_col([0.18, 0.19, 0.22, 1.0], shade);
+    let asphalt_center = scale_col([0.14, 0.15, 0.17, 1.0], shade);
+    let sidewalk = scale_col([0.38, 0.39, 0.41, 1.0], shade);
     let lane = scale_col([0.82, 0.80, 0.72, 1.0], shade);
 
     let r_vis = 620.0;
@@ -688,9 +764,19 @@ fn build_city(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
     let qy = (cy / CITY_PITCH).round() * CITY_PITCH;
     m.push_ned_rect(qx - r_vis, qx + r_vis, qy - r_vis, qy + r_vis, 0.0, asphalt);
 
-    // Open park & runway strip at spawn.
-    m.push_ned_rect(-50.0, 220.0, -28.0, 28.0, 0.012, park_grass);
+    // Open park (multi-patch grass) & runway strip at spawn.
+    for ix in 0..9 {
+        let px0 = -50.0 + ix as f64 * 30.0;
+        let px1 = px0 + 30.0;
+        for iy in 0..2 {
+            let py0 = -28.0 + iy as f64 * 28.0;
+            let py1 = py0 + 28.0;
+            let col = grass_color_at(0.5 * (px0 + px1), 0.5 * (py0 + py1), shade);
+            m.push_ned_rect(px0, px1, py0, py1, 0.012, col);
+        }
+    }
     m.push_ned_rect(-20.0, 210.0, -7.0, 7.0, 0.025, asphalt);
+    m.push_ned_rect(-18.0, 208.0, -2.2, 2.2, 0.028, asphalt_center);
     let mut x = -12.0;
     while x < 204.0 {
         m.push_ned_rect(x, x + 6.0, -0.15, 0.15, 0.038, lane);
@@ -731,24 +817,20 @@ fn build_city(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
         m.push_ned_rect(x0, x1, y0, y1, 0.015, sidewalk);
     }
 
-    // Pass 1: Building boxes (guaranteed for all visible blocks).
+    // Pass 1: Building boxes + soft ground shadow on sidewalk.
     let mut near_buildings: Vec<BuildingBox> = Vec::new();
     for &(d2, bx, by) in &items {
+        let block_bounds = [
+            bx as f64 * CITY_PITCH + STREET_HALF,
+            (bx + 1) as f64 * CITY_PITCH - STREET_HALF,
+            by as f64 * CITY_PITCH + STREET_HALF,
+            (by + 1) as f64 * CITY_PITCH - STREET_HALF,
+        ];
         for b in EnvironmentKind::city_block_buildings(bx, by)
             .into_iter()
             .flatten()
         {
-            let tone = rand01(b.seed ^ 0x44) as f32;
-            let wall = scale_col(
-                [
-                    0.46 + 0.16 * tone,
-                    0.47 + 0.13 * tone,
-                    0.50 + 0.10 * tone,
-                    1.0,
-                ],
-                shade,
-            );
-            let roof = scale_col([0.34, 0.35, 0.38, 1.0], shade);
+            let (wall, roof) = building_palette(b.seed, shade);
             m.push_box_top_sides(
                 [b.min_x as f32, -b.max_y as f32, 0.0],
                 [b.max_x as f32, -b.min_y as f32, b.height as f32],
@@ -756,17 +838,32 @@ fn build_city(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
                 roof,
             );
             if d2 < 240.0 * 240.0 {
+                push_soft_building_shadow(m, &b, block_bounds, sidewalk);
                 near_buildings.push(b);
             }
         }
     }
 
-    // Pass 2: Simple procedural window patterns on nearest buildings (within remaining tri cap).
-    let win_dark = scale_col([0.15, 0.24, 0.34, 1.0], shade);
-    let win_lit = scale_col([0.85, 0.78, 0.52, 1.0], shade);
+    // Pass 2: Rooftop mechanical penthouses + procedural window grids on nearest buildings.
+    let win_dark = scale_col([0.14, 0.22, 0.33, 1.0], shade);
+    let win_lit = scale_col([0.86, 0.78, 0.52, 1.0], shade);
+    let pent_col = scale_col([0.32, 0.34, 0.37, 1.0], shade);
     for b in near_buildings {
         if !m.can_add_tris(80) {
             break;
+        }
+        if b.height > 28.0 && rand01(b.seed ^ 0x71) > 0.55 && m.can_add_tris(10) {
+            let cx_b = 0.5 * (b.min_x + b.max_x) as f32;
+            let cy_b = -0.5 * (b.min_y + b.max_y) as f32;
+            let hw = ((b.max_x - b.min_x) as f32 * 0.22).clamp(1.5, 4.0);
+            let hd = ((b.max_y - b.min_y) as f32 * 0.22).clamp(1.5, 4.0);
+            let hz = b.height as f32;
+            m.push_box_top_sides(
+                [cx_b - hw, cy_b - hd, hz],
+                [cx_b + hw, cy_b + hd, hz + 2.6],
+                pent_col,
+                pent_col,
+            );
         }
         push_building_windows(m, &b, win_dark, win_lit);
     }
@@ -857,16 +954,16 @@ fn push_building_windows(
 }
 
 fn build_mountains(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
-    const N: usize = 52;
+    const N: usize = 64;
     let snap = 40.0;
     let qx = (cx / snap).round() * snap;
     let qy = (cy / snap).round() * snap;
     let extent = 1200.0;
     let warp = |u: f64| u * (0.28 + 0.72 * u * u) * extent;
 
-    let c_grass = scale_col([0.22, 0.44, 0.19, 1.0], shade);
-    let c_rock = scale_col([0.44, 0.41, 0.37, 1.0], shade);
-    let c_snow = scale_col([0.88, 0.91, 0.96, 1.0], shade);
+    let c_rock_a = scale_col([0.46, 0.42, 0.37, 1.0], shade);
+    let c_rock_b = scale_col([0.35, 0.34, 0.34, 1.0], shade);
+    let c_snow = scale_col([0.90, 0.93, 0.97, 1.0], shade);
 
     let env = EnvironmentKind::Mountains;
     let mut grid_idx = Vec::with_capacity((N + 1) * (N + 1));
@@ -880,9 +977,19 @@ fn build_mountains(m: &mut WorldMesh, cx: f64, cy: f64, shade: f32) {
             let n_ned = env.ground_normal_ned(x_ned, y_ned);
             let n_render = [n_ned.x as f32, -n_ned.y as f32, -n_ned.z as f32];
             let slope = (1.0 - n_render[2] as f64).clamp(0.0, 1.0);
-            let rock_t = (((h - 24.0) / 28.0).max((slope - 0.15) / 0.22)).clamp(0.0, 1.0) as f32;
+            let n_rock = fbm2(ENV_SEED ^ 0x5202, x_ned * 0.011, y_ned * 0.011, 3);
+            let n_snow = fbm2(ENV_SEED ^ 0x5101, x_ned * 0.0085, y_ned * 0.0085, 3);
+            let n_hue = 0.5 + 0.5 * fbm2(ENV_SEED ^ 0x5303, x_ned * 0.018, y_ned * 0.018, 3);
+
+            let c_grass = grass_color_at(x_ned, y_ned, shade);
+            let c_rock = mix_col(c_rock_a, c_rock_b, n_hue as f32);
+
+            let rock_alt = 24.0 + 12.0 * n_rock;
+            let rock_t =
+                (((h - rock_alt) / 26.0).max((slope - 0.14) / 0.20)).clamp(0.0, 1.0) as f32;
+            let snow_alt = 66.0 + 16.0 * n_snow;
             let snow_slope = (1.0 - (slope - 0.22) / 0.22).clamp(0.0, 1.0);
-            let snow_t = (((h - 68.0) / 24.0).clamp(0.0, 1.0) * snow_slope) as f32;
+            let snow_t = (((h - snow_alt) / 22.0).clamp(0.0, 1.0) * snow_slope) as f32;
             let base = mix_col(c_grass, c_rock, rock_t);
             let col = mix_col(base, c_snow, snow_t);
             let idx = m.push_vertex([x_ned as f32, -y_ned as f32, h as f32], n_render, col);

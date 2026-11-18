@@ -9,8 +9,8 @@ use super::aircraft::{
 };
 use super::math::Vec3;
 use super::structure::{
-    ControlSpec, FuselageStructure, SparSpec, SurfaceStructure, fuselage_radius_at, mid_at,
-    thickness_at,
+    ControlRole, ControlSpec, FuselageStructure, SparSpec, SurfaceStructure, fuselage_radius_at,
+    mid_at, thickness_at,
 };
 use crate::calc::Model;
 use crate::calc::geometry::TailKind;
@@ -52,12 +52,12 @@ const RIB_SPACING: f32 = 0.10;
 const RIB_T: f32 = 0.002;
 /// Menteşe aralığı [m].
 const HINGE_GAP: f32 = 0.002;
-/// Kontrol yüzeyleri: (menteşe kord oranı, açıklık başı, açıklık sonu).
-const AILERON: (f32, f32, f32) = (0.72, 0.55, 0.95);
-const ELEVON: (f32, f32, f32) = (0.75, 0.15, 0.95);
-const ELEVATOR: (f32, f32, f32) = (0.62, 0.08, 0.97);
-const RUDDER: (f32, f32, f32) = (0.60, 0.08, 0.97);
-const RUDDERVATOR: (f32, f32, f32) = (0.62, 0.10, 0.97);
+/// Kontrol yüzeyleri: (rol, menteşe kord oranı, açıklık başı, açıklık sonu).
+const AILERON: (ControlRole, f32, f32, f32) = (ControlRole::Aileron, 0.72, 0.55, 0.95);
+const ELEVON: (ControlRole, f32, f32, f32) = (ControlRole::Elevon, 0.75, 0.15, 0.95);
+const ELEVATOR: (ControlRole, f32, f32, f32) = (ControlRole::Elevator, 0.62, 0.08, 0.97);
+const RUDDER: (ControlRole, f32, f32, f32) = (ControlRole::Rudder, 0.60, 0.08, 0.97);
+const RUDDERVATOR: (ControlRole, f32, f32, f32) = (ControlRole::Ruddervator, 0.62, 0.10, 0.97);
 /// Gövde çerçeveleri: burundan gövde boyu oranı; kalınlık [m].
 const FORMERS: [f32; 5] = [0.06, 0.25, 0.45, 0.65, 0.85];
 const FORMER_T: f32 = 0.003;
@@ -78,7 +78,7 @@ fn structure(
     spar_od_mm: f64,
     spar_x: f64,
     semi: f32,
-    ctl: (f32, f32, f32),
+    ctl: (ControlRole, f32, f32, f32),
 ) -> Option<SurfaceStructure> {
     if !(semi.is_finite() && semi > 0.0) {
         return None;
@@ -95,9 +95,10 @@ fn structure(
         rib_t: RIB_T,
         spar: (od > 0.0).then_some(SparSpec { x_frac: spar_x, od }),
         control: Some(ControlSpec {
-            hinge_frac: ctl.0,
-            f0: ctl.1,
-            f1: ctl.2,
+            role: ctl.0,
+            hinge_frac: ctl.1,
+            f0: ctl.2,
+            f1: ctl.3,
             gap: HINGE_GAP,
         }),
     })
@@ -109,7 +110,7 @@ fn tail_structure(
     kind: TailKind,
     vertical: bool,
     semi: f32,
-    ctl: (f32, f32, f32),
+    ctl: (ControlRole, f32, f32, f32),
 ) -> Option<SurfaceStructure> {
     use crate::cad::freecad::TailCadParams;
     let t = if vertical {
@@ -212,7 +213,11 @@ fn fixed_wing(
             w.spar_od_mm,
             w.spar_x_frac,
             b * 0.5,
-            if flying { ELEVON } else { AILERON },
+            if tail == TailKind::FlyingWing {
+                ELEVON
+            } else {
+                AILERON
+            },
         )
     };
     let mut spec = AircraftSpec::default();
