@@ -41,6 +41,7 @@ pub mod steps;
 pub mod structfea;
 pub mod structure;
 pub mod summary;
+pub mod swarm;
 pub mod teach;
 pub mod theme;
 pub mod thermalpower;
@@ -104,6 +105,7 @@ pub enum Tab {
     Wiring,
     Topology,
     ThrustStand,
+    Swarm,
 }
 
 impl Tab {
@@ -142,6 +144,7 @@ impl Tab {
             Tab::Wiring => t("tab_wiring"),
             Tab::Topology => t("tab_topology"),
             Tab::ThrustStand => t("tab_thruststand"),
+            Tab::Swarm => t("tab_swarm"),
         }
     }
 
@@ -176,6 +179,7 @@ impl Tab {
                 Tab::Wiring,
                 Tab::Topology,
                 Tab::ThrustStand,
+                Tab::Swarm,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -211,6 +215,7 @@ impl Tab {
                 Tab::Wiring,
                 Tab::Topology,
                 Tab::ThrustStand,
+                Tab::Swarm,
             ],
             _ => vec![
                 Tab::Summary,
@@ -245,6 +250,7 @@ impl Tab {
                 Tab::Wiring,
                 Tab::Topology,
                 Tab::ThrustStand,
+                Tab::Swarm,
             ],
         }
     }

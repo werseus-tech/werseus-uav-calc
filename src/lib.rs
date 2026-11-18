@@ -26,6 +26,7 @@ pub mod sensorfov;
 pub mod sim;
 pub mod structfea;
 pub mod support;
+pub mod swarm;
 pub mod teach;
 pub mod thermalpower;
 pub mod thruststand;
