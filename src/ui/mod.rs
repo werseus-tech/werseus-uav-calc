@@ -6,6 +6,7 @@ pub mod ai;
 pub mod components;
 pub mod design_point;
 pub mod endurance;
+pub mod flightsim;
 pub mod flow_tunnel;
 pub mod formulas;
 pub mod geometry;
@@ -63,6 +64,7 @@ pub enum Tab {
     Schematic,
     WindTunnel,
     FlowTunnel,
+    FlightSim,
 }
 
 impl Tab {
@@ -82,6 +84,7 @@ impl Tab {
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
             Tab::FlowTunnel => t("tab_flowtunnel"),
+            Tab::FlightSim => t("flightsim.tab"),
         }
     }
 
@@ -97,6 +100,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::FlowTunnel,
                 Tab::Schematic,
+                Tab::FlightSim,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -113,6 +117,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::FlightSim,
             ],
             _ => vec![
                 Tab::Summary,
@@ -128,6 +133,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::FlightSim,
             ],
         }
     }
@@ -186,6 +192,9 @@ pub struct App {
 
     // Yeni üç panelli kabuğun görünüm durumu (projeye yazılmaz)
     pub shell: shell::ShellState,
+
+    // Flight simulator screen state (not saved in the project)
+    pub flightsim_state: flightsim::FlightSimState,
 }
 
 impl App {
@@ -277,6 +286,7 @@ impl App {
             ai_config: settings.ai_config,
             teacher_state: crate::ui::teach::TeacherUiState::new(settings.teacher),
             shell: shell::ShellState::new(settings.theme),
+            flightsim_state: Default::default(),
         };
 
         startup_prefs.apply(&mut app, &cc.egui_ctx);
@@ -344,6 +354,7 @@ impl App {
             ai_config: crate::ai::AiConfig::default(),
             teacher_state: crate::ui::teach::TeacherUiState::new(Default::default()),
             shell: shell::ShellState::new(theme::ThemeChoice::Dark),
+            flightsim_state: Default::default(),
         }
     }
 

@@ -626,6 +626,15 @@ impl App {
         let view_frame = egui::Frame::new()
             .fill(tk.bg)
             .inner_margin(egui::Margin::symmetric(8, 6));
+        if matches!(needs.slot, Some(super::steps::CenterSlot::FlightSim)) {
+            // The flight simulator has its own 3D view and controls: it owns the centre.
+            egui::CentralPanel::default()
+                .frame(view_frame)
+                .show(ui, |ui| {
+                    super::flightsim::show(ui, &self.project, model, &mut self.flightsim_state)
+                });
+            return;
+        }
         if !self.shell.prefs.viewport_open {
             egui::Panel::top("center_viewport_collapsed")
                 .frame(
@@ -847,6 +856,7 @@ impl App {
                     &mut self.wt_state,
                 );
             }
+            Some(super::steps::CenterSlot::FlightSim) => {}
             None => {}
         }
     }
