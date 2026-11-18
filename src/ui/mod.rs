@@ -25,6 +25,7 @@ pub mod panel_kit;
 pub mod propcurves;
 pub mod propulsion;
 pub mod regulation;
+pub mod reliability;
 pub mod schematic;
 pub mod settings_page;
 pub mod shell;
@@ -86,6 +87,7 @@ pub enum Tab {
     Library,
     ControlTuning,
     Bom,
+    Reliability,
 }
 
 impl Tab {
@@ -115,6 +117,7 @@ impl Tab {
             Tab::Library => t("tab_library"),
             Tab::ControlTuning => t("controltuning.tab"),
             Tab::Bom => t("bom.tab"),
+            Tab::Reliability => t("tab_reliability"),
         }
     }
 
@@ -140,6 +143,7 @@ impl Tab {
                 Tab::Library,
                 Tab::ControlTuning,
                 Tab::Bom,
+                Tab::Reliability,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -166,6 +170,7 @@ impl Tab {
                 Tab::Library,
                 Tab::ControlTuning,
                 Tab::Bom,
+                Tab::Reliability,
             ],
             _ => vec![
                 Tab::Summary,
@@ -191,6 +196,7 @@ impl Tab {
                 Tab::Library,
                 Tab::ControlTuning,
                 Tab::Bom,
+                Tab::Reliability,
             ],
         }
     }
@@ -236,6 +242,7 @@ pub struct App {
     pub ac_state: acoustics::AcState,
     pub tp_state: thermalpower::TpState,
     pub bom_state: bom::BomUiState,
+    pub rel_state: reliability::ReliabilityUi,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -339,6 +346,7 @@ impl App {
             ac_state: acoustics::AcState::default(),
             tp_state: thermalpower::TpState::default(),
             bom_state: bom::BomUiState::default(),
+            rel_state: reliability::ReliabilityUi::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -416,6 +424,7 @@ impl App {
             ac_state: acoustics::AcState::default(),
             tp_state: thermalpower::TpState::default(),
             bom_state: bom::BomUiState::default(),
+            rel_state: reliability::ReliabilityUi::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

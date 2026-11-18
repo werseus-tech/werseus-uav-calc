@@ -51,6 +51,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("windtunnel.rs", include_str!("windtunnel.rs")),
         ("flow_tunnel.rs", include_str!("flow_tunnel.rs")),
         ("library.rs", include_str!("library.rs")),
+        ("reliability.rs", include_str!("reliability.rs")),
         ("formulas.rs", include_str!("formulas.rs")),
         ("help.rs", include_str!("help.rs")),
         ("schematic.rs", include_str!("schematic.rs")),

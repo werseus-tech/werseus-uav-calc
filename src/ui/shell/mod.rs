@@ -884,6 +884,9 @@ impl App {
             Some(super::steps::CenterSlot::Bom) => {
                 super::bom::show(ui, &self.project, model, &mut self.bom_state);
             }
+            Some(super::steps::CenterSlot::Reliability) => {
+                super::reliability::show(ui, &self.project, model, &mut self.rel_state);
+            }
             None => {}
         }
     }

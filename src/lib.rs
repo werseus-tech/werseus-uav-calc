@@ -16,6 +16,7 @@ pub mod massprops;
 pub mod project;
 pub mod propcurves;
 pub mod regulation;
+pub mod reliability;
 pub mod report;
 pub mod sim;
 pub mod structfea;

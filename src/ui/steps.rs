@@ -61,6 +61,8 @@ pub enum Screen {
     ControlTuning,
     /// Uzman modundaki malzeme listesi ve DXF yerleşimi (merkezde yuvada çizilir).
     Bom,
+    /// Uzman modundaki güvenilirlik (MTBF) sekmesi; merkezde yerleşim yuvasında çizilir.
+    Reliability,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -79,6 +81,7 @@ pub enum CenterSlot {
     Library,
     ControlTuning,
     Bom,
+    Reliability,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -141,6 +144,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Library => Screen::Library,
         Tab::ControlTuning => Screen::ControlTuning,
         Tab::Bom => Screen::Bom,
+        Tab::Reliability => Screen::Reliability,
     }
 }
 
@@ -171,6 +175,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Library => Some(CenterSlot::Library),
         Screen::ControlTuning => Some(CenterSlot::ControlTuning),
         Screen::Bom => Some(CenterSlot::Bom),
+        Screen::Reliability => Some(CenterSlot::Reliability),
         _ => None,
     }
 }
@@ -181,6 +186,7 @@ pub fn has_inputs(screen: Screen) -> bool {
         screen,
         Screen::Outputs
             | Screen::WindTunnel
+            | Screen::Reliability
             | Screen::ThermalPower
             | Screen::ComputeBudget
             | Screen::FlowTunnel
@@ -219,6 +225,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Reliability
         | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
@@ -263,6 +270,7 @@ pub fn has_formulas(screen: Screen) -> bool {
         screen,
         Screen::Outputs
             | Screen::WindTunnel
+            | Screen::Reliability
             | Screen::ThermalPower
             | Screen::ComputeBudget
             | Screen::FlowTunnel
@@ -308,6 +316,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         Screen::MrStructure
         | Screen::Outputs
         | Screen::WindTunnel
+        | Screen::Reliability
         | Screen::ThermalPower
         | Screen::ComputeBudget
         | Screen::FlowTunnel
@@ -354,6 +363,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Reliability
         | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
@@ -431,6 +441,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Reliability
         | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
@@ -526,6 +537,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Reliability
         | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
