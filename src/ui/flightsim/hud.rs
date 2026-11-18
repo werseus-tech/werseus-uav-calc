@@ -15,6 +15,50 @@ fn text(p: &Painter, pos: Pos2, align: Align2, s: impl ToString, size: f32, c: C
     p.text(pos, align, s.to_string(), FontId::proportional(size), c);
 }
 
+/// Rows for the control panel: (label, signed fraction in [-1, 1], value text).
+/// Winged aircraft show the actual servo positions (after rate limit) as percent of travel
+/// and degrees; multirotors have no surfaces, so the pilot stick inputs are shown instead.
+pub fn control_rows(sim: &Sim) -> [(&'static str, f64, String); 3] {
+    let fin = |v: f64| {
+        if v.is_finite() {
+            v.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    if sim.params.wing.is_some() {
+        let s = &sim.surfaces;
+        let row = |k: &'static str, v: f64| {
+            let v = fin(v);
+            (
+                t(k),
+                v,
+                format!(
+                    "{:+.0} % · {:+.1}°",
+                    v * 100.0,
+                    (v * crate::sim::vehicle::DELTA_MAX).to_degrees()
+                ),
+            )
+        };
+        [
+            row("flightsim.hud.elevator", s.elevator),
+            row("flightsim.hud.aileron", s.aileron),
+            row("flightsim.hud.rudder", s.rudder),
+        ]
+    } else {
+        let i = &sim.input;
+        let row = |k: &'static str, v: f64| {
+            let v = fin(v);
+            (t(k), v, format!("{:+.0} %", v * 100.0))
+        };
+        [
+            row("flightsim.hud.stick_pitch", i.pitch),
+            row("flightsim.hud.stick_roll", i.roll),
+            row("flightsim.hud.stick_yaw", i.yaw),
+        ]
+    }
+}
+
 pub fn mode_label(sim: &Sim) -> &'static str {
     match sim.mode {
         ControlMode::Stabilized => {
@@ -299,6 +343,59 @@ pub fn paint(p: &Painter, rect: Rect, sim: &Sim, tk: &Tokens, paused: bool) {
         soc_col,
     );
 
+    // --- Bottom right: control surface deflections (winged) or stick inputs (multirotor)
+    let rows = control_rows(sim);
+    let cb = Rect::from_min_size(
+        pos2(rect.right() - 10.0 - 210.0, rect.bottom() - 26.0 - 96.0),
+        vec2(210.0, 96.0),
+    );
+    panel(p, cb, tk);
+    text(
+        p,
+        pos2(cb.left() + 8.0, cb.top() + 6.0),
+        Align2::LEFT_TOP,
+        if sim.params.wing.is_some() {
+            t("flightsim.hud.surfaces")
+        } else {
+            t("flightsim.hud.sticks")
+        },
+        font::CAPTION,
+        tk.text_weak,
+    );
+    for (i, (label, frac, value)) in rows.iter().enumerate() {
+        let y = cb.top() + 26.0 + i as f32 * 23.0;
+        text(
+            p,
+            pos2(cb.left() + 8.0, y),
+            Align2::LEFT_TOP,
+            label,
+            font::CAPTION,
+            tk.text,
+        );
+        text(
+            p,
+            pos2(cb.right() - 8.0, y),
+            Align2::RIGHT_TOP,
+            value,
+            font::CAPTION,
+            tk.text,
+        );
+        let r = Rect::from_min_size(
+            pos2(cb.left() + 8.0, y + 14.0),
+            vec2(cb.width() - 16.0, 5.0),
+        );
+        p.rect_filled(r, 2.0, tk.border);
+        let cx = r.center().x;
+        let f = frac.clamp(-1.0, 1.0) as f32;
+        let end = cx + f * r.width() * 0.5;
+        let fill = Rect::from_x_y_ranges(cx.min(end)..=cx.max(end), r.y_range());
+        p.rect_filled(fill, 2.0, tk.accent);
+        p.line_segment(
+            [pos2(cx, r.top() - 2.0), pos2(cx, r.bottom() + 2.0)],
+            Stroke::new(1.0, tk.text_weak),
+        );
+    }
+
     // --- Crash banner
     if let (label, true) = status_label(sim) {
         let msg = format!("{}  —  {}", label, t("flightsim.hud.reset_hint"));
@@ -319,4 +416,38 @@ pub fn paint(p: &Painter, rect: Rect, sim: &Sim, tk: &Tokens, paused: bool) {
         font::CAPTION,
         tk.text_weak,
     );
+}
+
+#[cfg(test)]
+mod control_rows_tests {
+    use super::control_rows;
+
+    #[test]
+    fn winged_rows_show_percent_and_degrees() {
+        let p = crate::project::Project::from_json(crate::project::EX_FIXED_WING).unwrap();
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        let mut sim = crate::sim::sim_for_project(&p, &m, crate::sim::StartPosition::Air);
+        sim.surfaces.elevator = 0.5;
+        sim.surfaces.aileron = -1.0;
+        sim.surfaces.rudder = f64::NAN;
+        let r = control_rows(&sim);
+        assert!((r[0].1 - 0.5).abs() < 1e-12);
+        assert!(r[0].2.contains("+50 %"), "{}", r[0].2);
+        assert!(r[0].2.contains("°"));
+        assert!(r[1].2.contains("-100 %"), "{}", r[1].2);
+        assert_eq!(r[2].1, 0.0);
+    }
+
+    #[test]
+    fn multirotor_rows_show_stick_inputs() {
+        let p = crate::project::Project::default();
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        let mut sim = crate::sim::sim_for_project(&p, &m, crate::sim::StartPosition::Air);
+        if sim.params.wing.is_some() {
+            return;
+        }
+        sim.input.roll = 0.25;
+        let r = control_rows(&sim);
+        assert!(r[1].2.contains("+25 %"), "{}", r[1].2);
+    }
 }
