@@ -1561,6 +1561,57 @@ satır 2"
         }
     }
 
+    /// Simple mode: the flight simulator entry opens the simulator in the centre, in both themes
+    /// and languages, for every sample; an invalid design closes it again and never builds a
+    /// simulation.
+    #[test]
+    fn simple_mode_flight_simulator_renders_in_both_themes_and_languages() {
+        use crate::i18n::Lang;
+        let samples = [
+            include_str!("../../examples/fixed_wing_2kg_1600mm.json"),
+            include_str!("../../examples/flying_wing_1200mm.json"),
+            include_str!("../../examples/hexa_550_x.json"),
+            include_str!("../../examples/quad_250_x.json"),
+            include_str!("../../examples/quad_275_x.json"),
+            include_str!("../../examples/vtol_quadplane.json"),
+        ];
+        for src in samples {
+            let sample = crate::project::Project::from_json(src).expect("sample project");
+            for choice in [
+                super::theme::ThemeChoice::Dark,
+                super::theme::ThemeChoice::Light,
+            ] {
+                for lang in [Lang::Tr, Lang::En] {
+                    let ctx = egui::Context::default();
+                    super::theme::install(&ctx, choice);
+                    let mut app = super::App::new_headless(&ctx, sample.drone_type);
+                    app.project = sample.clone();
+                    app.project.expert_mode = false;
+                    app.tab = super::Tab::FlightSim;
+                    crate::i18n::with_lang(lang, || {
+                        for w in [1440.0, 640.0] {
+                            run_app_frames(&mut app, &ctx, w, 3);
+                        }
+                    });
+                    assert_eq!(app.tab, super::Tab::FlightSim, "{:?}", sample.drone_type);
+                    assert!(app.flightsim_state.sim().is_some());
+                    assert!(!app.project.expert_mode);
+                }
+            }
+        }
+        // Invalid design: the simulator is not shown and no simulation is built.
+        for dt in crate::project::DroneType::ALL {
+            let ctx = egui::Context::default();
+            let mut app = super::App::new_headless(&ctx, dt);
+            app.project.m_avionics = 0.0;
+            app.project.expert_mode = false;
+            app.tab = super::Tab::FlightSim;
+            run_app_frames(&mut app, &ctx, 1440.0, 3);
+            assert_eq!(app.tab, super::Tab::Summary, "{dt:?}");
+            assert!(app.flightsim_state.sim().is_none(), "{dt:?}");
+        }
+    }
+
     #[test]
     fn shell_geometry_step_inputs_in_left_panel_with_invalid_values() {
         use crate::project::DroneType;

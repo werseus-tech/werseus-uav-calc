@@ -381,7 +381,16 @@ impl App {
     ) {
         let tk = theme::tokens(ui);
         wizard::sync_wizard_steps(&mut self.project, model);
-        let entries = nav::entries(&self.project, model, self.tab);
+        let mut entries = nav::entries(&self.project, model, self.tab);
+        if !self.project.expert_mode && self.tab == Tab::FlightSim {
+            // While the simulator is open no numbered step is the current one.
+            for e in &mut entries {
+                if e.selected {
+                    e.selected = false;
+                    e.visual = StepVisual::Available;
+                }
+            }
+        }
         if rail {
             ui.add_space(space::S);
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -393,6 +402,7 @@ impl App {
                         self.tab = tab;
                     }
                 }
+                self.sim_entry(ui, model, true);
             });
             return;
         }
@@ -460,6 +470,7 @@ impl App {
                         self.tab = tab;
                     }
                 }
+                self.sim_entry(ui, model, false);
 
                 let screen = super::steps::current_screen(&self.project, self.tab);
                 if super::steps::has_inputs(screen) {
@@ -489,6 +500,76 @@ impl App {
                 ui.add_space(space::L);
                 let _ = act;
             });
+    }
+
+    /// Simple mode only: a separate "Flight Simulator" item below the numbered steps. It is not a
+    /// wizard step (not counted in the progress, no number, no validation of its own); it is
+    /// enabled once the steps that feed the flight model are valid.
+    fn sim_entry(&mut self, ui: &mut Ui, model: &Model, compact: bool) {
+        if self.project.expert_mode {
+            return;
+        }
+        let tk = theme::tokens(ui);
+        let gate = nav::sim_gate(&self.project, model);
+        let open = self.tab == Tab::FlightSim;
+        ui.add_space(space::S);
+        ui.separator();
+        ui.add_space(space::XS);
+        let width = if compact { 40.0 } else { ui.available_width() };
+        let sense = if gate.is_ok() {
+            egui::Sense::click()
+        } else {
+            egui::Sense::hover()
+        };
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(width, components::step::step_item_height(compact)),
+            sense,
+        );
+        if ui.is_rect_visible(rect) {
+            let p = ui.painter();
+            let enabled = gate.is_ok();
+            let fill = if open {
+                tk.accent_soft
+            } else if resp.hovered() && enabled {
+                tk.surface_alt
+            } else {
+                tk.surface
+            };
+            let ring = if enabled { tk.accent } else { tk.border };
+            p.rect_filled(rect, theme::corner(radius::M), fill);
+            p.rect_stroke(
+                rect,
+                theme::corner(radius::M),
+                egui::Stroke::new(1.0, ring),
+                egui::StrokeKind::Inside,
+            );
+            let color = if enabled { tk.accent } else { tk.text_weak };
+            let label = if compact {
+                t("ui.left.sim_short")
+            } else {
+                t("ui.left.sim_entry")
+            };
+            p.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                label,
+                egui::FontId::proportional(if compact { font::CAPTION } else { font::BODY }),
+                color,
+            );
+        }
+        match gate {
+            Ok(()) => {
+                if resp.on_hover_text(t("ui.left.sim_tip")).clicked() {
+                    self.tab = if open { Tab::Summary } else { Tab::FlightSim };
+                }
+            }
+            Err(step) => {
+                resp.on_hover_text(tf(
+                    "wizard.sim_missing_tooltip",
+                    &[nav::strip_step_prefix(step.title())],
+                ));
+            }
+        }
     }
 
     /// Sağ panelin adım bölümü: bu adımın uyarıları + sonuçları (sağ panel ya da yedek alan).
@@ -739,6 +820,27 @@ impl App {
             ui.add_space(space::XS);
             return;
         }
+        if self.tab == Tab::FlightSim {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(t("ui.left.sim_entry"))
+                        .size(font::HEADING)
+                        .strong()
+                        .color(tk.text),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .button(t("ui.sim.back_to_steps"))
+                        .on_hover_text(t("ui.sim.back_to_steps_tip"))
+                        .clicked()
+                    {
+                        nav::leave_sim(&mut self.tab);
+                    }
+                });
+            });
+            ui.add_space(space::XS);
+            return;
+        }
         let steps = wizard::steps_for(self.project.drone_type);
         let idx = nav::current_index(&self.project);
         let step = nav::current_step(&self.project);
@@ -927,6 +1029,14 @@ impl App {
         let mut act = ShellActions::default();
         // Adım durumlarını her karede eşitle (sol panel gizli olsa bile adım kilidi geçerli).
         wizard::sync_wizard_steps(&mut self.project, model);
+        // Simple mode: the simulator entry closes itself whenever the design stops being usable
+        // (an edit made the model invalid, another project was loaded).
+        if !self.project.expert_mode
+            && self.tab == Tab::FlightSim
+            && nav::sim_gate(&self.project, model).is_err()
+        {
+            nav::leave_sim(&mut self.tab);
+        }
 
         egui::Panel::top("topbar")
             .frame(

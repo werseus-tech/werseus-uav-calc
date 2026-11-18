@@ -191,6 +191,9 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
 pub fn current_screen(p: &Project, tab: Tab) -> Screen {
     if p.expert_mode {
         screen_for_tab(tab, p.drone_type)
+    } else if tab == Tab::FlightSim {
+        // Simple mode: the simulator entry below the numbered steps (see `nav::leave_sim`).
+        Screen::FlightSim
     } else {
         screen_for_step(super::shell::nav::current_step(p), p.drone_type)
     }

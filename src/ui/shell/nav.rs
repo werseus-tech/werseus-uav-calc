@@ -138,11 +138,13 @@ pub fn select(p: &mut Project, tab: &mut Tab, m: &Model, target: NavTarget) -> b
                 .get(i)
                 .map(|e| e.clickable)
                 .unwrap_or(false);
+            // Choosing any step closes the simple-mode flight simulator.
+            let left_sim = ok && leave_sim(tab);
             if ok && p.wizard_step != i {
                 p.wizard_step = i;
                 true
             } else {
-                false
+                left_sim
             }
         }
     }
@@ -289,13 +291,58 @@ pub fn go_to_step(p: &mut Project, tab: &mut Tab, m: &Model, step: StepId) -> bo
     let Some(idx) = steps.iter().position(|s| *s == step) else {
         return false;
     };
+    let left_sim = leave_sim(tab);
     let target = idx.min(wizard::max_accessible_step_idx(p, m));
     if p.wizard_step != target {
         p.wizard_step = target;
         true
     } else {
+        left_sim
+    }
+}
+
+/// Simple mode has no tabs, so `Tab::FlightSim` doubles as "the simulator entry is open".
+/// Returns `true` when the simulator was open and is now closed.
+pub fn leave_sim(tab: &mut Tab) -> bool {
+    if *tab == Tab::FlightSim {
+        *tab = Tab::Summary;
+        true
+    } else {
         false
     }
+}
+
+/// The last wizard step that must be valid before the simulator can run: the steps that feed
+/// `sim::VehicleParams` (mass, geometry, aerodynamics, propulsion, battery and, for aircraft with
+/// a wing, the balance). Structure, summary and outputs do not matter to the flight model.
+pub fn sim_last_step(dt: DroneType) -> StepId {
+    if dt == DroneType::Multirotor {
+        StepId::MrBatteryLoiter
+    } else {
+        StepId::Stability
+    }
+}
+
+/// `Ok` when the simple-mode simulator entry is usable, otherwise the first step to finish.
+pub fn sim_gate(p: &Project, m: &Model) -> Result<(), StepId> {
+    let last = sim_last_step(p.drone_type);
+    for step in wizard::steps_for(p.drone_type) {
+        if wizard::validate_step(step, p, m).is_err() {
+            return Err(step);
+        }
+        if step == last {
+            break;
+        }
+    }
+    let mass = if p.drone_type == DroneType::Multirotor {
+        m.mr.m_mtow
+    } else {
+        m.weight.m_mtow
+    };
+    if !(mass.is_finite() && mass > 0.0) || !p.h.is_finite() {
+        return Err(StepId::Weight);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -455,6 +502,82 @@ mod tests {
             StepId::Outputs,
         ] {
             assert!(tab_for_step(s, p.drone_type).is_some());
+        }
+    }
+    fn sample_projects() -> Vec<Project> {
+        [
+            include_str!("../../../examples/fixed_wing_2kg_1600mm.json"),
+            include_str!("../../../examples/flying_wing_1200mm.json"),
+            include_str!("../../../examples/hexa_550_x.json"),
+            include_str!("../../../examples/quad_250_x.json"),
+            include_str!("../../../examples/quad_275_x.json"),
+            include_str!("../../../examples/vtol_quadplane.json"),
+        ]
+        .into_iter()
+        .map(|s| Project::from_json(s).expect("sample project"))
+        .collect()
+    }
+
+    #[test]
+    fn sim_entry_is_not_a_numbered_step() {
+        for dt in DroneType::ALL {
+            let (mut p, m) = setup(dt);
+            let tab = Tab::FlightSim;
+            // Same list and count with the simulator closed or open.
+            assert_eq!(
+                entries(&p, &m, Tab::Summary).len(),
+                wizard::steps_for(dt).len()
+            );
+            assert_eq!(entries(&p, &m, tab).len(), wizard::steps_for(dt).len());
+            assert!(
+                entries(&p, &m, tab)
+                    .iter()
+                    .all(|e| matches!(e.target, NavTarget::Step(_)))
+            );
+            // Choosing a step closes the simulator.
+            let mut t = Tab::FlightSim;
+            p.wizard_step = 0;
+            assert!(select(&mut p, &mut t, &m, NavTarget::Step(1)));
+            assert_eq!(t, Tab::Summary);
+        }
+    }
+
+    #[test]
+    fn sim_gate_follows_the_needed_steps_for_every_type() {
+        for dt in DroneType::ALL {
+            let (mut p, m) = setup(dt);
+            assert_eq!(sim_gate(&p, &m), Ok(()), "{dt:?} default design");
+            // Breaking the weight step (shared by every type) disables it.
+            p.m_avionics = 0.0;
+            let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+            assert_eq!(sim_gate(&p, &m), Err(StepId::Weight), "{dt:?}");
+            // NaN altitude never reaches the simulator either.
+            let (mut p, _) = setup(dt);
+            p.h = f64::NAN;
+            let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+            assert_eq!(sim_gate(&p, &m), Err(StepId::Mission), "{dt:?}");
+        }
+        // Multirotor: the battery step is the last one needed.
+        let (mut p, _) = setup(DroneType::Multirotor);
+        p.mr_v_cruise = 0.0;
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        assert_eq!(sim_gate(&p, &m), Err(StepId::MrBatteryLoiter));
+        // Fixed wing: aerodynamics are needed, structure is not.
+        let (mut p, _) = setup(DroneType::FixedWingConventional);
+        p.d_spar_i = p.d_spar_o;
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        assert_eq!(sim_gate(&p, &m), Ok(()));
+        p.cl_alpha_2d = 0.0;
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        assert_eq!(sim_gate(&p, &m), Err(StepId::Aero));
+    }
+
+    #[test]
+    fn sim_gate_is_open_on_the_sample_projects() {
+        let lib = crate::calc::Library::embedded();
+        for p in sample_projects() {
+            let m = crate::calc::evaluate(&p, &lib);
+            assert_eq!(sim_gate(&p, &m), Ok(()), "{:?}", p.drone_type);
         }
     }
 }
