@@ -10,6 +10,7 @@ pub mod formulas;
 pub mod geometry;
 pub mod help;
 pub mod mission;
+pub mod missionenergy;
 pub mod mr_structure;
 pub mod multirotor;
 pub mod outputs;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    MissionEnergy,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::MissionEnergy => t("tab_missionenergy"),
         }
     }
 
@@ -93,6 +96,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::MissionEnergy,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +112,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::MissionEnergy,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +127,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::MissionEnergy,
             ],
         }
     }

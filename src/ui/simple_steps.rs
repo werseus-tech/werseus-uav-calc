@@ -34,7 +34,9 @@ pub fn step_for_tab(tab: super::Tab, dt: DroneType) -> Option<StepId> {
         } else {
             StepId::Structure
         }),
-        Tab::Multirotor | Tab::Summary | Tab::Schematic | Tab::WindTunnel => None,
+        Tab::Multirotor | Tab::Summary | Tab::Schematic | Tab::WindTunnel | Tab::MissionEnergy => {
+            None
+        }
     }
 }
 
