@@ -836,6 +836,9 @@ impl App {
             Some(super::steps::CenterSlot::WindTunnel) => {
                 super::windtunnel::show(ui, &self.project, model, &mut self.wt_state);
             }
+            Some(super::steps::CenterSlot::RfEmi) => {
+                super::rfemi::show(ui, &self.project, model);
+            }
             None => {}
         }
     }
@@ -1036,5 +1039,6 @@ mod tests {
         p.expert_mode = true;
         assert_eq!(active_step(&p, Tab::Aero), Some(StepId::Aero));
         assert_eq!(active_step(&p, Tab::WindTunnel), None);
+        assert_eq!(active_step(&p, Tab::RfEmi), None);
     }
 }
