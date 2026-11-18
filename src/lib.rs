@@ -17,6 +17,7 @@ pub mod sim;
 pub mod structfea;
 pub mod support;
 pub mod teach;
+pub mod thermalpower;
 pub mod ui;
 pub mod windtunnel;
 

@@ -869,6 +869,9 @@ impl App {
             Some(super::steps::CenterSlot::Acoustics) => {
                 super::acoustics::show(ui, &self.project, model, &mut self.ac_state);
             }
+            Some(super::steps::CenterSlot::ThermalPower) => {
+                super::thermalpower::show(ui, &self.project, model, &mut self.tp_state);
+            }
             None => {}
         }
     }

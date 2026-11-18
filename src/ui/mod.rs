@@ -32,6 +32,7 @@ pub mod structure;
 pub mod summary;
 pub mod teach;
 pub mod theme;
+pub mod thermalpower;
 pub mod type_cards;
 pub mod viewport3d;
 pub mod weight;
@@ -75,6 +76,7 @@ pub enum Tab {
     StructFea,
     ComputeBudget,
     Acoustics,
+    ThermalPower,
 }
 
 impl Tab {
@@ -99,6 +101,7 @@ impl Tab {
             Tab::StructFea => t("structfea.tab"),
             Tab::ComputeBudget => t("computebudget.tab"),
             Tab::Acoustics => t("acoustics.tab"),
+            Tab::ThermalPower => t("thermalpower.tab"),
         }
     }
 
@@ -119,6 +122,7 @@ impl Tab {
                 Tab::StructFea,
                 Tab::ComputeBudget,
                 Tab::Acoustics,
+                Tab::ThermalPower,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -140,6 +144,7 @@ impl Tab {
                 Tab::StructFea,
                 Tab::ComputeBudget,
                 Tab::Acoustics,
+                Tab::ThermalPower,
             ],
             _ => vec![
                 Tab::Summary,
@@ -160,6 +165,7 @@ impl Tab {
                 Tab::StructFea,
                 Tab::ComputeBudget,
                 Tab::Acoustics,
+                Tab::ThermalPower,
             ],
         }
     }
@@ -203,6 +209,7 @@ pub struct App {
     pub flow_state: flow_tunnel::FlowUiState,
     pub cb_state: computebudget::CbState,
     pub ac_state: acoustics::AcState,
+    pub tp_state: thermalpower::TpState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -303,6 +310,7 @@ impl App {
             flow_state: flow_tunnel::FlowUiState::default(),
             cb_state: computebudget::CbState::default(),
             ac_state: acoustics::AcState::default(),
+            tp_state: thermalpower::TpState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -377,6 +385,7 @@ impl App {
             flow_state: flow_tunnel::FlowUiState::default(),
             cb_state: computebudget::CbState::default(),
             ac_state: acoustics::AcState::default(),
+            tp_state: thermalpower::TpState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
