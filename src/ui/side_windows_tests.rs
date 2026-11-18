@@ -52,6 +52,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("flow_tunnel.rs", include_str!("flow_tunnel.rs")),
         ("library.rs", include_str!("library.rs")),
         ("reliability.rs", include_str!("reliability.rs")),
+        ("missionenergy.rs", include_str!("missionenergy.rs")),
         ("formulas.rs", include_str!("formulas.rs")),
         ("help.rs", include_str!("help.rs")),
         ("schematic.rs", include_str!("schematic.rs")),
@@ -461,6 +462,27 @@ fn panel_kit_frames_render_with_theme_colors() {
                 cols.iter().any(|c| same_rgb(*c, want)),
                 "{choice:?}: {want:?}"
             );
+        }
+    }
+}
+
+#[test]
+fn mission_energy_renders_in_both_themes_and_languages() {
+    for choice in themes() {
+        for lang in [Lang::Tr, Lang::En] {
+            for dt in DroneType::ALL {
+                let (p, m) = fixture(dt);
+                let ctx = egui::Context::default();
+                theme::install(&ctx, choice);
+                let shapes = crate::i18n::with_lang(lang, || {
+                    run(&ctx, &mut |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            crate::ui::missionenergy::show(ui, &p, &m);
+                        });
+                    })
+                });
+                assert_palette_only(&shapes, &ctx, &format!("{dt:?} {choice:?} {lang:?}"));
+            }
         }
     }
 }

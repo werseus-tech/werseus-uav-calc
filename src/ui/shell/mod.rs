@@ -887,6 +887,9 @@ impl App {
             Some(super::steps::CenterSlot::Reliability) => {
                 super::reliability::show(ui, &self.project, model, &mut self.rel_state);
             }
+            Some(super::steps::CenterSlot::MissionEnergy) => {
+                super::missionenergy::show(ui, &self.project, model);
+            }
             None => {}
         }
     }

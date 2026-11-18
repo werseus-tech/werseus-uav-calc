@@ -18,6 +18,7 @@ pub mod help;
 pub mod library;
 pub mod massprops;
 pub mod mission;
+pub mod missionenergy;
 pub mod mr_structure;
 pub mod multirotor;
 pub mod outputs;
@@ -88,6 +89,7 @@ pub enum Tab {
     ControlTuning,
     Bom,
     Reliability,
+    MissionEnergy,
 }
 
 impl Tab {
@@ -118,6 +120,7 @@ impl Tab {
             Tab::ControlTuning => t("controltuning.tab"),
             Tab::Bom => t("bom.tab"),
             Tab::Reliability => t("tab_reliability"),
+            Tab::MissionEnergy => t("tab_missionenergy"),
         }
     }
 
@@ -144,6 +147,7 @@ impl Tab {
                 Tab::ControlTuning,
                 Tab::Bom,
                 Tab::Reliability,
+                Tab::MissionEnergy,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -171,6 +175,7 @@ impl Tab {
                 Tab::ControlTuning,
                 Tab::Bom,
                 Tab::Reliability,
+                Tab::MissionEnergy,
             ],
             _ => vec![
                 Tab::Summary,
@@ -197,6 +202,7 @@ impl Tab {
                 Tab::ControlTuning,
                 Tab::Bom,
                 Tab::Reliability,
+                Tab::MissionEnergy,
             ],
         }
     }

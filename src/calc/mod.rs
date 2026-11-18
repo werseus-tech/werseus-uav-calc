@@ -186,6 +186,8 @@ pub struct Model {
     /// Cl_max_2d = 1.00 olsaydı V_stall (hassasiyet uyarısı için).
     pub v_stall_cl2d_1: f64,
     pub mr: multirotor::MultirotorOut,
+    /// Askı/ileri uçuş güç modelinin girdisi (görev enerji bütçesi farklı yoğunluk/kütleyle yeniden çalıştırır).
+    pub mr_in: multirotor::MultirotorIn,
     pub mr_st: mr_structure::MrStructureOut,
     pub inputs_ok: bool,
     pub warnings: Vec<Warn>,
@@ -645,6 +647,7 @@ pub fn evaluate(p: &Project, lib: &Library) -> Model {
         fuse_wet_geo,
         v_stall_cl2d_1,
         mr,
+        mr_in,
         mr_st,
         inputs_ok: true,
         warnings: vec![],

@@ -13,6 +13,7 @@ pub mod geom3d;
 pub mod i18n;
 pub mod library;
 pub mod massprops;
+pub mod missionenergy;
 pub mod project;
 pub mod propcurves;
 pub mod regulation;
