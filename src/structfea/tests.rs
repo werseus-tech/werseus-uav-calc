@@ -3,6 +3,7 @@
 
 use super::analysis::*;
 use super::beam::*;
+use super::material;
 use crate::calc::{Library, Model, evaluate};
 use crate::project::{self, DroneType, Project};
 use std::f64::consts::PI;
@@ -136,6 +137,12 @@ fn torsion_matches_closed_form() {
         tip_inertia: 0.0,
     };
     let f = s.frequencies(2);
+    assert_eq!(f.len(), 2);
+    let with_tip = ShaftModel {
+        tip_inertia: 1e-4,
+        ..s.clone()
+    };
+    assert!(with_tip.frequencies(1)[0] < f[0]);
     for (k, fk) in f.iter().enumerate() {
         let exact =
             (2 * k + 1) as f64 * PI / (2.0 * s.length) * (s.gj / s.rho_ip).sqrt() / (2.0 * PI);
@@ -231,8 +238,7 @@ fn consistent_with_existing_arm_calculation() {
         assert!(rel(thrust.max_stress * thrust.required_sf, st.sigma_max) < 1e-6);
         assert!(rel(thrust.safety_factor / thrust.required_sf - 1.0, st.ms) < 1e-6);
         // Deflection: existing step reports it under the unfactored max thrust.
-        let n_limit = p.mr_arm_n_limit;
-        assert!(rel(thrust.max_deflection / n_limit, st.deflection_max) < 1e-6);
+        assert!(rel(thrust.max_deflection, st.deflection_max) < 1e-6);
         // First bending frequency vs the Rayleigh estimate of the arm step.
         let f1 = a.modes[0].freq_hz;
         assert!(
@@ -391,4 +397,204 @@ fn invalid_inputs_give_no_numbers() {
     let m = eval(&p);
     let r = analyse(&p, &m, &FeaSettings::default());
     assert!(!r.members[0].valid);
+}
+
+#[test]
+fn interior_point_force_keeps_its_position_on_any_mesh() {
+    // A load at x = 0.2 L gives the root moment F x on any mesh (it used to snap to the root
+    // node for coarse meshes and to the nearest node otherwise).
+    let f = 15.0;
+    for n in [2, 3, 5, 7, 20] {
+        let b = uniform(n);
+        let x = 0.2 * b.length;
+        let r = b.solve_static(&[PointForce { x, force: f }], &|_| 0.0);
+        assert!(rel(r.max_moment, f * x) < 1e-9, "n={n}: {}", r.max_moment);
+        // Tip deflection of a cantilever with an interior load: F x^2 (3L - x) / 6EI.
+        let exact_tip = f * x * x * (3.0 * b.length - x) / (6.0 * b.ei);
+        assert!(rel(*r.w.last().unwrap(), exact_tip) < 1e-6, "n={n}");
+    }
+}
+
+#[test]
+fn interior_point_mass_frequency_is_continuous_in_the_mesh() {
+    let mk = |n: usize| {
+        let mut b = uniform(n);
+        b.point_masses = vec![PointMass {
+            x: 0.4 * b.length,
+            mass: 0.2,
+            rot_inertia: 0.0,
+        }];
+        b.modes(1)[0].freq_hz
+    };
+    let reference = mk(80);
+    for n in [10, 11, 12, 13, 21] {
+        assert!(
+            rel(mk(n), reference) < 0.01,
+            "n={n}: {} vs {reference}",
+            mk(n)
+        );
+    }
+}
+
+#[test]
+fn non_finite_load_is_not_reported_as_zero_stress() {
+    let b = uniform(10);
+    let r = b.solve_static(
+        &[PointForce {
+            x: b.length,
+            force: f64::NAN,
+        }],
+        &|_| 0.0,
+    );
+    assert!(r.w.is_empty());
+    let r = b.solve_static(&[], &|_| f64::NAN);
+    assert!(r.w.is_empty());
+}
+
+#[test]
+fn missing_loads_make_the_members_invalid() {
+    let p = Project::from_json(project::EX_QUAD_250).unwrap();
+    let mut m = eval(&p);
+    m.mr_st.f_thrust_max = f64::NAN;
+    assert!(!analyse_arm(&p, &m, &FeaSettings::default(), MemberKind::Arm).valid);
+    m.mr_st.f_thrust_max = 0.0;
+    assert!(!analyse_arm(&p, &m, &FeaSettings::default(), MemberKind::Arm).valid);
+    let p = Project::from_json(project::EX_FIXED_WING).unwrap();
+    let mut m = eval(&p);
+    m.weight.w = f64::NAN;
+    assert!(!analyse_wing(&p, &m, &FeaSettings::default()).valid);
+    m.weight.w = 0.0;
+    assert!(!analyse_wing(&p, &m, &FeaSettings::default()).valid);
+    // A VTOL wing needs the lift motor thrust for its boom case.
+    let p = Project::from_json(project::EX_VTOL).unwrap();
+    let mut m = eval(&p);
+    m.mr_st.f_thrust_max = f64::NAN;
+    assert!(!analyse_wing(&p, &m, &FeaSettings::default()).valid);
+}
+
+#[test]
+fn vtol_boom_is_shorter_than_the_arm() {
+    let p = Project::from_json(project::EX_VTOL).unwrap();
+    let m = eval(&p);
+    let s = FeaSettings::default();
+    let arm = analyse_arm(&p, &m, &s, MemberKind::Arm);
+    let boom = analyse_arm(&p, &m, &s, MemberKind::Boom);
+    assert!(rel(boom.length * 2f64.sqrt(), arm.length) < 1e-12);
+    assert!(boom.modes[0].freq_hz > arm.modes[0].freq_hz);
+    let t = |r: &MemberResult| {
+        r.load_cases
+            .iter()
+            .find(|c| c.case == LoadCase::MaxThrust)
+            .unwrap()
+            .max_stress
+    };
+    assert!(rel(t(&boom) * 2f64.sqrt(), t(&arm)) < 1e-6);
+}
+
+#[test]
+fn max_thrust_deflection_matches_the_arm_step() {
+    for p in samples() {
+        if p.drone_type != DroneType::Multirotor {
+            continue;
+        }
+        let m = eval(&p);
+        let a = analyse_arm(&p, &m, &FeaSettings::default(), MemberKind::Arm);
+        let c = a
+            .load_cases
+            .iter()
+            .find(|c| c.case == LoadCase::MaxThrust)
+            .unwrap();
+        assert!(
+            rel(c.max_deflection, m.mr_st.deflection_max) < 0.01,
+            "{}",
+            p.name
+        );
+    }
+}
+
+#[test]
+fn wing_material_override_changes_the_wing_mass_per_span() {
+    let p = Project::from_json(project::EX_FIXED_WING).unwrap();
+    let m = eval(&p);
+    let base = analyse_wing(&p, &m, &FeaSettings::default());
+    let heavy = analyse_wing(
+        &p,
+        &m,
+        &FeaSettings {
+            wing_material: Some(material::StructMaterial::Al7075),
+            ..FeaSettings::default()
+        },
+    );
+    assert!(base.valid && heavy.valid);
+    // A denser spar must lower the frequency below what the stiffness gain alone gives.
+    assert!(heavy.material.rho > base.material.rho);
+    let e_ratio = (heavy.material.e / base.material.e).sqrt();
+    assert!(heavy.modes[0].freq_hz < base.modes[0].freq_hz * e_ratio * 0.999);
+}
+
+#[test]
+fn square_section_torsion_constant_covers_solid_and_thin_walls() {
+    use crate::calc::mr_structure::MrArmSectionType;
+    let d = 0.02;
+    let j_solid = section(ArmSection::Project, MrArmSectionType::Square, d, 0.0)[3];
+    assert!(rel(j_solid, 0.1406 * d.powi(4)) < 0.05, "{j_solid}");
+    let (d_o, d_i) = (0.02, 0.0184);
+    let j_thin = section(ArmSection::Project, MrArmSectionType::Square, d_o, d_i)[3];
+    let t = 0.5 * (d_o - d_i);
+    let a_m = 0.5 * (d_o + d_i);
+    assert!(rel(j_thin, a_m.powi(3) * t) < 0.01, "{j_thin}");
+}
+
+#[test]
+fn plate_bends_about_its_weak_axis() {
+    use crate::calc::mr_structure::MrArmSectionType;
+    for (w, t) in [(0.022, 0.004), (0.004, 0.022)] {
+        let s = section(
+            ArmSection::Plate {
+                width: w,
+                thickness: t,
+            },
+            MrArmSectionType::Round,
+            0.0,
+            0.0,
+        );
+        let (long, short) = (0.022f64, 0.004f64);
+        assert!(rel(s[1], long * short.powi(3) / 12.0) < 1e-12);
+        assert!(rel(s[2], long * short * short / 6.0) < 1e-12);
+    }
+}
+
+#[test]
+fn jacobi_handles_huge_rotation_ratios() {
+    use super::eigen::jacobi_symmetric;
+    let a = [1.0, 1e-100, 1e-100, 1e60];
+    let (vals, vecs) = jacobi_symmetric(&a, 2);
+    assert!(rel(vals[0], 1.0) < 1e-12 && rel(vals[1], 1e60) < 1e-12);
+    assert!(vecs.iter().all(|v| v.is_finite()));
+}
+
+#[test]
+fn generalized_solves_with_a_coupled_mass_matrix() {
+    use super::eigen::generalized;
+    let k = [4.0, -1.0, 0.5, -1.0, 3.0, -0.5, 0.5, -0.5, 2.0];
+    let m = [2.0, 0.3, 0.1, 0.3, 1.5, -0.2, 0.1, -0.2, 1.0];
+    let (vals, x) = generalized(&k, &m, 3).expect("positive definite mass");
+    for c in 0..3 {
+        for r in 0..3 {
+            let kx: f64 = (0..3).map(|j| k[r * 3 + j] * x[j * 3 + c]).sum();
+            let mx: f64 = (0..3).map(|j| m[r * 3 + j] * x[j * 3 + c]).sum();
+            assert!((kx - vals[c] * mx).abs() < 1e-9, "K x = lambda M x");
+        }
+        for d in 0..3 {
+            let xmx: f64 = (0..3)
+                .map(|r| {
+                    (0..3)
+                        .map(|j| x[r * 3 + c] * m[r * 3 + j] * x[j * 3 + d])
+                        .sum::<f64>()
+                })
+                .sum();
+            let want = if c == d { 1.0 } else { 0.0 };
+            assert!((xmx - want).abs() < 1e-9, "X^T M X = I");
+        }
+    }
 }

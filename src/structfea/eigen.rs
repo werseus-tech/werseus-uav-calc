@@ -60,8 +60,14 @@ pub fn jacobi_symmetric(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
                 let app = a[p * n + p];
                 let aqq = a[q * n + q];
                 let theta = (aqq - app) / (2.0 * apq);
-                let t = theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt());
-                let t = if theta == 0.0 { 1.0 } else { t };
+                // For a huge `theta` the square would overflow: use the asymptotic `t = 1/(2 theta)`.
+                let t = if theta == 0.0 {
+                    1.0
+                } else if theta.abs() > 1e18 {
+                    0.5 / theta
+                } else {
+                    theta.signum() / (theta.abs() + (theta * theta + 1.0).sqrt())
+                };
                 let c = 1.0 / (t * t + 1.0).sqrt();
                 let s = t * c;
                 for k in 0..n {
@@ -82,6 +88,9 @@ pub fn jacobi_symmetric(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
                     v[k * n + p] = c * vkp - s * vkq;
                     v[k * n + q] = s * vkp + c * vkq;
                 }
+                // The rotation annihilates this element; remove the rounding residue.
+                a[p * n + q] = 0.0;
+                a[q * n + p] = 0.0;
             }
         }
     }

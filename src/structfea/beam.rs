@@ -13,7 +13,8 @@ use super::eigen;
 use crate::windtunnel::linalg::Lu;
 use std::f64::consts::PI;
 
-/// Lumped mass on the beam axis. Snapped to the nearest mesh node.
+/// Lumped mass on the beam axis, distributed to the two nodes of its element with the Hermite
+/// shape functions (so its position is exact, whatever the mesh).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PointMass {
     pub x: f64,
@@ -109,7 +110,19 @@ impl BeamModel {
             && self.ei.is_finite()
             && self.ei > 0.0
             && self.mu.is_finite()
-            && self.mu >= 0.0
+            && self.mu > 0.0
+    }
+
+    /// Element index and local coordinate `xi` in [0, 1] of axial position `x` (clamped).
+    fn locate(&self, x: f64) -> (usize, f64) {
+        let le = self.le();
+        let x = if x.is_finite() {
+            x.clamp(0.0, self.length)
+        } else {
+            self.length
+        };
+        let e = ((x / le).floor().max(0.0) as usize).min(self.n_el - 1);
+        (e, ((x - e as f64 * le) / le).clamp(0.0, 1.0))
     }
 
     fn le(&self) -> f64 {
@@ -151,9 +164,22 @@ impl BeamModel {
             if !(pm.mass.is_finite() && pm.rot_inertia.is_finite()) {
                 continue;
             }
-            let n = self.node_at(pm.x);
-            m[(2 * n) * nd + 2 * n] += pm.mass.max(0.0);
-            m[(2 * n + 1) * nd + 2 * n + 1] += pm.rot_inertia.max(0.0);
+            let (e, xi) = self.locate(pm.x);
+            let nw = hermite(xi, le);
+            // Rotation shape functions (d/dx of the Hermite functions).
+            let nr = [
+                (-6.0 * xi + 6.0 * xi * xi) / le,
+                1.0 - 4.0 * xi + 3.0 * xi * xi,
+                (6.0 * xi - 6.0 * xi * xi) / le,
+                -2.0 * xi + 3.0 * xi * xi,
+            ];
+            let dofs = [2 * e, 2 * e + 1, 2 * e + 2, 2 * e + 3];
+            for a in 0..4 {
+                for b in 0..4 {
+                    m[dofs[a] * nd + dofs[b]] +=
+                        pm.mass.max(0.0) * nw[a] * nw[b] + pm.rot_inertia.max(0.0) * nr[a] * nr[b];
+                }
+            }
         }
         let nf = nd - 2;
         let mut kf = vec![0.0; nf * nf];
@@ -204,7 +230,8 @@ impl BeamModel {
         out
     }
 
-    /// Static response to point forces plus a distributed load `q(x)` (N/m, positive up).
+    /// Static response to point forces plus a distributed load `q(x)` (N/m, positive up). A
+    /// non-finite load gives an empty result (not a zero-stress one).
     pub fn solve_static(&self, forces: &[PointForce], q: &dyn Fn(f64) -> f64) -> StaticResult {
         if !self.valid() {
             return StaticResult::default();
@@ -220,7 +247,7 @@ impl BeamModel {
                 let xi = 0.5 * (g + 1.0);
                 let qv = q(x0 + xi * le);
                 if !qv.is_finite() {
-                    continue;
+                    return StaticResult::default();
                 }
                 let n = hermite(xi, le);
                 for a in 0..4 {
@@ -231,9 +258,17 @@ impl BeamModel {
                 f[2 * e + a] += fe[a];
             }
         }
+        // A point force at any axial position is an equivalent load on its element, so the
+        // element end moments below stay exact for it.
         for pf in forces {
-            if pf.force.is_finite() {
-                f[2 * self.node_at(pf.x)] += pf.force;
+            if !pf.force.is_finite() {
+                return StaticResult::default();
+            }
+            let (e, xi) = self.locate(pf.x);
+            let n = hermite(xi, le);
+            for a in 0..4 {
+                fe_all[e][a] += pf.force * n[a];
+                f[2 * e + a] += pf.force * n[a];
             }
         }
         let (k, _, nf) = self.assemble();
@@ -291,7 +326,7 @@ impl ShaftModel {
             && self.gj.is_finite()
             && self.gj > 0.0
             && self.rho_ip.is_finite()
-            && self.rho_ip >= 0.0
+            && self.rho_ip > 0.0
             && self.tip_inertia.is_finite();
         if !ok {
             return Vec::new();

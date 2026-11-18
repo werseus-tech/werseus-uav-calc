@@ -196,6 +196,43 @@ fn settings_ui(ui: &mut Ui, st: &mut SfState, has_arm: bool, has_wing: bool) {
     step_ui::note(ui, t("structfea.plastic_note"));
 }
 
+/// Analysis result, recomputed only when the project, the settings or the inputs taken from
+/// the model change (the eigen solution is far too costly to repeat every frame).
+fn cached_report(
+    ui: &Ui,
+    p: &Project,
+    m: &Model,
+    settings: &FeaSettings,
+) -> std::sync::Arc<analysis::FeaReport> {
+    use std::hash::{Hash, Hasher};
+    let text = format!(
+        "{:?}|{:?}|{:?}|{}|{}|{}|{}|{}",
+        p,
+        settings,
+        m.mr_st,
+        m.weight.w,
+        m.weight.m_wing,
+        m.mr.t_hover_motor,
+        m.prop.rpm_cr,
+        m.prop.rpm_max,
+    );
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    let key = h.finish();
+    let id = egui::Id::unique("structfea_report_cache");
+    let hit = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<(u64, std::sync::Arc<analysis::FeaReport>)>(id));
+    if let Some((k, r)) = hit
+        && k == key
+    {
+        return r;
+    }
+    let r = std::sync::Arc::new(analysis::analyse(p, m, settings));
+    ui.ctx().data_mut(|d| d.insert_temp(id, (key, r.clone())));
+    r
+}
+
 /// Screen entry point (centre slot).
 pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
     let mut st: SfState = ui
@@ -205,7 +242,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
     components::banner(ui, Status::Info, t("structfea.disclaimer"));
     ui.add_space(space::XS);
 
-    let report = analysis::analyse(p, m, &st.settings());
+    let report = cached_report(ui, p, m, &st.settings());
     let has_arm = report
         .members
         .iter()
@@ -437,6 +474,12 @@ fn campbell_plot(ui: &mut Ui, mbr: &MemberResult, margin: f64, idx: usize) {
         .iter()
         .map(|m| m.freq_hz)
         .fold(f64::INFINITY, f64::min);
+    // No computed mode (invalid model): the axis follows the excitation range alone.
+    let f_mode_min = if f_mode_min.is_finite() {
+        f_mode_min
+    } else {
+        0.0
+    };
     let y_max = (f_exc_max * 1.3).max(f_mode_min * 1.2);
     let colors = palette(ui);
     Plot::new(("structfea_campbell", idx))

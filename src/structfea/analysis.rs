@@ -201,10 +201,12 @@ pub fn section(sec: ArmSection, kind: MrArmSectionType, d_o: f64, d_i: f64) -> [
             let j = match kind {
                 MrArmSectionType::Round => PI / 32.0 * (d_o.powi(4) - d_i.powi(4)),
                 MrArmSectionType::Square => {
-                    // Bredt thin-wall closed section: J = 4 A_m^2 t / s_m = a_m^3 t.
+                    // Bredt closed thin-wall section, J = 4 A_m^2 t / s_m = a_m^3 t, plus the
+                    // St Venant wall term s_m t^3 / 3 = 4 a_m t^3 / 3 that matters for thick
+                    // walls (solid square: 0.146 d^4 against the exact 0.141 d^4).
                     let t = 0.5 * (d_o - d_i);
                     let a_m = 0.5 * (d_o + d_i);
-                    a_m.powi(3) * t
+                    a_m.powi(3) * t + 4.0 * a_m * t.powi(3) / 3.0
                 }
             };
             [a, i, z, j, 2.0 * i]
@@ -216,9 +218,11 @@ pub fn section(sec: ArmSection, kind: MrArmSectionType, d_o: f64, d_i: f64) -> [
             }
             let (long, short) = if w >= t { (w, t) } else { (t, w) };
             let a = w * t;
-            let i = w * t.powi(3) / 12.0;
-            let z = w * t * t / 6.0;
-            let j = long * short.powi(3) / 3.0 * (1.0 - 0.63 * short / long);
+            // Bending about the weak axis (the thin direction).
+            let i = long * short.powi(3) / 12.0;
+            let z = long * short * short / 6.0;
+            let j = long * short.powi(3) / 3.0
+                * (1.0 - 0.63 * short / long + 0.052 * (short / long).powi(5));
             let ip = w * t * (w * w + t * t) / 12.0;
             [a, i, z, j, ip]
         }
@@ -377,12 +381,39 @@ pub fn arm_material(p: &Project, s: &FeaSettings) -> MatProps {
     }
 }
 
+/// Sigma_allow / sigma, `0` (fail) when the static solve produced no result at all, so that a
+/// rejected load never reads as an infinitely safe member.
+fn safety_factor(r: &super::beam::StaticResult, sigma: f64, allow: f64) -> f64 {
+    if r.w.is_empty() {
+        0.0
+    } else if sigma > 0.0 {
+        allow / sigma
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// Cantilever length of an arm or boom. A VTOL lift-motor boom runs fore-aft from the wing at
+/// the lateral offset `D / (2 sqrt 2)` of an X layout, so it is shorter than the diagonal arm
+/// radius by `sqrt 2` (see [`vtol_boom_y`]).
+pub fn member_length(kind: MemberKind, l_arm: f64) -> f64 {
+    match kind {
+        MemberKind::Boom => l_arm / std::f64::consts::SQRT_2,
+        _ => l_arm,
+    }
+}
+
+/// `true` when `v` is finite and positive.
+fn good(v: f64) -> bool {
+    v.is_finite() && v > 0.0
+}
+
 /// Multirotor arm / VTOL boom: cantilever from the centre plate (or wing) with the motor(s) at
 /// the tip. Length, thrust, tip mass, section and loads come from the arm structure step.
 pub fn analyse_arm(p: &Project, m: &Model, s: &FeaSettings, kind: MemberKind) -> MemberResult {
     let st = &m.mr_st;
     let mat = arm_material(p, s);
-    let l = st.l_arm;
+    let l = member_length(kind, st.l_arm);
     let n_coax = if p.mr_coaxial { 2.0 } else { 1.0 };
     let tip_mass = p.mr_m_motor.max(0.0) * n_coax;
     let [area, inertia, z, j, ip] =
@@ -390,9 +421,9 @@ pub fn analyse_arm(p: &Project, m: &Model, s: &FeaSettings, kind: MemberKind) ->
     let ei = mat.e * inertia;
     let mu = mat.rho * area;
     let n_el = s.n_el.clamp(2, 200);
-    let ok = [l, ei, mu, z, mat.sigma_allow]
+    let ok = [l, ei, mu, z, mat.sigma_allow, st.f_thrust_max]
         .iter()
-        .all(|v| v.is_finite() && *v > 0.0)
+        .all(|v| good(*v))
         && tip_mass.is_finite();
     if !ok {
         return invalid_member(kind, l, mat, tip_mass);
@@ -427,7 +458,8 @@ pub fn analyse_arm(p: &Project, m: &Model, s: &FeaSettings, kind: MemberKind) ->
 
     let n_limit = pos(p.mr_arm_n_limit, 2.0);
     let fs = pos(p.mr_arm_fs, 1.5);
-    let case = |case: LoadCase, forces: &[PointForce], q: f64| {
+    // `defl_scale` turns the limit-load deflection into the deflection of the unfactored load.
+    let case = |case: LoadCase, forces: &[PointForce], q: f64, defl_scale: f64| {
         let r = beam.solve_static(forces, &|_| q);
         let sigma = r.max_moment / z;
         LoadCaseResult {
@@ -435,12 +467,8 @@ pub fn analyse_arm(p: &Project, m: &Model, s: &FeaSettings, kind: MemberKind) ->
             applies: true,
             max_moment: r.max_moment,
             max_stress: sigma,
-            max_deflection: r.max_deflection,
-            safety_factor: if sigma > 0.0 {
-                mat.sigma_allow / sigma
-            } else {
-                f64::INFINITY
-            },
+            max_deflection: r.max_deflection * defl_scale,
+            safety_factor: safety_factor(&r, sigma, mat.sigma_allow),
             required_sf: fs,
         }
     };
@@ -453,6 +481,7 @@ pub fn analyse_arm(p: &Project, m: &Model, s: &FeaSettings, kind: MemberKind) ->
                 force: -tip_mass * G0 * gl,
             }],
             -mu * G0 * gl,
+            1.0,
         ),
         // Same definition as the arm structure step: max thrust of the motor(s) times the
         // limit load factor at the tip (arm self weight neglected).
@@ -463,6 +492,8 @@ pub fn analyse_arm(p: &Project, m: &Model, s: &FeaSettings, kind: MemberKind) ->
                 force: st.f_thrust_max * n_limit,
             }],
             0.0,
+            // Deflection at the maximum thrust itself, as in the arm structure step.
+            1.0 / n_limit,
         ),
         LoadCaseResult {
             case: LoadCase::WingBending,
@@ -519,25 +550,33 @@ pub fn analyse_wing(p: &Project, m: &Model, s: &FeaSettings) -> MemberResult {
         arm_section_properties(MrArmSectionType::Round, p.d_spar_o, p.d_spar_i);
     let ei = mat.e * inertia;
     let spar_mu = mat.rho * area;
+    // Wing mass per span from the wing weight step; a spar material override changes the spar
+    // part of it by the density difference.
     let mu = if m.weight.m_wing.is_finite() && m.weight.m_wing > 0.0 && p.b > 0.0 {
-        (m.weight.m_wing / p.b).max(spar_mu)
+        (m.weight.m_wing / p.b + (mat.rho - p.rho_cf) * area).max(spar_mu)
     } else {
         spar_mu
     };
     let vtol = p.drone_type == DroneType::VtolQuadplane;
     let n_coax = if p.mr_coaxial { 2.0 } else { 1.0 };
-    // Boom: two lift motors (front + rear) and a boom of length 2 l_arm.
+    // Boom: two lift motors (front + rear) and a boom tube of the active arm material and
+    // section, one boom length to each side of the wing.
     let boom_mass = if vtol {
-        2.0 * p.mr_m_motor.max(0.0) * n_coax + m.mr_st.m_arm_single.max(0.0) * 2.0
+        let amat = arm_material(p, s);
+        let [a_area, ..] = section(s.arm_section, p.mr_arm_section, p.mr_arm_d_o, p.mr_arm_d_i);
+        let l_boom = member_length(MemberKind::Boom, m.mr_st.l_arm);
+        2.0 * p.mr_m_motor.max(0.0) * n_coax + 2.0 * amat.rho * a_area * l_boom
     } else {
         0.0
     };
     let y_boom = vtol_boom_y(p);
     let n_el = s.n_el.clamp(2, 200);
-    let ok = [l, ei, mu, z, mat.sigma_allow]
+    let thrust_ok = !vtol || good(m.mr_st.f_thrust_max);
+    let ok = [l, ei, mu, z, mat.sigma_allow, m.weight.w]
         .iter()
-        .all(|v| v.is_finite() && *v > 0.0)
-        && boom_mass.is_finite();
+        .all(|v| good(*v))
+        && boom_mass.is_finite()
+        && thrust_ok;
     if !ok {
         return invalid_member(MemberKind::WingHalf, l, mat, boom_mass);
     }
@@ -567,11 +606,7 @@ pub fn analyse_wing(p: &Project, m: &Model, s: &FeaSettings) -> MemberResult {
             max_moment: r.max_moment,
             max_stress: sigma,
             max_deflection: r.max_deflection,
-            safety_factor: if sigma > 0.0 {
-                mat.sigma_allow / sigma
-            } else {
-                f64::INFINITY
-            },
+            safety_factor: safety_factor(&r, sigma, mat.sigma_allow),
             required_sf: fs,
         }
     };
