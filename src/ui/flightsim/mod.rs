@@ -84,6 +84,10 @@ impl FlightSimState {
         let mut s = sim::sim_for_project(p, m, self.start);
         s.mode = mode;
         s.set_wind(self.wind);
+        if self.wind != WindConfig::default() {
+            // Re-trim the air start with the wind (the trim flies at airspeed, not groundspeed).
+            s.reset(self.start);
+        }
         self.sim = Some(s);
         let spec = crate::geom3d::from_project(p, m, &crate::geom3d::ViewOptions::default());
         self.view.set_scene(crate::geom3d::build(&spec));
@@ -102,8 +106,18 @@ impl FlightSimState {
     /// Keyboard: arrows = pitch / roll, A/D = yaw, W/S = throttle, Space = pause,
     /// R = reset, M = mode, T = VTOL transition, G = gust.
     fn keyboard(&mut self, ui: &Ui, dt: f64) {
-        let focused = ui.ctx().memory(|m| m.focused().is_some());
+        // A focused widget (text field, Tab navigation) owns the keys; the sticks spring
+        // back to centre meanwhile instead of freezing where they were.
+        let focused = ui.ctx().egui_wants_keyboard_input();
         if focused {
+            self.sticks.pitch = approach(self.sticks.pitch, 0.0, 5.0, dt);
+            self.sticks.roll = approach(self.sticks.roll, 0.0, 5.0, dt);
+            self.sticks.yaw = approach(self.sticks.yaw, 0.0, 5.0, dt);
+            if let Some(sim) = self.sim.as_mut() {
+                sim.input.pitch = self.sticks.pitch;
+                sim.input.roll = self.sticks.roll;
+                sim.input.yaw = self.sticks.yaw;
+            }
             return;
         }
         let (up, down, left, right, a, d, w, s, x) = ui.input(|i| {
@@ -530,6 +544,29 @@ mod tests {
             }
         }
         assert!(n > 40, "found {n} keys");
+    }
+
+    #[test]
+    fn focused_widget_recentres_sticks_instead_of_freezing_them() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::FixedWingConventional);
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        let mut st = FlightSimState::default();
+        st.sync(&p, &m);
+        st.sticks.pitch = 1.0;
+        st.sticks.roll = -1.0;
+        st.sticks.yaw = 0.5;
+        let ctx = egui::Context::default();
+        ctx.memory_mut(|mem| mem.request_focus(egui::Id::unique("some_text_field")));
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert!(ui.ctx().egui_wants_keyboard_input());
+            for _ in 0..5 {
+                st.keyboard(ui, 0.1);
+            }
+        });
+        out.textures_delta.clear();
+        let input = st.sim().unwrap().input;
+        assert_eq!((input.pitch, input.roll, input.yaw), (0.0, 0.0, 0.0));
     }
 
     #[test]

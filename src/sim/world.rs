@@ -239,6 +239,7 @@ impl Sim {
         self.trim_elevator = 0.0;
         self.trim_throttle = 0.0;
         self.input = PilotInput::default();
+        self.telemetry = Telemetry::default();
         let has_wing = self.params.wing.is_some();
         self.phase = VtolPhase::Hover;
         match start {
@@ -288,7 +289,9 @@ impl Sim {
                     self.trim_level(self.params.v_cruise);
                     self.input.throttle = self.trim_throttle;
                 } else {
-                    let t_tot: f64 = self.params.rotors.iter().map(|r| r.t_max).sum();
+                    // Available thrust includes the battery voltage factor (full pack).
+                    let t_tot: f64 =
+                        self.params.rotors.iter().map(|r| r.t_max).sum::<f64>() * self.k_batt();
                     let n_h = (self.mass * G / t_tot.max(1e-6)).clamp(0.0, 1.0).sqrt();
                     for m in self.motor_n.iter_mut() {
                         *m = n_h;
@@ -297,6 +300,11 @@ impl Sim {
                 }
             }
         }
+        // Force-derived values (load factor, CL, power) for the initial state too, so the
+        // HUD never shows values from before the reset.
+        let s = self.state;
+        let f = self.forces(&s);
+        self.record_forces(&s, &f);
         self.update_telemetry();
     }
 
@@ -342,16 +350,15 @@ impl Sim {
         self.mass = m_new;
     }
 
-    /// Adds `frac` of the design mass at the current CG (e.g. a heavier payload).
+    /// Adds `frac` of the design mass at the current CG (e.g. a heavier payload). A point
+    /// mass at the CG has no moment arm, so the inertia about the CG is unchanged.
     pub fn add_mass(&mut self, frac: f64) {
         let dm = self.params.mass * frac.clamp(0.0, 1.0);
         if dm <= 0.0 {
             return;
         }
-        let m_old = self.mass;
         self.mass += dm;
         self.extra_mass += dm;
-        self.inertia = self.inertia.scaled(self.mass / m_old);
     }
 
     /// Starts a forward transition (VTOL in hover) or a back transition (VTOL in cruise).
@@ -406,31 +413,33 @@ impl Sim {
         }
         let tel = self.telemetry;
         // Fail-safe engages once the failure is detected (stabilised mode only).
-        if self
+        let detected = self
             .fail_time
             .is_some_and(|t0| self.t - t0 >= FAILSAFE_DELAY)
-            && self.mode == ControlMode::Stabilized
-            && !self.failsafe
-        {
+            && self.mode == ControlMode::Stabilized;
+        let vtol = self.params.wing.is_some() && self.params.lift_rotor_count() > 0;
+        if detected && !self.failsafe {
             self.failsafe = true;
-            let fw = self.params.wing.is_some();
-            let lift = self.params.lift_rotor_count() > 0;
-            if fw && lift {
-                // VTOL: a dead pusher means hover and land; a dead lift motor in cruise is
-                // tolerated until the back transition.
-                let pusher_dead = self
-                    .params
-                    .rotors
-                    .iter()
-                    .zip(&self.motor_failed)
-                    .any(|(r, &f)| f && !r.lift);
-                if pusher_dead || self.phase != VtolPhase::Cruise {
-                    self.phase = VtolPhase::BackTransition;
-                    self.phase_timer = 0.0;
-                } else {
-                    self.failsafe = false;
-                    self.fail_time = None;
-                }
+            // VTOL: an interrupted transition goes back to hover. In hover the lift rotors
+            // already fly (the fail-safe descends straight away); in cruise a dead lift motor
+            // is tolerated (the fail-safe is masked below) until the back transition, where
+            // the re-allocation over the remaining motors takes over.
+            if vtol && self.phase == VtolPhase::Transition {
+                self.phase = VtolPhase::BackTransition;
+                self.phase_timer = 0.0;
+            }
+        }
+        if detected && vtol && matches!(self.phase, VtolPhase::Transition | VtolPhase::Cruise) {
+            // A dead pusher means hover and land.
+            let pusher_dead = self
+                .params
+                .rotors
+                .iter()
+                .zip(&self.motor_failed)
+                .any(|(r, &f)| f && !r.lift);
+            if pusher_dead {
+                self.phase = VtolPhase::BackTransition;
+                self.phase_timer = 0.0;
             }
         }
         self.update_vtol_phase(&tel);
@@ -453,10 +462,7 @@ impl Sim {
             input: self.input,
             mode: self.mode,
             phase: self.phase,
-            failsafe: self.failsafe
-                && !(self.params.wing.is_some()
-                    && self.params.lift_rotor_count() > 0
-                    && self.phase == VtolPhase::Cruise),
+            failsafe: self.failsafe && !(vtol && self.phase == VtolPhase::Cruise),
             known_failed: &known,
             trim_elevator: self.trim_elevator,
         };
@@ -574,16 +580,21 @@ impl Sim {
         }
         // Battery: electrical energy over the step.
         self.energy_used_wh += f1.power.max(0.0) * dt / 3600.0;
-        let load =
-            (f1.f_world - V3::new(0.0, 0.0, self.mass * G * self.grav())) * (1.0 / (self.mass * G));
-        self.telemetry.load_factor = -s0.q.rotate_inv(load).z;
-        self.telemetry.cl = f1.aero.cl;
-        self.telemetry.stall = f1.aero.stall;
-        self.telemetry.power = f1.power;
+        self.record_forces(&s0, &f1);
         self.state = next;
         self.t += dt;
         self.update_ground_status(&s0);
         self.update_telemetry();
+    }
+
+    /// Stores the force-derived telemetry (load factor, CL, stall, electrical power).
+    fn record_forces(&mut self, s: &RigidState, f: &Forces) {
+        let load =
+            (f.f_world - V3::new(0.0, 0.0, self.mass * G * self.grav())) * (1.0 / (self.mass * G));
+        self.telemetry.load_factor = -s.q.rotate_inv(load).z;
+        self.telemetry.cl = f.aero.cl;
+        self.telemetry.stall = f.aero.stall;
+        self.telemetry.power = f.power;
     }
 
     fn grav(&self) -> f64 {
@@ -669,7 +680,15 @@ impl Sim {
             }
             let vax_p = v_ax.max(0.0);
             let v_i = -0.5 * vax_p + (0.25 * vax_p * vax_p + t / (2.0 * rho * r.disk_area)).sqrt();
-            p_shaft += t * vax_p / p.eta_prop + t * v_i / p.fm;
+            // Lift rotors: momentum theory with the figure of merit. Propellers: the cruise
+            // efficiency already contains the induced losses, so T V / eta_p, but never below
+            // the static (figure of merit) power near zero airspeed.
+            let p_momentum = t * (vax_p + v_i) / p.fm;
+            p_shaft += if r.lift {
+                p_momentum
+            } else {
+                (t * vax_p / p.eta_prop).max(t * v_i / p.fm)
+            };
         }
         let power = if self.soc() > 0.0 {
             p_shaft / p.eta_el.max(0.1) + p.battery.p_hotel
@@ -828,8 +847,9 @@ impl Sim {
         t.current = t.power / v.max(1.0);
     }
 
-    /// Finds elevator, throttle and angle of attack for level flight at `v` and sets the
-    /// state accordingly (fixed wing / VTOL cruise). Returns false if no trim was found.
+    /// Finds elevator, throttle and angle of attack for level flight at airspeed `v` and sets
+    /// the state accordingly (fixed wing / VTOL cruise, heading north, flying with the local
+    /// wind). Returns false if no trim was found.
     pub fn trim_level(&mut self, v: f64) -> bool {
         let Some(wa) = self.params.wing.clone() else {
             return false;
@@ -840,6 +860,9 @@ impl Sim {
             .collect();
         let saved_cfg = self.cfg;
         self.cfg.ground = false;
+        // Aerodynamic trim is solved in still air; the wind is added to the inertial
+        // velocity afterwards so the airspeed is `v` with no sideslip.
+        let saved_wind = std::mem::replace(&mut self.wind, Wind::new(WindConfig::default(), 0));
         let residual = |sim: &mut Sim, x: [f64; 3]| -> [f64; 3] {
             let (alpha, de, n) = (x[0], x[1], x[2]);
             sim.state = RigidState {
@@ -897,10 +920,11 @@ impl Sim {
             x[2] = x[2].clamp(0.0, 1.0);
         }
         self.cfg = saved_cfg;
+        self.wind = saved_wind;
         let (alpha, de, n) = (x[0], x[1], x[2]);
         self.state = RigidState {
             pos,
-            vel: V3::new(v, 0.0, 0.0),
+            vel: V3::new(v, 0.0, 0.0) + self.wind.velocity(-pos.z),
             q: Quat::from_euler(0.0, alpha, 0.0),
             w: V3::ZERO,
         };

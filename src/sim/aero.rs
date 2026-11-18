@@ -161,7 +161,13 @@ pub fn wing_forces(wa: &WingAero, v: V3, w: V3, s: Surfaces, rho: f64) -> AeroOu
     let alpha = v.z.atan2(v.x);
     let beta = (v.y / speed).clamp(-1.0, 1.0).asin();
     let alpha_w = super::math::wrap_pi(alpha + wa.i_w);
-    let (mut cl, cd, sigma) = cl_cd(wa, alpha_w);
+    let (cl_2d, cd_2d, sigma) = cl_cd(wa, alpha_w);
+    // Only the chordwise (x-z) flow makes lift, induced drag and pitching moment: scaling
+    // by cos^2(beta) makes them vanish smoothly in pure spanwise flow (e.g. a hovering
+    // VTOL in a crosswind), where alpha is undefined.
+    let chordwise = ((v.x * v.x + v.z * v.z) / (speed * speed)).clamp(0.0, 1.0);
+    let mut cl = cl_2d * chordwise;
+    let cd = wa.cd0 + (cd_2d - wa.cd0) * chordwise;
     let qbar = 0.5 * rho * speed * speed;
     // Rate non-dimensionalisation with a floor speed keeps damping finite at rest.
     let v_d = speed.max(3.0);
@@ -173,13 +179,14 @@ pub fn wing_forces(wa: &WingAero, v: V3, w: V3, s: Surfaces, rho: f64) -> AeroOu
     let de = s.elevator * DELTA_MAX;
     let da = s.aileron * DELTA_MAX;
     let dr = s.rudder * DELTA_MAX;
-    cl += wa.clq * qh - wa.cl_de * de * (1.0 - sigma);
+    cl += wa.clq * qh - wa.cl_de * de * (1.0 - sigma) * chordwise;
     let sb = beta.sin();
     let cy = wa.cyb * sb - wa.cy_dr * dr;
     let attached = 1.0 - sigma;
-    let cm = wa.cma * (alpha_w - wa.alpha_w_trim).sin() - 0.08 * sigma * alpha_w.signum()
-        + wa.cmq * qh
-        + wa.cm_de * de;
+    let cm = (wa.cma * (alpha_w - wa.alpha_w_trim).sin() - 0.08 * sigma * alpha_w.signum()
+        + wa.cm_de * de)
+        * chordwise
+        + wa.cmq * qh;
     let cll = wa.clb * sb
         + wa.clp * ph * (1.0 - 1.5 * sigma)
         + 0.25 * cl * rh
@@ -312,5 +319,46 @@ mod tests {
             1.2,
         );
         assert!(high.moment.y < base.moment.y);
+    }
+
+    #[test]
+    fn spanwise_flow_makes_no_lift_and_is_continuous() {
+        let w = wing(DroneType::FixedWingConventional);
+        let rho = 1.2;
+        let q_s = 0.5 * rho * 10.0 * 10.0 * w.s;
+        // Pure crosswind on a hovering VTOL: tiny chordwise components of either sign.
+        for (vx, vz) in [
+            (1e-3, 0.0),
+            (-1e-3, 0.0),
+            (0.0, 1e-3),
+            (0.0, -1e-3),
+            (0.0, 0.0),
+        ] {
+            let out = wing_forces(
+                &w,
+                V3::new(vx, 10.0, vz),
+                V3::ZERO,
+                Surfaces::default(),
+                rho,
+            );
+            assert!(out.force.z.abs() < 1e-4 * q_s, "lift {:?}", out.force);
+            assert!(
+                out.moment.y.abs() < 1e-4 * q_s * w.mac,
+                "cm {:?}",
+                out.moment
+            );
+        }
+        // At a fixed alpha and speed, lift falls off smoothly with sideslip (cos^2 beta).
+        let a = w.alpha_w_trim - w.i_w;
+        let lift_at = |beta: f64| {
+            let (sb, cb) = beta.sin_cos();
+            let v = V3::new(10.0 * cb * a.cos(), 10.0 * sb, 10.0 * cb * a.sin());
+            -wing_forces(&w, v, V3::ZERO, Surfaces::default(), rho)
+                .force
+                .z
+        };
+        let (l0, l30, l60) = (lift_at(0.0), lift_at(0.52), lift_at(1.05));
+        assert!(l0 > l30 && l30 > l60 && l60 > 0.0, "{l0} {l30} {l60}");
+        assert!(l60 < 0.4 * l0, "{l60} vs {l0}");
     }
 }

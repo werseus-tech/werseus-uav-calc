@@ -385,7 +385,9 @@ impl Autopilot {
         // --- Yaw: turn coordination + yaw stick
         let rudder = if wa.cn_dr > 1e-4 {
             let r_des = if airborne {
-                G * phi.tan().clamp(-3.0, 3.0) / v.max(5.0) + deadband(inp.yaw) * 0.6
+                // Body yaw rate of a coordinated turn: psi_dot cos(phi) cos(theta) with
+                // psi_dot = g tan(phi) / V.
+                G * phi.sin() * theta.cos() / v.max(5.0) + deadband(inp.yaw) * 0.6
             } else {
                 deadband(inp.yaw) * 0.6
             };
@@ -502,27 +504,28 @@ fn allocate_once(
     };
     let tmax = |k: usize| p.rotors[k].t_max * k_batt;
     let desired = [collective, torque.x, torque.y, torque.z];
-    // Minimum-norm solution over `free` for `target` using the first `dim` rows.
-    let solve = |free: &[usize], target: [f64; 4], dim: usize| -> Option<Vec<f64>> {
+    // Minimum-norm solution over `free` for `target` using the effectiveness `rows`.
+    let solve = |free: &[usize], target: [f64; 4], rows: &[usize]| -> Option<Vec<f64>> {
+        let dim = rows.len();
         let mut bbt = [[0.0; 4]; 4];
         for &k in free {
             let b = row(k);
-            for r in 0..dim {
-                for c2 in 0..dim {
-                    bbt[r][c2] += b[r] * b[c2];
+            for (r, &ra) in rows.iter().enumerate() {
+                for (c2, &rb) in rows.iter().enumerate() {
+                    bbt[r][c2] += b[ra] * b[rb];
                 }
             }
         }
         let inv = invert(&mut bbt, dim)?;
         let mut y = [0.0; 4];
         for (r, yr) in y.iter_mut().enumerate().take(dim) {
-            *yr = (0..dim).map(|c2| inv[r][c2] * target[c2]).sum();
+            *yr = (0..dim).map(|c2| inv[r][c2] * target[rows[c2]]).sum();
         }
         Some(
             free.iter()
                 .map(|&k| {
                     let b = row(k);
-                    (0..dim).map(|r| b[r] * y[r]).sum()
+                    rows.iter().zip(&y).map(|(&ra, yr)| b[ra] * yr).sum()
                 })
                 .collect(),
         )
@@ -544,8 +547,18 @@ fn allocate_once(
                 target[r] -= b[r] * t;
             }
         }
-        let dims: &[usize] = if free.len() >= 4 { &[4, 3, 1] } else { &[3, 1] };
-        let Some(sol) = dims.iter().find_map(|&d| solve(&free, target, d)) else {
+        // Row sets in priority order: all axes, drop yaw, then roll / pitch alone (two free
+        // rotors cannot also hold the collective), and collective only as the last resort.
+        const ALL: &[usize] = &[0, 1, 2, 3];
+        const NO_YAW: &[usize] = &[0, 1, 2];
+        const ROLL_PITCH: &[usize] = &[1, 2];
+        const COLLECTIVE: &[usize] = &[0];
+        let row_sets: &[&[usize]] = if free.len() >= 4 {
+            &[ALL, NO_YAW, ROLL_PITCH, COLLECTIVE]
+        } else {
+            &[NO_YAW, ROLL_PITCH, COLLECTIVE]
+        };
+        let Some(sol) = row_sets.iter().find_map(|rows| solve(&free, target, rows)) else {
             break;
         };
         let mut violated = false;
