@@ -5,6 +5,7 @@ pub mod cad;
 pub mod calc;
 pub mod db;
 pub mod export;
+pub mod flightlog;
 pub mod footprint;
 pub mod geom3d;
 pub mod i18n;
