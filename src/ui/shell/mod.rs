@@ -836,6 +836,9 @@ impl App {
             Some(super::steps::CenterSlot::WindTunnel) => {
                 super::windtunnel::show(ui, &self.project, model, &mut self.wt_state);
             }
+            Some(super::steps::CenterSlot::Wiring) => {
+                super::wiring::show(ui, &self.project, model);
+            }
             None => {}
         }
     }

@@ -39,6 +39,8 @@ pub enum Screen {
     Schematic,
     /// Uzman modundaki rüzgâr tüneli (başka paketin işi; merkezde yerleşim yuvasında çizilir).
     WindTunnel,
+    /// Kablo demeti ve pinout (merkezde yuvada çizilir).
+    Wiring,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -46,6 +48,7 @@ pub enum Screen {
 pub enum CenterSlot {
     Outputs,
     WindTunnel,
+    Wiring,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -97,6 +100,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Multirotor => Screen::MultirotorAll,
         Tab::Schematic => Screen::Schematic,
         Tab::WindTunnel => Screen::WindTunnel,
+        Tab::Wiring => Screen::Wiring,
     }
 }
 
@@ -116,6 +120,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Outputs => Some(CenterSlot::Outputs),
         Screen::Summary if expert => Some(CenterSlot::Outputs),
         Screen::WindTunnel => Some(CenterSlot::WindTunnel),
+        Screen::Wiring => Some(CenterSlot::Wiring),
         _ => None,
     }
 }
@@ -124,7 +129,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
 pub fn has_inputs(screen: Screen) -> bool {
     !matches!(
         screen,
-        Screen::Outputs | Screen::WindTunnel | Screen::Schematic
+        Screen::Outputs | Screen::WindTunnel | Screen::Schematic | Screen::Wiring
     )
 }
 
@@ -147,7 +152,11 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::MrCg
         | Screen::MultirotorAll => &["area.multirotor"],
         Screen::MrStructure => &["area.mr_structure"],
-        Screen::Summary | Screen::Outputs | Screen::Schematic | Screen::WindTunnel => &[],
+        Screen::Summary
+        | Screen::Outputs
+        | Screen::Schematic
+        | Screen::WindTunnel
+        | Screen::Wiring => &[],
     }
 }
 
@@ -179,7 +188,11 @@ pub fn chart(ui: &mut Ui, screen: Screen, p: &Project, m: &Model, h: f32) {
 pub fn has_formulas(screen: Screen) -> bool {
     !matches!(
         screen,
-        Screen::Outputs | Screen::WindTunnel | Screen::Schematic | Screen::MrStructure
+        Screen::Outputs
+            | Screen::WindTunnel
+            | Screen::Schematic
+            | Screen::Wiring
+            | Screen::MrStructure
     )
 }
 
@@ -209,7 +222,11 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
             f::show_mr_battery_formulas(ui, p, m);
             f::show_mr_cg_formulas(ui, p, m);
         }
-        Screen::MrStructure | Screen::Outputs | Screen::WindTunnel | Screen::Schematic => {}
+        Screen::MrStructure
+        | Screen::Outputs
+        | Screen::WindTunnel
+        | Screen::Schematic
+        | Screen::Wiring => {}
     }
 }
 
@@ -241,7 +258,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::MrCg => (t("mr.cg.title"), t("mr.cg.intro"), None),
         Screen::MrStructure => (t("mr_struct.title"), t("mr_struct.subtitle"), None),
         Screen::MultirotorAll => (t("tab_multirotor"), t("mr.frame.intro"), None),
-        Screen::Outputs | Screen::Schematic | Screen::WindTunnel => return,
+        Screen::Outputs | Screen::Schematic | Screen::WindTunnel | Screen::Wiring => return,
     };
     step_ui::intro(ui, title, what, hlp);
 }
@@ -305,7 +322,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
                 }
             }
         }
-        Screen::Outputs | Screen::Schematic | Screen::WindTunnel => {}
+        Screen::Outputs | Screen::Schematic | Screen::WindTunnel | Screen::Wiring => {}
     }
 }
 
@@ -387,7 +404,7 @@ pub fn results(
                     .show(ui, |ui| f(ui, p, m));
             }
         }
-        Screen::Outputs | Screen::Schematic | Screen::WindTunnel => {}
+        Screen::Outputs | Screen::Schematic | Screen::WindTunnel | Screen::Wiring => {}
     }
     let _ = lib;
 }

@@ -14,6 +14,7 @@ pub mod support;
 pub mod teach;
 pub mod ui;
 pub mod windtunnel;
+pub mod wiring;
 
 /// Gömülü uygulama ikonunu yükler.
 pub fn load_icon() -> egui::IconData {

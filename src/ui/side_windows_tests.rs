@@ -49,6 +49,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("ai.rs", include_str!("ai.rs")),
         ("teach.rs", include_str!("teach.rs")),
         ("windtunnel.rs", include_str!("windtunnel.rs")),
+        ("wiring.rs", include_str!("wiring.rs")),
         ("formulas.rs", include_str!("formulas.rs")),
         ("help.rs", include_str!("help.rs")),
         ("schematic.rs", include_str!("schematic.rs")),
@@ -456,4 +457,47 @@ fn panel_kit_frames_render_with_theme_colors() {
             );
         }
     }
+}
+
+#[test]
+fn wiring_tab_renders_in_both_themes_and_languages_with_theme_colors() {
+    for choice in themes() {
+        for lang in [Lang::Tr, Lang::En] {
+            for dt in DroneType::ALL {
+                let (p, m) = fixture(dt);
+                let ctx = egui::Context::default();
+                theme::install(&ctx, choice);
+                crate::i18n::with_lang(lang, || {
+                    let shapes = run(&ctx, &mut |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                crate::ui::wiring::show(ui, &p, &m);
+                            });
+                        });
+                    });
+                    assert_palette_only(&shapes, &ctx, &format!("wiring {dt:?} {choice:?}"));
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn wiring_i18n_keys_exist_in_both_languages() {
+    let tr: std::collections::HashMap<String, String> =
+        serde_json::from_str(include_str!("../../assets/i18n/tr.json")).unwrap();
+    let en: std::collections::HashMap<String, String> =
+        serde_json::from_str(include_str!("../../assets/i18n/en.json")).unwrap();
+    let keys = |m: &std::collections::HashMap<String, String>| {
+        let mut v: Vec<_> = m
+            .keys()
+            .filter(|k| k.starts_with("wiring.") || *k == "tab_wiring")
+            .cloned()
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(keys(&tr), keys(&en));
+    assert!(keys(&tr).len() > 50);
+    assert!(tr.values().chain(en.values()).all(|v| !v.is_empty()));
 }
