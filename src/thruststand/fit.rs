@@ -32,7 +32,14 @@ pub fn polyfit(xs: &[f64], ys: &[f64], deg: usize) -> Option<Poly> {
     if pts.len() < 2 {
         return None;
     }
-    let deg = deg.min(pts.len() - 1);
+    // Farklı x sayısından fazla derece tekil sistem verir (tekrarlı ölçüm noktaları).
+    let mut dx: Vec<f64> = pts.iter().map(|p| p.0).collect();
+    dx.sort_by(f64::total_cmp);
+    dx.dedup();
+    if dx.len() < 2 {
+        return None;
+    }
+    let deg = deg.min(dx.len() - 1);
     let scale = pts.iter().fold(0.0_f64, |m, (x, _)| m.max(x.abs()));
     if scale < 1e-12 {
         return None;
@@ -113,7 +120,7 @@ pub fn fit_ct(samples: &[Sample], d: f64, rho: f64) -> Option<CtFit> {
     } else {
         0.0
     };
-    if !(d > 0.0 && rho > 0.0) {
+    if !(d.is_finite() && rho.is_finite() && d > 0.0 && rho > 0.0) {
         return None;
     }
     // T = a r^2 = Ct rho (r/60)^2 D^4
@@ -141,7 +148,7 @@ pub fn efficiency_points(samples: &[Sample]) -> Vec<EffPoint> {
         .filter_map(|s| {
             let p = s.power_w()?;
             let g = s.thrust_n / G0 * 1000.0;
-            (p > 0.5 && g > 1.0).then(|| EffPoint {
+            (p.is_finite() && p > 0.5 && g > 1.0).then(|| EffPoint {
                 thrust_g: g,
                 power_w: p,
                 g_per_w: g / p,
@@ -324,6 +331,13 @@ mod tests {
         for &xi in &[0.0, 0.33, 0.9, 1.2] {
             assert!((p.eval(xi) - (1.0 + 2.0 * xi + 3.0 * xi * xi)).abs() < 1e-8);
         }
+    }
+
+    #[test]
+    fn polyfit_with_repeated_x_lowers_degree() {
+        // 4 ölçüm, yalnızca 2 farklı x: doğru uydurulur, None dönmez.
+        let p = polyfit(&[0.3, 0.3, 0.6, 0.6], &[1.0, 1.0, 2.0, 2.0], 2).unwrap();
+        assert!((p.eval(0.45) - 1.5).abs() < 1e-9);
     }
 
     #[test]

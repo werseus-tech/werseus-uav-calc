@@ -4317,7 +4317,7 @@
   "thruststand.row_thr_curve": "Gaz-itki eğrisi (%50 gazda)",
   "thruststand.thr_curve_fmt": "{0} g",
   "thruststand.cmp_title_hover": "Tasarımla karşılaştırma (askıda, motor başına)",
-  "thruststand.cmp_title_cruise": "Tasarımla karşılaştırma (seyir, motor başına)",
+  "thruststand.cmp_title_cruise": "Tasarımla karşılaştırma (statik test noktası, motor başına)",
   "thruststand.design_line": "Tasarımın tahmini: {0} g itki için {1} W elektrik gücü",
   "thruststand.cmp_power": "Ölçülen: aynı itkide {0} W (tasarıma göre %{1} fark)",
   "thruststand.cmp_power_missing": "Güç karşılaştırması için gerilim ve akım sütunları ile yeterli itki aralığı gerekir.",

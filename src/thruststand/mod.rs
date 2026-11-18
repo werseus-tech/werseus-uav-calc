@@ -18,7 +18,7 @@ pub const CT_MODEL: f64 = 0.10;
 /// Tasarimin motor basina tahmin ettigi degerler (karsilastirma referansi).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DesignRef {
-    /// Askida (coklu govde / VTOL) ya da seyirde (sabit kanat) motor basina itki [N].
+    /// Askida (coklu govde / VTOL) ya da statik azami itkide (sabit kanat) motor basina itki [N].
     pub t_motor_n: f64,
     /// Ayni durumda motor basina elektrik gucu [W].
     pub p_elec_motor_w: f64,
@@ -30,7 +30,7 @@ pub struct DesignRef {
     pub p_other_w: f64,
     pub e_usable_wh: f64,
     pub hover_endurance_min: f64,
-    /// true: askida (dikey kaldirma) referans, false: seyir referansi.
+    /// true: askida (dikey kaldirma) referans, false: statik tezgah referansi (sabit kanat).
     pub is_hover: bool,
 }
 
@@ -50,9 +50,11 @@ impl DesignRef {
                 hover_endurance_min: m.mr.hover_endurance_min,
                 is_hover: true,
             },
+            // Sabit kanat: tezgah ölçümü durağandır (V = 0); seyir gücüyle değil, statik
+            // azami itki noktasıyla karşılaştırılır.
             _ => DesignRef {
-                t_motor_n: m.prop.t_cr,
-                p_elec_motor_w: m.prop.p_elec_cr,
+                t_motor_n: m.prop.t_static,
+                p_elec_motor_w: m.prop.p_elec_static,
                 d_prop_m: p.d_prop,
                 rho,
                 n_motors: 1,
@@ -85,7 +87,10 @@ pub fn analyze(samples: &[Sample], d: &DesignRef) -> Analysis {
     let throttle_curve = fit::throttle_curve(samples, 2);
     let power_at_design = fit::power_at_thrust(samples, d.t_motor_n);
     let power_diff_pct = power_at_design.and_then(|pa| fit::diff_pct(pa.power_w, d.p_elec_motor_w));
-    let ct_diff_pct = ct.and_then(|c| fit::diff_pct(c.ct, CT_MODEL));
+    // CT_MODEL askı (çok gövde) varsayımıdır; sabit kanat için karşılaştırılmaz.
+    let ct_diff_pct = ct
+        .filter(|_| d.is_hover)
+        .and_then(|c| fit::diff_pct(c.ct, CT_MODEL));
     let power_ratio = power_at_design
         .filter(|_| d.p_elec_motor_w > 0.0)
         .map(|pa| pa.power_w / d.p_elec_motor_w);

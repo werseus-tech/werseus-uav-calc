@@ -142,6 +142,17 @@ impl VehicleSpec {
         }
     }
 
+    /// Askıda motor itkisinin azami itkiye oranı: ArduPilot `THST_HOVER` ve PX4 `MPC_THR_HOVER`
+    /// doğrusallaştırılmış itki oranıdır (gaz değil). Azami itki yoksa gaz^2 ile tahmin edilir.
+    pub fn hover_thrust_ratio(&self) -> f64 {
+        let r = if self.t_max_motor_n > 0.0 && self.t_hover_motor_n.is_finite() {
+            self.t_hover_motor_n / self.t_max_motor_n
+        } else {
+            fin(self.hover_throttle).powi(2)
+        };
+        fin(r)
+    }
+
     /// Azami rotor hizi [rad/s]: KV verildiyse KV*V*2pi/60, yoksa azami itkiden Ct ile.
     pub fn max_rot_velocity(&self) -> f64 {
         let w = if let Some(kv) = self.kv {
@@ -164,7 +175,12 @@ impl VehicleSpec {
     /// Eylemsizlik tahmini (kg m^2): motorlar nokta kutle, kalan kutle r_plate yaricapli disk.
     pub fn inertia_estimate(&self) -> (f64, f64, f64) {
         let n = self.rotors.len().max(1) as f64;
-        let m_motors = (self.motor_mass_kg * self.n_motors as f64).min(self.mass_kg);
+        // Rotoru olmayan (sabit kanat) araçta motor kütlesi ayrılmaz: nokta kütle olarak yerleşemez.
+        let m_motors = if self.rotors.is_empty() {
+            0.0
+        } else {
+            (self.motor_mass_kg * self.n_motors as f64).min(self.mass_kg)
+        };
         let m_each = m_motors / n;
         let rest = (self.mass_kg - m_motors).max(0.0);
         let r = self.r_plate_m.max(0.02);
@@ -194,8 +210,8 @@ impl VehicleSpec {
         } else {
             1.225
         };
-        v.motor_mass_kg = fin(v.motor_mass_kg);
-        v.r_plate_m = fin(v.r_plate_m);
+        v.motor_mass_kg = fin(v.motor_mass_kg).max(0.0);
+        v.r_plate_m = fin(v.r_plate_m).max(0.0);
         v.ct = if v.ct.is_finite() && v.ct > 0.0 {
             v.ct
         } else {
@@ -298,11 +314,11 @@ pub fn ardupilot_parm(s: &VehicleSpec) -> String {
             }
             let _ = writeln!(o, "{pre}FRAME_CLASS,{class}");
             let _ = writeln!(o, "{pre}FRAME_TYPE,{ftype}");
-            let hover = s.hover_throttle.clamp(0.2, 0.8);
+            let hover = s.hover_thrust_ratio().clamp(0.125, 0.6875);
             let mp = s.mot_prefix();
             let _ = writeln!(
                 o,
-                "# Hover throttle from the model estimate sqrt(T_hover/T_max); refine from a real flight log."
+                "# Hover thrust ratio T_hover/T_max from the model (ArduPilot thrust scale); refine from a real flight log."
             );
             let _ = writeln!(o, "{mp}THST_HOVER,{hover:.3}");
             let _ = writeln!(o, "{mp}SPIN_MIN,0.15");
@@ -356,13 +372,21 @@ pub fn px4_params(s: &VehicleSpec) -> String {
         let _ = writeln!(
             o,
             "param set MPC_THR_HOVER {:.2}",
-            s.hover_throttle.clamp(0.1, 0.8)
+            s.hover_thrust_ratio().clamp(0.1, 0.8)
         );
         let _ = writeln!(
             o,
             "# Control allocation (PX4 1.13 or newer; verify names on yours):"
         );
-        let _ = writeln!(o, "param set CA_AIRFRAME 0");
+        if s.kind == VehicleKind::Vtol {
+            let _ = writeln!(
+                o,
+                "# VTOL: only the lift rotors are listed; add the forward motor and control surfaces by hand."
+            );
+            let _ = writeln!(o, "param set CA_AIRFRAME 2");
+        } else {
+            let _ = writeln!(o, "param set CA_AIRFRAME 0");
+        }
         let _ = writeln!(o, "param set CA_ROTOR_COUNT {}", s.rotors.len());
         for (i, r) in s.rotors.iter().enumerate() {
             // PX4: x ileri, y sag, z asagi.
@@ -495,7 +519,9 @@ mod tests {
         assert!(t.contains("FRAME_CLASS,1"));
         assert!(t.contains("FRAME_TYPE,1"));
         let h = value_of(&t, "MOT_THST_HOVER");
-        assert!((0.2..=0.8).contains(&h));
+        assert!((0.125..=0.6875).contains(&h));
+        // Doğrusallaştırılmış itki oranı: T_hover / T_max.
+        assert!((h - s.hover_thrust_ratio()).abs() < 0.001, "{h}");
         assert!(value_of(&t, "BATT_CAPACITY") > 100.0);
         let low = value_of(&t, "BATT_LOW_VOLT");
         assert!((low - s.cell_low_v * s.cells_s as f64).abs() < 0.01);
@@ -578,6 +604,27 @@ mod tests {
     }
 
     #[test]
+    fn vtol_uses_vtol_airframe_and_fixed_wing_inertia_keeps_mass() {
+        let vtol = spec_for(DroneType::VtolQuadplane, 4);
+        let px = px4_params(&vtol);
+        assert!(px.contains("CA_AIRFRAME 2"), "{px}");
+        assert!(!px.contains("CA_AIRFRAME 0"));
+        let quad = px4_params(&spec_for(DroneType::Multirotor, 4));
+        assert!(quad.contains("CA_AIRFRAME 0"));
+        let mut fw = spec_for(DroneType::FixedWingConventional, 4);
+        fw.motor_mass_kg = 0.2;
+        fw.r_plate_m = 0.3;
+        let (ixx, _, izz) = fw.inertia_estimate();
+        let expected = fw.mass_kg * 0.3 * 0.3 / 4.0;
+        assert!((ixx - expected).abs() < 1e-9 && izz > 0.0);
+        let mut neg = spec_for(DroneType::Multirotor, 4);
+        neg.motor_mass_kg = -1.0;
+        neg.r_plate_m = -1.0;
+        let t = gazebo_snippet(&neg);
+        assert_clean(&t);
+    }
+
+    #[test]
     fn degenerate_spec_does_not_nan() {
         let mut s = spec_for(DroneType::Multirotor, 4);
         s.mass_kg = f64::NAN;
@@ -585,11 +632,14 @@ mod tests {
         s.d_prop_m = 0.0;
         s.t_max_motor_n = 0.0;
         s.capacity_mah = f64::INFINITY;
-        let _ = (
-            s.max_rot_velocity(),
-            s.motor_constant(),
-            s.inertia_estimate(),
-        );
+        let (ixx, iyy, izz) = s.inertia_estimate();
+        assert!(s.max_rot_velocity().is_finite());
+        assert!(s.motor_constant().is_finite());
+        assert!(ixx.is_finite() && iyy.is_finite() && izz.is_finite());
+        assert!(s.hover_thrust_ratio().is_finite());
+        for t in [ardupilot_parm(&s), px4_params(&s), gazebo_snippet(&s)] {
+            assert_clean(&t);
+        }
         s.mass_kg = 0.0;
         s.capacity_mah = 0.0;
         s.hover_throttle = 0.0;

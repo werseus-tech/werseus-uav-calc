@@ -4317,7 +4317,7 @@
   "thruststand.row_thr_curve": "Throttle-thrust curve (at 50 % throttle)",
   "thruststand.thr_curve_fmt": "{0} g",
   "thruststand.cmp_title_hover": "Comparison with the design (hover, per motor)",
-  "thruststand.cmp_title_cruise": "Comparison with the design (cruise, per motor)",
+  "thruststand.cmp_title_cruise": "Comparison with the design (static test point, per motor)",
   "thruststand.design_line": "Design estimate: {1} W electrical power for {0} g of thrust",
   "thruststand.cmp_power": "Measured: {0} W at the same thrust ({1} % difference from the design)",
   "thruststand.cmp_power_missing": "The power comparison needs voltage and current columns and enough thrust range.",

@@ -53,6 +53,7 @@ impl TsState {
         self.units = a.units;
         self.recognized = a.recognized;
         self.file = name.to_string();
+        self.use_measured = false;
     }
 }
 
@@ -307,7 +308,7 @@ fn results_ui(ui: &mut Ui, tk: &theme::Tokens, d: &DesignRef, an: &Analysis, st:
             ui.label(t("thruststand.row_thr_curve"));
             ui.label(tf(
                 "thruststand.thr_curve_fmt",
-                &[&fmt(thr.eval(0.5) / G0 * 1000.0, 0)],
+                &[&fmt(thr.eval(0.5).max(0.0) / G0 * 1000.0, 0)],
             ));
             ui.end_row();
         }

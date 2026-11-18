@@ -168,20 +168,25 @@ fn split_line(line: &str, sep: char) -> Vec<String> {
 }
 
 fn detect_separator(lines: &[&str]) -> char {
+    // Eşitlikte önce sekme, sonra noktalı virgül: virgül ondalık ayracı olabilir.
     let mut best = (',', 0usize);
-    for &s in &[',', ';', '\t'] {
-        // Ilk birkac satirda tutarli sayida ayirac aranir.
+    for &s in &['\t', ';', ','] {
         let counts: Vec<usize> = lines
             .iter()
             .take(8)
             .map(|l| split_line(l, s).len().saturating_sub(1))
             .collect();
-        let first = counts.first().copied().unwrap_or(0);
-        if first == 0 {
+        // En sık görülen sütun sayısı; başlık/başlık dışı bir satır ayracı elemez.
+        let (mode, n_mode) = counts
+            .iter()
+            .filter(|&&c| c > 0)
+            .map(|&c| (c, counts.iter().filter(|&&d| d == c).count()))
+            .max_by_key(|&(c, n)| (n, c))
+            .unwrap_or((0, 0));
+        if mode == 0 {
             continue;
         }
-        let consistent = counts.iter().filter(|&&c| c == first).count();
-        let score = first * 10 + consistent;
+        let score = mode * 10 + n_mode;
         if score > best.1 {
             best = (s, score);
         }
@@ -266,9 +271,19 @@ pub fn auto_map(headers: &[String]) -> AutoMap {
     let mut units = Units::default();
     if let Some(i) = thrust {
         let h = &hs[i];
-        units.force = if h.contains("kgf") {
+        units.force = if h.contains("kgf")
+            || h.contains("(kg)")
+            || h.contains("[kg]")
+            || h.ends_with(" kg")
+            || h.ends_with("_kg")
+        {
             ForceUnit::Kgf
-        } else if h.contains("(n)") || h.contains("[n]") || h.ends_with(" n") {
+        } else if h.contains("(n)")
+            || h.contains("[n]")
+            || h.ends_with(" n")
+            || h.ends_with("_n")
+            || h.contains("newton")
+        {
             ForceUnit::Newton
         } else {
             ForceUnit::Gram
@@ -360,6 +375,28 @@ pub fn build_samples(table: &RawTable, map: &Mapping, units: &Units) -> ParseRep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn semicolon_with_decimal_commas_and_headerless() {
+        let lines = ["0,2;310,5;4800", "0,4;420,1;5200", "0,6;530,9;5600"];
+        assert_eq!(detect_separator(&lines), ';');
+        let lines = ["Test run, 2024", "a,b,c", "1,2,3", "4,5,6"];
+        assert_eq!(detect_separator(&lines), ',');
+    }
+
+    #[test]
+    fn force_unit_from_common_headers() {
+        for (h, u) in [
+            ("Thrust (kg)", ForceUnit::Kgf),
+            ("Thrust (Newton)", ForceUnit::Newton),
+            ("itki_N", ForceUnit::Newton),
+            ("thrust_kg", ForceUnit::Kgf),
+            ("Thrust (g)", ForceUnit::Gram),
+        ] {
+            let heads = vec![h.to_string(), "Voltage (V)".to_string()];
+            assert_eq!(auto_map(&heads).units.force, u, "{h}");
+        }
+    }
 
     const RCB: &str = "Time (s),ESC signal (µs),Thrust (kgf),Voltage (V),Current (A),Motor Electrical Speed (RPM),Motor Optical Speed (RPM)\n\
         0,1000,0.00,16.0,0.1,0,0\n\
