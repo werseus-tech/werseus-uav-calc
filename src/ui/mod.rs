@@ -27,6 +27,7 @@ pub mod propcurves;
 pub mod propulsion;
 pub mod regulation;
 pub mod reliability;
+pub mod rfemi;
 pub mod schematic;
 pub mod settings_page;
 pub mod shell;
@@ -90,6 +91,7 @@ pub enum Tab {
     Bom,
     Reliability,
     MissionEnergy,
+    RfEmi,
 }
 
 impl Tab {
@@ -121,6 +123,7 @@ impl Tab {
             Tab::Bom => t("bom.tab"),
             Tab::Reliability => t("tab_reliability"),
             Tab::MissionEnergy => t("tab_missionenergy"),
+            Tab::RfEmi => t("tab_rfemi"),
         }
     }
 
@@ -148,6 +151,7 @@ impl Tab {
                 Tab::Bom,
                 Tab::Reliability,
                 Tab::MissionEnergy,
+                Tab::RfEmi,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -176,6 +180,7 @@ impl Tab {
                 Tab::Bom,
                 Tab::Reliability,
                 Tab::MissionEnergy,
+                Tab::RfEmi,
             ],
             _ => vec![
                 Tab::Summary,
@@ -203,6 +208,7 @@ impl Tab {
                 Tab::Bom,
                 Tab::Reliability,
                 Tab::MissionEnergy,
+                Tab::RfEmi,
             ],
         }
     }

@@ -65,6 +65,8 @@ pub enum Screen {
     Reliability,
     /// Uzman modundaki ortam + görev enerji bütçesi (merkezde yuvada çizilir).
     MissionEnergy,
+    /// Uzman modundaki RF / anten / EMI sekmesi (merkezde yuvada çizilir).
+    RfEmi,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -85,6 +87,7 @@ pub enum CenterSlot {
     Bom,
     Reliability,
     MissionEnergy,
+    RfEmi,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -149,6 +152,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Bom => Screen::Bom,
         Tab::Reliability => Screen::Reliability,
         Tab::MissionEnergy => Screen::MissionEnergy,
+        Tab::RfEmi => Screen::RfEmi,
     }
 }
 
@@ -181,6 +185,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Bom => Some(CenterSlot::Bom),
         Screen::Reliability => Some(CenterSlot::Reliability),
         Screen::MissionEnergy => Some(CenterSlot::MissionEnergy),
+        Screen::RfEmi => Some(CenterSlot::RfEmi),
         _ => None,
     }
 }
@@ -191,6 +196,7 @@ pub fn has_inputs(screen: Screen) -> bool {
         screen,
         Screen::Outputs
             | Screen::WindTunnel
+            | Screen::RfEmi
             | Screen::MissionEnergy
             | Screen::Reliability
             | Screen::ThermalPower
@@ -231,6 +237,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
         | Screen::Bom
@@ -277,6 +284,7 @@ pub fn has_formulas(screen: Screen) -> bool {
         screen,
         Screen::Outputs
             | Screen::WindTunnel
+            | Screen::RfEmi
             | Screen::MissionEnergy
             | Screen::Reliability
             | Screen::ThermalPower
@@ -324,6 +332,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         Screen::MrStructure
         | Screen::Outputs
         | Screen::WindTunnel
+        | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
         | Screen::ThermalPower
@@ -372,6 +381,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
         | Screen::Bom
@@ -451,6 +461,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
         | Screen::Bom
@@ -548,6 +559,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
         | Screen::Bom

@@ -19,6 +19,7 @@ pub mod propcurves;
 pub mod regulation;
 pub mod reliability;
 pub mod report;
+pub mod rfemi;
 pub mod sim;
 pub mod structfea;
 pub mod support;

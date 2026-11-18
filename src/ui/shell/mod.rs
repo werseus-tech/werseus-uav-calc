@@ -890,6 +890,9 @@ impl App {
             Some(super::steps::CenterSlot::MissionEnergy) => {
                 super::missionenergy::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::RfEmi) => {
+                super::rfemi::show(ui, &self.project, model);
+            }
             None => {}
         }
     }
@@ -1090,5 +1093,6 @@ mod tests {
         p.expert_mode = true;
         assert_eq!(active_step(&p, Tab::Aero), Some(StepId::Aero));
         assert_eq!(active_step(&p, Tab::WindTunnel), None);
+        assert_eq!(active_step(&p, Tab::RfEmi), None);
     }
 }
