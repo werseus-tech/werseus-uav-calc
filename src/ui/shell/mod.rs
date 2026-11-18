@@ -836,6 +836,9 @@ impl App {
             Some(super::steps::CenterSlot::WindTunnel) => {
                 super::windtunnel::show(ui, &self.project, model, &mut self.wt_state);
             }
+            Some(super::steps::CenterSlot::Library) => {
+                super::library::show(ui, &mut self.project, &mut self.library_ui);
+            }
             None => {}
         }
     }

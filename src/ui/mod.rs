@@ -9,6 +9,7 @@ pub mod endurance;
 pub mod formulas;
 pub mod geometry;
 pub mod help;
+pub mod library;
 pub mod mission;
 pub mod mr_structure;
 pub mod multirotor;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    Library,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::Library => t("tab_library"),
         }
     }
 
@@ -93,6 +96,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::Library,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +112,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::Library,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +127,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::Library,
             ],
         }
     }
@@ -179,6 +185,7 @@ pub struct App {
 
     // Yeni üç panelli kabuğun görünüm durumu (projeye yazılmaz)
     pub shell: shell::ShellState,
+    pub library_ui: library::LibraryUi,
 }
 
 impl App {
@@ -269,6 +276,7 @@ impl App {
             ai_config: settings.ai_config,
             teacher_state: crate::ui::teach::TeacherUiState::new(settings.teacher),
             shell: shell::ShellState::new(settings.theme),
+            library_ui: library::LibraryUi::default(),
         };
 
         startup_prefs.apply(&mut app, &cc.egui_ctx);
@@ -335,6 +343,7 @@ impl App {
             ai_config: crate::ai::AiConfig::default(),
             teacher_state: crate::ui::teach::TeacherUiState::new(Default::default()),
             shell: shell::ShellState::new(theme::ThemeChoice::Dark),
+            library_ui: library::LibraryUi::default(),
         }
     }
 
