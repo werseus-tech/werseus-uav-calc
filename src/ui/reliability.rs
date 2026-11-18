@@ -7,7 +7,9 @@ use super::widgets::fmt;
 use crate::calc::Model;
 use crate::i18n::t;
 use crate::project::Project;
-use crate::reliability::{self, ComponentKind, RateOverrides, ReliabilityError, Report};
+use crate::reliability::{
+    self, ComponentKind, DesignCounts, RateOverrides, ReliabilityError, Report,
+};
 use egui::Ui;
 use std::collections::HashMap;
 
@@ -25,11 +27,15 @@ fn parse_mission(text: &str) -> Option<f64> {
     text.trim().replace(',', ".").parse::<f64>().ok()
 }
 
-/// Arıza oranı metinlerini okur. Geçersiz bir girdi varsa `true` döner.
-fn read_overrides(st: &ReliabilityUi) -> (RateOverrides, bool) {
+/// Arıza oranı metinlerini okur (yalnızca adedi > 0 olan türler için). Geçersiz bir girdi varsa `true` döner.
+fn read_overrides(st: &ReliabilityUi, counts: &DesignCounts) -> (RateOverrides, bool) {
     let mut overrides = RateOverrides::new();
     let mut bad = false;
-    for kind in ComponentKind::ALL {
+    for it in reliability::build_items(counts, &RateOverrides::new())
+        .into_iter()
+        .filter(|i| i.qty > 0)
+    {
+        let kind = it.kind;
         let text = st.rate_text.get(&kind).map(String::as_str).unwrap_or("");
         match reliability::parse_rate(text) {
             Ok(Some(v)) => {
@@ -42,15 +48,33 @@ fn read_overrides(st: &ReliabilityUi) -> (RateOverrides, bool) {
     (overrides, bad)
 }
 
+fn evaluate_ui(
+    st: &ReliabilityUi,
+    counts: &DesignCounts,
+    default_hours: f64,
+) -> (Vec<reliability::Item>, Result<Report, ReliabilityError>) {
+    let (overrides, bad_rate) = read_overrides(st, counts);
+    let items = reliability::build_items(counts, &overrides);
+    let mission = if st.mission_text.trim().is_empty() {
+        Some(default_hours)
+    } else {
+        parse_mission(&st.mission_text)
+    };
+    let result = match mission {
+        _ if bad_rate => Err(ReliabilityError::InvalidRate),
+        None => Err(ReliabilityError::InvalidMissionTime),
+        Some(hours) => reliability::evaluate(&items, counts.motor_redundant, hours),
+    };
+    (items, result)
+}
+
 pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut ReliabilityUi) {
     section_header(ui, t("tab_reliability"));
     components::banner(ui, Status::Info, t("reliability.disclaimer"));
     ui.add_space(space::XS);
 
     let counts = reliability::design_counts(p, m);
-    let (overrides, bad_rate) = read_overrides(st);
-    let items = reliability::build_items(&counts, &overrides);
-    let default_hours = reliability::default_mission_hours(m);
+    let default_hours = reliability::default_mission_hours(p, m);
 
     ui.horizontal(|ui| {
         ui.label(t("reliability.mission_time"));
@@ -64,16 +88,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut ReliabilityUi) {
     ui.weak(t("reliability.mission_hint"));
     ui.add_space(space::S);
 
-    let mission = if st.mission_text.trim().is_empty() {
-        Some(default_hours)
-    } else {
-        parse_mission(&st.mission_text)
-    };
-    let result: Result<Report, ReliabilityError> = match mission {
-        _ if bad_rate => Err(ReliabilityError::InvalidRate),
-        None => Err(ReliabilityError::InvalidMissionTime),
-        Some(hours) => reliability::evaluate(&items, counts.motor_redundant, hours),
-    };
+    let (items, result) = evaluate_ui(st, &counts, default_hours);
 
     section_header(ui, t("reliability.section_components"));
     egui::Grid::new("reliability_components")
@@ -94,13 +109,16 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut ReliabilityUi) {
                     ui.weak(t(kind.note_key()));
                 });
                 ui.label(it.qty.to_string());
-                ui.label(fmt(kind.default_rate(), 0));
+                ui.label(fmt(it.rate, 0));
                 let entry = st.rate_text.entry(kind).or_default();
-                ui.add(
+                let resp = ui.add(
                     egui::TextEdit::singleline(entry)
                         .desired_width(90.0)
                         .hint_text(fmt(kind.default_rate(), 0)),
                 );
+                if resp.changed() {
+                    ui.ctx().request_repaint();
+                }
                 let share = match &result {
                     Ok(rep) => rep
                         .contributions
@@ -116,6 +134,8 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut ReliabilityUi) {
         });
     ui.weak(t("reliability.rate_unit_note"));
     ui.add_space(space::S);
+
+    let (_, result) = evaluate_ui(st, &counts, default_hours);
 
     section_header(ui, t("reliability.section_results"));
     match result {
@@ -210,20 +230,40 @@ mod tests {
         st.mission_text = "abc".into();
         run(&ctx, &mut |ui| show(ui, &p, &m, &mut st));
         st.rate_text.clear();
+        run(&ctx, &mut |ui| show(ui, &p, &m, &mut st));
+        st.mission_text = "0".into();
+        run(&ctx, &mut |ui| show(ui, &p, &m, &mut st));
         st.mission_text = "2,5".into();
         run(&ctx, &mut |ui| show(ui, &p, &m, &mut st));
     }
 
     #[test]
     fn overrides_text_is_parsed_and_bad_entries_flagged() {
+        let fw_counts = DesignCounts {
+            motors: 1,
+            servos: 4,
+            airframe_joints: 2,
+            motor_redundant: false,
+        };
+        let mr_counts = DesignCounts {
+            motors: 4,
+            servos: 0,
+            airframe_joints: 4,
+            motor_redundant: false,
+        };
         let mut st = ReliabilityUi::default();
         st.rate_text.insert(ComponentKind::Esc, "450,5".into());
-        let (o, bad) = read_overrides(&st);
+        let (o, bad) = read_overrides(&st, &fw_counts);
         assert!(!bad);
         assert_eq!(o.get(&ComponentKind::Esc), Some(&450.5));
 
         st.rate_text.insert(ComponentKind::Servo, "0".into());
-        let (_, bad) = read_overrides(&st);
+        let (_, bad) = read_overrides(&st, &fw_counts);
         assert!(bad);
+
+        // Multirotorda servo adedi 0 olduğundan gizli Servo girdisi hata üretmemeli.
+        let (o_mr, bad_mr) = read_overrides(&st, &mr_counts);
+        assert!(!bad_mr);
+        assert!(!o_mr.contains_key(&ComponentKind::Servo));
     }
 }

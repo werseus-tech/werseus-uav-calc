@@ -100,7 +100,7 @@ impl ComponentKind {
 pub enum ReliabilityError {
     /// Arıza oranı sonlu ve > 0 olmalı.
     InvalidRate,
-    /// Görev süresi sonlu ve >= 0 olmalı.
+    /// Görev süresi sonlu ve > 0 olmalı.
     InvalidMissionTime,
 }
 
@@ -128,11 +128,11 @@ pub struct Contribution {
 pub struct Report {
     /// Toplam arıza oranı [1/saat] (seri, yedeklilik kredisi verilmeden).
     pub lambda_per_h: f64,
-    /// Seri MTBF [saat] = 1/λ_toplam (yedeklilik kredisi verilmeden).
+    /// Sistem MTBF / MTTF [saat] (yedeklilik varsa R_görev integrali, yoksa 1/λ_toplam).
     pub mtbf_h: f64,
     /// Seri sistemin t saatlik güvenilirliği (yedeklilik kredisi yok).
     pub r_series: f64,
-    /// Motor grubunun t saatlik güvenilirliği (yedeklilik uygulanmışsa k-out-of-n).
+    /// Motor/itki grubunun t saatlik güvenilirliği (yedeklilik uygulanmışsa k-out-of-n).
     pub r_motor_group: f64,
     /// Yedeklilik kredisi dahil görev güvenilirliği.
     pub r_mission: f64,
@@ -187,7 +187,7 @@ pub struct DesignCounts {
 }
 
 /// Projeden bileşen adetlerini çıkarır.
-/// - Multirotor: motor = `m.mr.n_motors`; 6 veya 8 kollu ve koaksiyel olmayanlar yedekli.
+/// - Multirotor: motor = `m.mr.n_motors`; en az 6 kollular veya en az 3 kollu koaksiyeller yedekli.
 /// - VTOL: kaldırma motorları + 1 itici motor; yedeklilik yok.
 /// - Sabit kanat: tek motor; yedeklilik yok.
 pub fn design_counts(p: &Project, m: &Model) -> DesignCounts {
@@ -196,7 +196,7 @@ pub fn design_counts(p: &Project, m: &Model) -> DesignCounts {
             motors: m.mr.n_motors,
             servos: 0,
             airframe_joints: p.mr_arm_count,
-            motor_redundant: !p.mr_coaxial && p.mr_arm_count >= 6,
+            motor_redundant: (p.mr_coaxial && p.mr_arm_count >= 3) || p.mr_arm_count >= 6,
         },
         DroneType::VtolQuadplane => DesignCounts {
             motors: m.mr.n_motors + 1,
@@ -214,8 +214,12 @@ pub fn design_counts(p: &Project, m: &Model) -> DesignCounts {
 }
 
 /// Varsayılan görev süresi: tasarımın uçuş (dayanıklılık) süresi; yoksa [`DEFAULT_MISSION_HOURS`].
-pub fn default_mission_hours(m: &Model) -> f64 {
-    let h = m.perf_end.endurance_h();
+pub fn default_mission_hours(p: &Project, m: &Model) -> f64 {
+    let h = if p.drone_type == DroneType::Multirotor {
+        m.mr.hover_endurance_min / 60.0
+    } else {
+        m.perf_end.endurance_h()
+    };
     if h.is_finite() && h > 0.0 {
         h
     } else {
@@ -266,28 +270,38 @@ pub fn k_out_of_n_survival(n: u32, r: f64, k: u32) -> f64 {
 
 /// Bileşen listesi için güvenilirlik ve MTBF hesabı.
 ///
-/// `items`: bileşen satırları (qty = 0 olanlar yok sayılır). `motor_redundant`: motor grubu
-/// bir motor kaybına dayanıklı mı (k = n-1 of n). `t_hours`: görev süresi [saat].
+/// `items`: bileşen satırları (qty = 0 olanlar yok sayılır). `motor_redundant`: motor/itki grubu
+/// bir ünite kaybına dayanıklı mı (k = n-1 of n). `t_hours`: görev süresi [saat].
 pub fn evaluate(
     items: &[Item],
     motor_redundant: bool,
     t_hours: f64,
 ) -> Result<Report, ReliabilityError> {
-    if !t_hours.is_finite() || t_hours < 0.0 {
+    if !t_hours.is_finite() || t_hours <= 0.0 {
         return Err(ReliabilityError::InvalidMissionTime);
     }
 
     let mut total = 0.0;
     let mut motor_n: u32 = 0;
-    let mut motor_lambda = 0.0;
+    let mut motor_lam_total = 0.0;
+    let mut prop_esc_lam_total = 0.0;
     let mut lambdas: Vec<(ComponentKind, f64)> = Vec::with_capacity(items.len());
     for it in items {
+        if it.qty == 0 {
+            continue;
+        }
         validate_rate(it.rate)?;
         let lam = f64::from(it.qty) * it.rate * 1e-6;
         total += lam;
-        if it.kind == ComponentKind::BrushlessMotor {
-            motor_n += it.qty;
-            motor_lambda = it.rate * 1e-6;
+        match it.kind {
+            ComponentKind::BrushlessMotor => {
+                motor_n += it.qty;
+                motor_lam_total += lam;
+            }
+            ComponentKind::Esc | ComponentKind::Propeller => {
+                prop_esc_lam_total += lam;
+            }
+            _ => {}
         }
         lambdas.push((it.kind, lam));
     }
@@ -304,8 +318,20 @@ pub fn evaluate(
         })
         .collect();
 
+    let drive_lam_total = if motor_n > 0 {
+        motor_lam_total + prop_esc_lam_total
+    } else {
+        0.0
+    };
+    let unit_lambda = if motor_n > 0 {
+        drive_lam_total / f64::from(motor_n)
+    } else {
+        0.0
+    };
+    let rest = (total - drive_lam_total).max(0.0);
+
     let r_series = (-total * t_hours).exp();
-    let r_unit = (-motor_lambda * t_hours).exp();
+    let r_unit = (-unit_lambda * t_hours).exp();
     let r_motor_group = if motor_n == 0 {
         1.0
     } else if motor_redundant && motor_n >= 2 {
@@ -313,16 +339,26 @@ pub fn evaluate(
     } else {
         r_unit.powi(motor_n as i32)
     };
-    let rest = (total - f64::from(motor_n) * motor_lambda).max(0.0);
     let r_mission = r_motor_group * (-rest * t_hours).exp();
+
+    let mtbf_h = if motor_redundant && motor_n >= 2 {
+        let n = f64::from(motor_n);
+        let d1 = (n - 1.0) * unit_lambda + rest;
+        let d2 = n * unit_lambda + rest;
+        if d1 > 0.0 && d2 > 0.0 {
+            n / d1 - (n - 1.0) / d2
+        } else {
+            f64::INFINITY
+        }
+    } else if total > 0.0 {
+        1.0 / total
+    } else {
+        f64::INFINITY
+    };
 
     Ok(Report {
         lambda_per_h: total,
-        mtbf_h: if total > 0.0 {
-            1.0 / total
-        } else {
-            f64::INFINITY
-        },
+        mtbf_h,
         r_series,
         r_motor_group,
         r_mission,
@@ -391,6 +427,67 @@ mod tests {
         let hexa = evaluate(&[item(ComponentKind::BrushlessMotor, 6, rate)], true, t).unwrap();
         assert!(hexa.r_motor_group > six_series.r_motor_group);
         assert!(hexa.r_motor_group > quad.r_motor_group);
+
+        // Tam araç karşılaştırması (build_items): yedekli hekzakopter görev güvenilirliği ve
+        // MTBF açısından 4 kollu kuadkopterden ve yedeksiz 6 motordan üstün olmalı.
+        let overrides = RateOverrides::new();
+        let quad_items = build_items(
+            &DesignCounts {
+                motors: 4,
+                servos: 0,
+                airframe_joints: 4,
+                motor_redundant: false,
+            },
+            &overrides,
+        );
+        let hexa_items = build_items(
+            &DesignCounts {
+                motors: 6,
+                servos: 0,
+                airframe_joints: 6,
+                motor_redundant: true,
+            },
+            &overrides,
+        );
+        let quad_full = evaluate(&quad_items, false, DEFAULT_MISSION_HOURS).unwrap();
+        let hexa_series = evaluate(&hexa_items, false, DEFAULT_MISSION_HOURS).unwrap();
+        let hexa_full = evaluate(&hexa_items, true, DEFAULT_MISSION_HOURS).unwrap();
+        assert!(hexa_full.r_mission > quad_full.r_mission);
+        assert!(hexa_full.r_mission > hexa_series.r_mission);
+        assert!(hexa_full.mtbf_h > quad_full.mtbf_h);
+        assert!(hexa_full.mtbf_h > hexa_series.mtbf_h);
+        assert!(hexa_full.p_fail_100_flights < quad_full.p_fail_100_flights);
+    }
+
+    #[test]
+    fn zero_qty_and_multiple_motor_entries_handled_correctly() {
+        let items = [
+            item(ComponentKind::BrushlessMotor, 2, 100.0),
+            item(ComponentKind::BrushlessMotor, 2, 300.0),
+            item(ComponentKind::BrushlessMotor, 0, -50.0),
+            item(ComponentKind::Servo, 0, f64::NAN),
+        ];
+        let r = evaluate(&items, false, 1.0).unwrap();
+        let expected_lam = (2.0 * 100.0 + 2.0 * 300.0) * 1e-6;
+        assert!((r.lambda_per_h - expected_lam).abs() < 1e-15);
+        assert!((r.r_mission - r.r_series).abs() < 1e-12);
+    }
+
+    #[test]
+    fn default_mission_hours_uses_vehicle_specific_endurance() {
+        let lib = Library::embedded();
+
+        let mut mr = Project::default();
+        mr.set_drone_type(DroneType::Multirotor);
+        let m_mr = eval_model(&mr, &lib);
+        assert!(
+            (default_mission_hours(&mr, &m_mr) - m_mr.mr.hover_endurance_min / 60.0).abs() < 1e-12
+        );
+
+        let mut fw = Project::default();
+        fw.set_drone_type(DroneType::FixedWingConventional);
+        let m_fw = eval_model(&fw, &lib);
+        assert!((default_mission_hours(&fw, &m_fw) - m_fw.perf_end.endurance_h()).abs() < 1e-12);
     }
 
     #[test]
@@ -429,6 +526,10 @@ mod tests {
         );
         let ok_items = [item(ComponentKind::Gps, 1, 10.0)];
         assert_eq!(
+            evaluate(&ok_items, false, 0.0),
+            Err(ReliabilityError::InvalidMissionTime)
+        );
+        assert_eq!(
             evaluate(&ok_items, false, -1.0),
             Err(ReliabilityError::InvalidMissionTime)
         );
@@ -450,15 +551,32 @@ mod tests {
         quad.mr_arm_count = 4;
         let m = eval_model(&quad, &lib);
         let c = design_counts(&quad, &m);
-        assert_eq!(c.motors, m.mr.n_motors);
+        assert_eq!(c.motors, 4);
         assert!(!c.motor_redundant);
 
         let mut hexa = quad.clone();
         hexa.mr_arm_count = 6;
         let m = eval_model(&hexa, &lib);
         let c = design_counts(&hexa, &m);
+        assert_eq!(c.motors, 6);
         assert!(c.motor_redundant);
         assert_eq!(c.airframe_joints, 6);
+
+        let mut y6 = quad.clone();
+        y6.mr_arm_count = 3;
+        y6.mr_coaxial = true;
+        let m = eval_model(&y6, &lib);
+        let c = design_counts(&y6, &m);
+        assert_eq!(c.motors, 6);
+        assert!(c.motor_redundant);
+
+        let mut vtol = Project::default();
+        vtol.set_drone_type(DroneType::VtolQuadplane);
+        let m = eval_model(&vtol, &lib);
+        let c = design_counts(&vtol, &m);
+        assert_eq!(c.motors, 5);
+        assert_eq!(c.servos, 4);
+        assert!(!c.motor_redundant);
 
         let mut fw = Project::default();
         fw.set_drone_type(DroneType::FixedWingConventional);
