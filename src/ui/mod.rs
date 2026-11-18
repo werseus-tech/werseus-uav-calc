@@ -269,6 +269,7 @@ pub struct App {
     path: Option<PathBuf>,
     status: String,
     pub show_type_modal: bool,
+    pub vtol_modal_tail: crate::calc::geometry::TailKind,
     prev_json: String,
 
     // Modal Durumları
@@ -380,6 +381,7 @@ impl App {
             path: None,
             status: t("status_ready").into(),
             show_type_modal: !start_uninstall,
+            vtol_modal_tail: crate::calc::geometry::TailKind::Conventional,
             prev_json: String::new(),
             show_about_modal: false,
             show_feedback_modal: false,
@@ -456,6 +458,7 @@ impl App {
     pub(crate) fn new_headless(ctx: &egui::Context, dt: DroneType) -> Self {
         let mut project = Project::default();
         project.set_drone_type(dt);
+        let vtol_modal_tail = project.tail_kind;
         theme::install(ctx, theme::ThemeChoice::Dark);
         App {
             project,
@@ -464,6 +467,7 @@ impl App {
             path: None,
             status: String::new(),
             show_type_modal: false,
+            vtol_modal_tail,
             prev_json: String::new(),
             show_about_modal: false,
             show_feedback_modal: false,
@@ -764,6 +768,9 @@ impl App {
                                 type_cards::type_card_grid(ui, Some(self.project.drone_type))
                             {
                                 self.project.set_drone_type(dt);
+                                if dt == DroneType::VtolQuadplane {
+                                    self.project.tail_kind = self.vtol_modal_tail;
+                                }
                                 self.show_type_modal = false;
                                 self.tab = Tab::Summary;
                                 self.status = tf("status_platform_selected", &[dt.label()]);
@@ -771,6 +778,20 @@ impl App {
                         });
 
                     ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(t("type_cards.vtol_tail_label"));
+                        for k in crate::calc::geometry::TailKind::ALL {
+                            if ui
+                                .selectable_label(self.vtol_modal_tail == k, k.label())
+                                .clicked()
+                            {
+                                self.vtol_modal_tail = k;
+                                if self.project.drone_type == DroneType::VtolQuadplane {
+                                    self.project.tail_kind = k;
+                                }
+                            }
+                        }
+                    });
                     ui.horizontal(|ui| {
                         if ui.button(t("btn_cancel")).clicked() {
                             self.show_type_modal = false;

@@ -903,4 +903,16 @@ mod tests {
         assert!(!p.tail_airfoil_h.points.is_empty());
         assert!(!p.tail_airfoil_v.points.is_empty());
     }
+
+    #[test]
+    fn vtol_tail_kind_roundtrips_through_json() {
+        for kind in TailKind::ALL {
+            let mut p = load_example("vtol_quadplane.json").unwrap();
+            p.tail_kind = kind;
+            let json = p.to_json().unwrap();
+            let loaded = Project::from_json(&json).unwrap();
+            assert_eq!(loaded.drone_type, DroneType::VtolQuadplane);
+            assert_eq!(loaded.tail_kind, kind);
+        }
+    }
 }

@@ -108,14 +108,18 @@ pub fn inputs_panel(ui: &mut Ui, p: &mut Project, m: &Model) {
         .selected_text(p.tail_kind.label())
         .width(ui.available_width() - 8.0)
         .show_ui(ui, |ui| {
-            for k in [
-                TailKind::Conventional,
-                TailKind::VTail,
-                TailKind::FlyingWing,
-            ] {
+            for k in crate::calc::geometry::TailKind::ALL {
                 ui.selectable_value(&mut p.tail_kind, k, k.label());
             }
         });
+    for w in &m.warnings {
+        if matches!(
+            w.msg_key,
+            "warn.geometry.pusher_tail_clearance" | "warn.geometry.pusher_boom_clearance"
+        ) {
+            components::banner(ui, Status::Warn, &tf(w.msg_key, &w.args));
+        }
+    }
     ui.add_space(4.0);
     match p.tail_kind {
         TailKind::Conventional => {

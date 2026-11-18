@@ -13,4 +13,4 @@ pub mod structure;
 pub use aircraft::{AircraftSpec, Part, PartKind, Scene, WheelSpec, build};
 pub use math::{Mat4, Vec3};
 pub use mesh::Mesh;
-pub use spec::{ViewOptions, from_project};
+pub use spec::{PusherClearance3d, ViewOptions, check_pusher_clearance, from_project};

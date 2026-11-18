@@ -4,6 +4,7 @@
 
 use crate::cad::layout::Layout;
 use crate::calc::Model;
+use crate::calc::geometry::TailKind;
 use crate::i18n::t;
 use crate::project::{DroneType, Project};
 use std::fmt::Write;
@@ -499,16 +500,18 @@ impl Harness {
                 inst_pos(&lay, "Wing_L").map(|q| q[0]).unwrap_or(x(0.4)) + 0.4 * m.wing.c_r;
             let tail_x = |label: &str| inst_pos(&lay, label).map(|q| q[0]).unwrap_or(x(0.92));
             let mut sp: Vec<[f64; 3]> = vec![[wing_x, 0.0, 0.6 * half], [wing_x, 0.0, -0.6 * half]];
-            match dt {
-                DroneType::FlyingWing => {}
-                DroneType::FixedWingVTail => {
-                    let tx = tail_x("VTail_L");
-                    sp.push([tx, 0.05, 0.08]);
-                    sp.push([tx, 0.05, -0.08]);
-                }
-                _ => {
-                    sp.push([tail_x("TailH_L"), 0.0, 0.05]);
-                    sp.push([tail_x("TailV"), 0.05, 0.0]);
+            if dt != DroneType::FlyingWing {
+                match p.tail_kind {
+                    TailKind::FlyingWing => {}
+                    TailKind::VTail => {
+                        let tx = tail_x("VTail_L");
+                        sp.push([tx, 0.05, 0.08]);
+                        sp.push([tx, 0.05, -0.08]);
+                    }
+                    TailKind::Conventional => {
+                        sp.push([tail_x("TailH_L"), 0.0, 0.05]);
+                        sp.push([tail_x("TailV"), 0.05, 0.0]);
+                    }
                 }
             }
             n_servo_pos.truncate(1);

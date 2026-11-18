@@ -415,7 +415,15 @@ fn draw_fixed_wing(
     );
 
     // 5. Kuyruk
-    let tail_x = -p.l_h;
+    let x_fuse_end = x_root_le - l_fuse;
+    let r_pusher = if p.d_prop.is_finite() && p.d_prop > 0.02 {
+        p.d_prop * 0.5
+    } else {
+        0.125
+    };
+    let pusher_standoff = 0.030_f64.max(0.10 * r_pusher + 0.005);
+    let x_pusher = x_fuse_end - pusher_standoff;
+    let tail_x_nom = -p.l_h;
     let tail_fill = tk.accent_soft;
     let tail_stroke = Stroke::new(1.2, tk.info);
 
@@ -423,6 +431,13 @@ fn draw_fixed_wing(
         TailKind::Conventional => {
             let b_h = (p.s_h * 4.0).sqrt().max(0.20);
             let c_h = p.s_h / b_h;
+            let tail_x = if is_vtol {
+                tail_x_nom
+                    .max(x_fuse_end + c_h + 0.02)
+                    .min((-c_r - 0.01).max(tail_x_nom))
+            } else {
+                tail_x_nom
+            };
             let half_bh = b_h * 0.5;
             let h_pts = vec![
                 vp.to_screen(tail_x, half_bh),
@@ -442,6 +457,13 @@ fn draw_fixed_wing(
         TailKind::VTail => {
             let b_v_proj = (p.s_vtail * 3.5).sqrt().max(0.22) * p.gamma_v_deg.to_radians().cos();
             let c_vt = p.s_vtail / (b_v_proj * 1.2);
+            let tail_x = if is_vtol {
+                tail_x_nom
+                    .max(x_fuse_end + 0.06 + c_vt)
+                    .min((-c_r - 0.01).max(tail_x_nom))
+            } else {
+                tail_x_nom
+            };
             let half_bv = b_v_proj * 0.5;
 
             let r_vtail = vec![
@@ -502,8 +524,16 @@ fn draw_fixed_wing(
             painter.circle_filled(m_pos, 5.0, tk.warning);
         }
 
-        // İtici motor (gövde arkasında)
-        let pusher_pos = vp.to_screen(tail_pos.x as f64 / scale as f64, 0.0);
+        // İtici motor ve pervane diski (gövde ve kuyruk arkasında)
+        let _ = tail_pos;
+        let pusher_pos = vp.to_screen(x_pusher, 0.0);
+        painter.line_segment(
+            [
+                vp.to_screen(x_pusher, -r_pusher),
+                vp.to_screen(x_pusher, r_pusher),
+            ],
+            Stroke::new(2.2, tk.danger),
+        );
         painter.circle_filled(pusher_pos, 4.0, tk.danger);
     }
 

@@ -134,6 +134,30 @@ pub const AI_FIELDS: &[AiFieldDef] = &[
         },
     },
     AiFieldDef {
+        id: "tail_kind",
+        unit: "-",
+        min: 0.0,
+        max: 0.0,
+        desc_key: "ai.field.tail_kind",
+        allowed_strings: &["conventional", "v_tail", "flying_wing"],
+        get: |p| {
+            AiValue::Str(match p.tail_kind {
+                crate::calc::geometry::TailKind::Conventional => "conventional".into(),
+                crate::calc::geometry::TailKind::VTail => "v_tail".into(),
+                crate::calc::geometry::TailKind::FlyingWing => "flying_wing".into(),
+            })
+        },
+        set: |p, val| {
+            p.tail_kind = match val.as_str() {
+                "conventional" => crate::calc::geometry::TailKind::Conventional,
+                "v_tail" => crate::calc::geometry::TailKind::VTail,
+                "flying_wing" => crate::calc::geometry::TailKind::FlyingWing,
+                other => return Err(format!("Unknown tail_kind: {other}")),
+            };
+            Ok(())
+        },
+    },
+    AiFieldDef {
         id: "h",
         unit: "m",
         min: 0.0,
@@ -512,5 +536,17 @@ mod tests {
             f_dt.validate(&AiValue::Str("space_shuttle".into()))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn test_tail_kind_field_for_vtol() {
+        let f_tk = find_field("tail_kind").expect("tail_kind should exist");
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::VtolQuadplane);
+        (f_tk.set)(&mut p, &AiValue::Str("v_tail".into())).unwrap();
+        assert_eq!(p.tail_kind, crate::calc::geometry::TailKind::VTail);
+        (f_tk.set)(&mut p, &AiValue::Str("flying_wing".into())).unwrap();
+        assert_eq!(p.tail_kind, crate::calc::geometry::TailKind::FlyingWing);
+        assert!(f_tk.validate(&AiValue::Str("t_tail".into())).is_err());
     }
 }

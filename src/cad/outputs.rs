@@ -134,7 +134,8 @@ pub fn available_parts(p: &Project) -> Vec<PartId> {
         dt => {
             let tail = match p.tail_kind {
                 TailKind::VTail => vec![PartId::TailVTail],
-                _ => vec![PartId::TailHorizontal, PartId::TailVertical],
+                TailKind::FlyingWing => vec![PartId::Winglet],
+                TailKind::Conventional => vec![PartId::TailHorizontal, PartId::TailVertical],
             };
             let mut v = vec![PartId::Wing, PartId::WingSpar];
             v.extend(tail);

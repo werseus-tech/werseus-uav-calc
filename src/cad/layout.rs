@@ -40,6 +40,47 @@ pub struct Instance {
     pub parent: Option<String>,
 }
 
+/// Montajdaki itici pervane diski (mm, gövde çerçevesinde; normal +X).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PusherPropSpec {
+    pub center_mm: [f64; 3],
+    pub radius_mm: f64,
+    pub min_clearance_mm: f64,
+}
+
+/// İtici pervane diskinin kuyruk, bom ve gövdeye olan en küçük 3B mesafeleri [mm].
+#[derive(Clone, Debug, PartialEq)]
+pub struct PusherClearance {
+    pub min_clearance_mm: f64,
+    pub tail_clearance_mm: Option<f64>,
+    pub boom_clearance_mm: Option<f64>,
+    pub fuselage_clearance_mm: Option<f64>,
+    pub wing_tail_overlap: bool,
+}
+
+impl PusherClearance {
+    pub fn tail_ok(&self) -> bool {
+        !self.wing_tail_overlap
+            && self
+                .tail_clearance_mm
+                .is_none_or(|d| d >= self.min_clearance_mm - 1e-6)
+    }
+
+    pub fn boom_ok(&self) -> bool {
+        self.boom_clearance_mm
+            .is_none_or(|d| d >= self.min_clearance_mm - 1e-6)
+    }
+
+    pub fn fuselage_ok(&self) -> bool {
+        self.fuselage_clearance_mm
+            .is_none_or(|d| d >= self.min_clearance_mm - 1e-6)
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.tail_ok() && self.boom_ok() && self.fuselage_ok()
+    }
+}
+
 /// Bir projenin tüm parça parametreleri ve montaj kopyaları.
 #[derive(Clone, Debug)]
 pub struct Layout {
@@ -58,6 +99,7 @@ pub struct Layout {
     pub leg: LandingLegCadParams,
     pub mr_arm: MultirotorArmCadParams,
     pub mr_plate: MultirotorPlateCadParams,
+    pub pusher_prop: Option<PusherPropSpec>,
     pub instances: Vec<Instance>,
 }
 
@@ -162,7 +204,11 @@ impl Layout {
         let fuse_frame = Frame::IDENTITY;
 
         // --- Kanat (sol yarı kökü gövde ekseninde, kord çizgisi z = 0)
-        let x_wle = p.x_root_le * 1000.0;
+        let x_wle = if p.x_root_le.is_finite() {
+            p.x_root_le * 1000.0
+        } else {
+            200.0
+        };
         let wing_l = surface_frame(0.0, [x_wle, 0.0, 0.0]);
         let wing_r = mirrored_placement(&wing_l, 2);
         if !multirotor {
@@ -200,15 +246,54 @@ impl Layout {
             );
         }
 
-        // --- Kuyruk: yüzeyler gövde (bom) ucuna; firar kenarı gövde kuyruk yüzüyle aynı x'te.
-        let conventional_tail =
-            !multirotor && p.drone_type != DroneType::FlyingWing && p.tail_kind != TailKind::VTail;
+        // --- İtici pervane diski konumu (itici motor yuvasından geride, gövdeden ≥ %10 R boşluklu)
+        let pusher_prop = if !multirotor && pusher {
+            let r_prop_mm = if p.d_prop.is_finite() && p.d_prop > 0.02 {
+                p.d_prop * 500.0
+            } else {
+                125.0
+            };
+            let min_clearance_mm = 0.10 * r_prop_mm;
+            let nominal_standoff_mm = motor_mount.thickness_mm + 25.0;
+            let standoff_mm = nominal_standoff_mm.max(min_clearance_mm + 5.0);
+            Some(PusherPropSpec {
+                center_mm: [length + standoff_mm, 0.0, 0.0],
+                radius_mm: r_prop_mm,
+                min_clearance_mm,
+            })
+        } else {
+            None
+        };
+
+        // --- Kuyruk: iticide yüzeyler pervane diskinin önünde (ve gövde ucuna kadar) kalır;
+        // çekicide firar kenarı gövde kuyruk yüzüyle aynı x'tedir.
+        let has_tail = !multirotor
+            && p.drone_type != DroneType::FlyingWing
+            && p.tail_kind != TailKind::FlyingWing;
+        let conventional_tail = has_tail && p.tail_kind == TailKind::Conventional;
+        let x_wing_te = x_wle + wg.c_root;
         if conventional_tail {
             let hg = tail_h.geom();
-            let x_h = length - hg.c_root;
+            let vg = tail_v.geom();
+            let (x_h, x_v) = if let Some(pp) = pusher_prop {
+                let dx_h = hg
+                    .c_root
+                    .max(hg.span * hg.sweep_le_deg.to_radians().tan() + hg.c_tip);
+                let dx_v = vg
+                    .c_root
+                    .max(vg.span * vg.sweep_le_deg.to_radians().tan() + vg.c_tip);
+                let dx_tail = dx_h.max(dx_v);
+                let x_aft_limit = (pp.center_mm[0] - (pp.min_clearance_mm + 5.0)).min(length);
+                let x_le = (x_aft_limit - dx_tail).max(x_wing_te + 10.0);
+                (x_le, x_le)
+            } else {
+                (length - hg.c_root, length - vg.c_root)
+            };
             let h_l = surface_frame(0.0, [x_h, 0.0, 0.0]);
             let h_r = mirrored_placement(&h_l, 2);
-            let z1 = (fprof.r_max(x_h, length) + 5.0).min(hg.span);
+            let z1 = (fprof.r_max(x_h.clamp(0.0, length), (x_h + hg.c_root).clamp(0.0, length))
+                + 5.0)
+                .min(hg.span);
             plugs.push(PlugSpec::new(&hg, 0.0, z1, &h_l));
             plugs.push(PlugSpec::new(&hg, -z1, 0.0, &h_r));
             if has(PartId::TailHorizontal) {
@@ -216,29 +301,40 @@ impl Layout {
                 push(&mut inst, "TailH_R", PartId::TailHorizontal, true, h_r);
             }
             // Dikey kuyruk kökü yatay kuyruğun üst yüzeyine teğet düzlemde.
-            let vg = tail_v.geom();
-            let x_v = length - vg.c_root;
             let v_f = Frame::from_axes(
                 [1.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
                 [0.0, 0.0, 1.0],
                 [x_v, 0.0, hg.root_top()],
             );
-            let z1 = (fprof.r_max(x_v, length) + 5.0).min(vg.span);
+            let z1 = (fprof.r_max(x_v.clamp(0.0, length), (x_v + vg.c_root).clamp(0.0, length))
+                + 5.0)
+                .min(vg.span);
             plugs.push(PlugSpec::new(&vg, 0.0, z1, &v_f));
             if has(PartId::TailVertical) {
                 push(&mut inst, "TailV", PartId::TailVertical, false, v_f);
             }
-        } else if !multirotor && p.drone_type != DroneType::FlyingWing {
+        } else if has_tail {
             // V kuyruk: kökler, iki yarının hacmi kesişmeyecek kadar (d = T·tanγ) dışarıda.
             let vg = vtail.geom();
-            let x_v = length - vg.c_root;
+            let x_v = if let Some(pp) = pusher_prop {
+                let dx_vt = vg
+                    .c_root
+                    .max(vg.span * vg.sweep_le_deg.to_radians().tan() + vg.c_tip);
+                let x_aft_limit = (pp.center_mm[0] - (pp.min_clearance_mm + 5.0)).min(length);
+                (x_aft_limit - dx_vt).max(x_wing_te + 10.0)
+            } else {
+                length - vg.c_root
+            };
             let gam = p.gamma_v_deg.clamp(5.0, 85.0);
             let d = vg.root_half_thickness() * gam.to_radians().tan() + 0.05;
             let (s, c) = gam.to_radians().sin_cos();
             let v_l = surface_frame(gam, [x_v, -d * c, d * s]);
             let v_r = mirrored_placement(&v_l, 2);
-            let z1 = (fprof.r_max(x_v, length) + 5.0 + d).min(vg.span);
+            let z1 = (fprof.r_max(x_v.clamp(0.0, length), (x_v + vg.c_root).clamp(0.0, length))
+                + 5.0
+                + d)
+                .min(vg.span);
             plugs.push(PlugSpec::new(&vg, 0.0, z1, &v_l));
             plugs.push(PlugSpec::new(&vg, -z1, 0.0, &v_r));
             if has(PartId::TailVTail) {
@@ -598,9 +694,156 @@ impl Layout {
             leg,
             mr_arm,
             mr_plate,
+            pusher_prop,
             instances: inst,
         }
     }
+
+    /// İtici pervane diskinin kuyruk, bom ve gövdeye olan en küçük 3B mesafelerini hesaplar.
+    pub fn check_pusher_clearance(&self, p: &Project) -> Option<PusherClearance> {
+        let pp = self.pusher_prop?;
+        let c = pp.center_mm;
+        let r = pp.radius_mm;
+
+        let mut min_tail: Option<f64> = None;
+        let mut wing_tail_overlap = false;
+        let wing_te_x = self
+            .instances
+            .iter()
+            .find(|i| i.id == PartId::Wing && !i.mirror)
+            .map(|w| w.frame.t[0] + self.wing.root_chord_mm);
+
+        for inst in &self.instances {
+            let params = match inst.id {
+                PartId::TailHorizontal if !inst.mirror => Some(&self.tail_h),
+                PartId::TailVertical => Some(&self.tail_v),
+                PartId::TailVTail if !inst.mirror => Some(&self.vtail),
+                PartId::Winglet if !inst.mirror => Some(&self.winglet),
+                _ => None,
+            };
+            if let Some(tp) = params {
+                let g = tp.geom();
+                let mut d = surface_disc_clearance(&g, &inst.frame, c, r);
+                if inst.id != PartId::Winglet {
+                    let dx_max = g
+                        .c_root
+                        .max(g.span * g.sweep_le_deg.to_radians().tan() + g.c_tip);
+                    let tail_aft_x = inst.frame.t[0] + dx_max;
+                    if tail_aft_x > c[0] - pp.min_clearance_mm + 1e-6 {
+                        d = d.min((c[0] - tail_aft_x).max(0.0));
+                    }
+                    if let Some(w_te) = wing_te_x {
+                        if inst.frame.t[0] < w_te - 1e-6 {
+                            wing_tail_overlap = true;
+                        }
+                    }
+                }
+                min_tail = Some(min_tail.map_or(d, |m| m.min(d)));
+            }
+        }
+
+        let mut min_boom: Option<f64> = None;
+        let boom_r = self.boom.od_mm * 0.5;
+        for inst in self.instances.iter().filter(|i| i.id == PartId::VtolBoom) {
+            for j in 0..=24 {
+                let s = self.boom.length_mm * (j as f64) / 24.0;
+                let pt = inst.frame.apply([0.0, 0.0, s]);
+                let d = (dist_point_to_x_disc(pt, c, r) - boom_r).max(0.0);
+                min_boom = Some(min_boom.map_or(d, |m| m.min(d)));
+            }
+        }
+        let r_lift = if p.mr_d_prop.is_finite() && p.mr_d_prop > 0.02 {
+            p.mr_d_prop * 500.0
+        } else {
+            125.0
+        };
+        for inst in self
+            .instances
+            .iter()
+            .filter(|i| i.id == PartId::LiftMotorMount)
+        {
+            let z_lift = inst.frame.t[2] + 30.0;
+            for ir in 1..=6 {
+                let rr = r_lift * (ir as f64) / 6.0;
+                for ia in 0..24 {
+                    let ang = std::f64::consts::TAU * (ia as f64) / 24.0;
+                    let pt = [
+                        inst.frame.t[0] + rr * ang.cos(),
+                        inst.frame.t[1] + rr * ang.sin(),
+                        z_lift,
+                    ];
+                    let d = dist_point_to_x_disc(pt, c, r);
+                    min_boom = Some(min_boom.map_or(d, |m| m.min(d)));
+                }
+            }
+        }
+
+        let fuselage_clearance_mm = if self.fuselage.length_mm > 0.0 {
+            let gap = if c[0] >= self.fuselage.length_mm {
+                c[0] - self.fuselage.length_mm
+            } else if c[0] <= 0.0 {
+                -c[0]
+            } else {
+                0.0
+            };
+            Some(gap)
+        } else {
+            None
+        };
+
+        Some(PusherClearance {
+            min_clearance_mm: pp.min_clearance_mm,
+            tail_clearance_mm: min_tail,
+            boom_clearance_mm: min_boom,
+            fuselage_clearance_mm,
+            wing_tail_overlap,
+        })
+    }
+}
+
+/// 3B noktanın X-normal pervane diskine en küçük Öklid uzaklığı [mm].
+pub(crate) fn dist_point_to_x_disc(pt: [f64; 3], center: [f64; 3], radius: f64) -> f64 {
+    let dx = (pt[0] - center[0]).abs();
+    let rho = (pt[1] - center[1]).hypot(pt[2] - center[2]);
+    let dr = (rho - radius).max(0.0);
+    dx.hypot(dr)
+}
+
+fn surface_disc_clearance(g: &SurfaceGeom, frame: &Frame, center: [f64; 3], radius: f64) -> f64 {
+    let mut best = f64::INFINITY;
+    let ns = 16;
+    let nc = 20;
+    for j in 0..=ns {
+        let z = g.span * (j as f64) / (ns as f64);
+        let c = g.chord_at(z);
+        let le_x = g.le_x_at(z);
+        let mut prev_u: Option<([f64; 3], [f64; 3])> = None;
+        for i in 0..=nc {
+            let f = (i as f64) / (nc as f64);
+            let x_loc = le_x + f * c;
+            let pt_u = frame.apply([x_loc, g.profile.yu(f) * c, z]);
+            let pt_l = frame.apply([x_loc, g.profile.yl(f) * c, z]);
+            best = best
+                .min(dist_point_to_x_disc(pt_u, center, radius))
+                .min(dist_point_to_x_disc(pt_l, center, radius));
+            if let Some((pu, pl)) = prev_u {
+                for (a, b) in [(pu, pt_u), (pl, pt_l)] {
+                    let dx = b[0] - a[0];
+                    if (a[0] - center[0]) * (b[0] - center[0]) <= 0.0 && dx.abs() > 1e-12 {
+                        let t = ((center[0] - a[0]) / dx).clamp(0.0, 1.0);
+                        let p_cross = [
+                            center[0],
+                            a[1] + t * (b[1] - a[1]),
+                            a[2] + t * (b[2] - a[2]),
+                        ];
+                        best = best.min(dist_point_to_x_disc(p_cross, center, radius));
+                    }
+                }
+            }
+            prev_u = Some((pt_u, pt_l));
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -716,5 +959,46 @@ mod tests {
             .unwrap();
         let r = (mm.frame.t[0].powi(2) + mm.frame.t[1].powi(2)).sqrt();
         assert!((r - 275.0).abs() < 1e-6, "{r}");
+    }
+
+    #[test]
+    fn vtol_pusher_prop_clears_tail_booms_and_fuselage_for_all_tail_kinds() {
+        let mut p = crate::project::load_example("vtol_quadplane.json").unwrap();
+        for kind in TailKind::ALL {
+            p.tail_kind = kind;
+            let m = evaluate(&p, &Library::embedded());
+            let l = Layout::new(&p, &m);
+            assert_eq!(l.motor_mount.mount_type, "pusher", "{kind:?}");
+            let clr = l.check_pusher_clearance(&p).expect("pusher prop");
+            assert!(clr.is_ok(), "{kind:?}: {clr:?}");
+            assert!(
+                clr.tail_clearance_mm.unwrap() >= clr.min_clearance_mm,
+                "{kind:?}: {clr:?}"
+            );
+            assert!(
+                clr.boom_clearance_mm.unwrap() >= clr.min_clearance_mm,
+                "{kind:?}: {clr:?}"
+            );
+            assert!(
+                clr.fuselage_clearance_mm.unwrap() >= clr.min_clearance_mm,
+                "{kind:?}: {clr:?}"
+            );
+        }
+
+        // Large pusher propeller still clears tail & fuselage when fuselage has room.
+        p.tail_kind = TailKind::Conventional;
+        p.d_prop = 0.70;
+        let m = evaluate(&p, &Library::embedded());
+        let l = Layout::new(&p, &m);
+        let clr = l.check_pusher_clearance(&p).unwrap();
+        assert!(clr.tail_ok() && clr.fuselage_ok(), "{clr:?}");
+
+        // Impossible fuselage length triggers collision detection.
+        p.l_fuse = 0.40;
+        p.d_prop = 0.254;
+        let m = evaluate(&p, &Library::embedded());
+        let l = Layout::new(&p, &m);
+        let clr = l.check_pusher_clearance(&p).unwrap();
+        assert!(!clr.tail_ok(), "{clr:?}");
     }
 }
