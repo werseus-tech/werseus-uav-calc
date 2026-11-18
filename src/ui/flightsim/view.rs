@@ -5,8 +5,8 @@
 //! aircraft's motion is folded into that matrix (model transform) and the ground grid is
 //! transformed into the aircraft frame on the CPU each frame (a few hundred vertices).
 use crate::geom3d::{Mat4, Scene, Vec3};
-use crate::sim::Sim;
 use crate::sim::math::V3;
+use crate::sim::{EnvironmentKind, Sim, WorldMesh};
 use crate::ui::theme::Tokens;
 use crate::ui::viewport3d::{self, DisplayStyle, gl};
 use egui::{Rect, Ui};
@@ -19,6 +19,11 @@ pub struct ChaseView {
     renderer: Arc<Mutex<Option<gl::Renderer>>>,
     gl_failed: Arc<AtomicBool>,
     grid_version: u64,
+    world: Arc<WorldMesh>,
+    world_env: EnvironmentKind,
+    world_center: (i32, i32),
+    world_dark: bool,
+    world_version: u64,
     /// Camera heading (smoothed) [rad], orbit offsets and zoom set by the mouse.
     cam_heading: f64,
     pub yaw_offset: f32,
@@ -34,6 +39,11 @@ impl Default for ChaseView {
             renderer: Arc::new(Mutex::new(None)),
             gl_failed: Arc::new(AtomicBool::new(false)),
             grid_version: 0,
+            world: Arc::new(WorldMesh::default()),
+            world_env: EnvironmentKind::default(),
+            world_center: (i32::MAX, i32::MAX),
+            world_dark: true,
+            world_version: 0,
             cam_heading: 0.0,
             yaw_offset: 0.0,
             pitch: 0.28,
@@ -114,13 +124,36 @@ impl ChaseView {
         let fwd = Vec3::new(hd.cos(), -hd.sin(), 0.0);
         let pitch = self.pitch.clamp(-0.2, 1.4);
         let mut eye = pos - fwd * (dist * pitch.cos()) + Vec3::Z * (dist * pitch.sin());
-        eye.z = eye.z.max(0.15);
+        let eye_ground = sim.env.ground_height(eye.x as f64, -eye.y as f64) as f32;
+        eye.z = eye.z.max(eye_ground + 0.35);
         let target = pos + Vec3::Z * (radius * 0.15);
         let view = Mat4::look_at(eye, target, Vec3::Z);
-        let proj = Mat4::perspective(50f32.to_radians(), aspect, 0.05, 3000.0);
-        let vp = proj * view * model;
+        let proj = Mat4::perspective(50f32.to_radians(), aspect, 0.08, 3000.0);
+        let world_vp_mat = proj * view;
+        let vp = world_vp_mat * model;
 
-        // --- Ground grid around the aircraft (world), transformed into the scene frame.
+        // --- Procedural environment mesh (rebuilt only when env/theme/tile changes).
+        let qx = (sim.state.pos.x / 100.0).round() as i32;
+        let qy = (sim.state.pos.y / 100.0).round() as i32;
+        if self.world_version == 0
+            || self.world_env != sim.env
+            || self.world_center != (qx, qy)
+            || self.world_dark != tk.dark
+        {
+            self.world_version = self.world_version.wrapping_add(1).max(1);
+            self.world_env = sim.env;
+            self.world_center = (qx, qy);
+            self.world_dark = tk.dark;
+            self.world = Arc::new(WorldMesh::build(
+                sim.env,
+                qx as f64 * 100.0,
+                qy as f64 * 100.0,
+                tk.dark,
+                self.world_version,
+            ));
+        }
+
+        // --- Ground grid around the aircraft (subtle reference lines on OpenField only).
         let to_model = |w: Vec3| inv_rot(&r, w - pos) + cg;
         let to_arr = |w: Vec3| {
             let v = to_model(w);
@@ -133,45 +166,36 @@ impl ChaseView {
             },
             ..Default::default()
         };
-        let step = 5.0_f32;
-        let half = 40;
-        let (cx, cy) = (
-            (pos.x / (step * 5.0)).round() * step * 5.0,
-            (pos.y / (step * 5.0)).round() * step * 5.0,
-        );
-        for i in -half..=half {
-            let o = i as f32 * step;
-            let major = ((cx + o) / step).round() as i64 % 5 == 0;
-            let e = half as f32 * step;
-            for (a, b) in [
-                (
-                    Vec3::new(cx + o, cy - e, 0.0),
-                    Vec3::new(cx + o, cy + e, 0.0),
-                ),
-                (
-                    Vec3::new(cx - e, cy + o, 0.0),
-                    Vec3::new(cx + e, cy + o, 0.0),
-                ),
-            ] {
-                let dst = if major {
-                    &mut grid.major
-                } else {
-                    &mut grid.minor
-                };
-                dst.push(to_arr(a));
-                dst.push(to_arr(b));
+        if sim.env == EnvironmentKind::OpenField {
+            let step = 20.0_f32;
+            let half = 14;
+            let (cx, cy) = (
+                (pos.x / (step * 5.0)).round() * step * 5.0,
+                (pos.y / (step * 5.0)).round() * step * 5.0,
+            );
+            for i in -half..=half {
+                let o = i as f32 * step;
+                let major = ((cx + o) / step).round() as i64 % 5 == 0;
+                let e = half as f32 * step;
+                for (a, b) in [
+                    (
+                        Vec3::new(cx + o, cy - e, 0.02),
+                        Vec3::new(cx + o, cy + e, 0.02),
+                    ),
+                    (
+                        Vec3::new(cx - e, cy + o, 0.02),
+                        Vec3::new(cx + e, cy + o, 0.02),
+                    ),
+                ] {
+                    let dst = if major {
+                        &mut grid.major
+                    } else {
+                        &mut grid.minor
+                    };
+                    dst.push(to_arr(a));
+                    dst.push(to_arr(b));
+                }
             }
-        }
-        // Runway outline (60 m x 8 m, starting just behind the start point).
-        let rw = [
-            Vec3::new(-10.0, -4.0, 0.0),
-            Vec3::new(50.0, -4.0, 0.0),
-            Vec3::new(50.0, 4.0, 0.0),
-            Vec3::new(-10.0, 4.0, 0.0),
-        ];
-        for i in 0..4 {
-            grid.major.push(to_arr(rw[i]));
-            grid.major.push(to_arr(rw[(i + 1) % 4]));
         }
 
         let world_light = (Vec3::new(-0.4, 0.3, 1.0)).normalized();
@@ -203,6 +227,11 @@ impl ChaseView {
             scene: self.scene.clone(),
             scene_version: self.scene_version,
             grid: Arc::new(grid),
+            world: Some(self.world.clone()),
+            world_vp: world_vp_mat.to_cols_array(),
+            world_eye: [eye.x, eye.y, eye.z],
+            world_light: [world_light.x, world_light.y, world_light.z],
+            world_fill: [world_fill.x, world_fill.y, world_fill.z],
         };
         let renderer = self.renderer.clone();
         let failed_flag = self.gl_failed.clone();

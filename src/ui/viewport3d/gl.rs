@@ -46,6 +46,12 @@ pub struct FrameData {
     pub scene_version: u64,
     /// Zemin ızgarası çizgileri (x,y,z çiftleri) ve ana çizgi ayrımı.
     pub grid: Arc<GridData>,
+    /// İsteğe bağlı dünya ortamı ağı (uçuş simülatörü arazi/pist/şehir).
+    pub world: Option<Arc<crate::sim::terrain::WorldMesh>>,
+    pub world_vp: [f32; 16],
+    pub world_eye: [f32; 3],
+    pub world_light: [f32; 3],
+    pub world_fill: [f32; 3],
 }
 
 #[derive(Default)]
@@ -68,6 +74,13 @@ struct GpuLines {
     vbo: glow::Buffer,
     minor: i32,
     major: i32,
+}
+
+struct GpuWorld {
+    vao: glow::VertexArray,
+    vbo: glow::Buffer,
+    ibo: glow::Buffer,
+    count: i32,
 }
 
 struct Target {
@@ -99,10 +112,13 @@ pub struct Renderer {
     shadow_quad: Option<(glow::VertexArray, glow::Buffer)>,
     a_pos: u32,
     a_nrm: Option<u32>,
+    a_col: Option<u32>,
     meshes: Vec<GpuMesh>,
     scene_version: u64,
     lines: Option<GpuLines>,
     grid_version: u64,
+    world: Option<GpuWorld>,
+    world_version: u64,
     target: Option<Target>,
     samples: i32,
 }
@@ -111,6 +127,7 @@ const VS: &str = r#"
 precision highp float;
 in vec3 a_pos;
 in vec3 a_nrm;
+in vec4 a_col;
 uniform mat4 u_vp;
 uniform float u_mode;
 uniform vec4 u_shadow;
@@ -119,6 +136,7 @@ uniform vec3 u_off;
 out vec3 v_nrm;
 out vec3 v_pos;
 out vec2 v_uv;
+out vec4 v_col;
 void main() {
     vec3 p = a_pos + u_off;
     if (u_mode > 1.5) {
@@ -128,6 +146,7 @@ void main() {
     v_nrm = a_nrm;
     v_pos = p;
     v_uv = a_pos.xy;
+    v_col = a_col;
     gl_Position = u_vp * vec4(p, 1.0);
 }
 "#;
@@ -138,6 +157,7 @@ precision highp float;
 in vec3 v_nrm;
 in vec3 v_pos;
 in vec2 v_uv;
+in vec4 v_col;
 uniform vec4 u_color;
 uniform vec3 u_light;
 uniform vec3 u_fill;
@@ -156,7 +176,7 @@ void main() {
         o_color = vec4(0.0, 0.0, 0.0, u_color.a * a * a);
         return;
     }
-    vec3 base = u_color.rgb;
+    vec3 base = u_color.rgb * v_col.rgb;
     vec3 c = base;
     if (u_mode > 0.5) {
         vec3 n = normalize(v_nrm);
@@ -173,7 +193,7 @@ void main() {
         float rim = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.10;
         c = base * diff + vec3(spec + rim);
     }
-    o_color = vec4(c, u_color.a);
+    o_color = vec4(c, u_color.a * v_col.a);
 }
 "#;
 
@@ -182,6 +202,7 @@ fn make_quad(
     gl: &glow::Context,
     a_pos: u32,
     a_nrm: Option<u32>,
+    a_col: Option<u32>,
 ) -> Result<(glow::VertexArray, glow::Buffer), String> {
     let v: [f32; 18] = [
         -1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 1.0,
@@ -198,6 +219,10 @@ fn make_quad(
         if let Some(n) = a_nrm {
             gl.disable_vertex_attrib_array(n);
             gl.vertex_attrib_3_f32(n, 0.0, 0.0, 1.0);
+        }
+        if let Some(c) = a_col {
+            gl.disable_vertex_attrib_array(c);
+            gl.vertex_attrib_4_f32(c, 1.0, 1.0, 1.0, 1.0);
         }
         gl.bind_vertex_array(None);
         Ok((vao, vbo))
@@ -250,6 +275,7 @@ impl Renderer {
                 .get_attrib_location(program, "a_pos")
                 .ok_or_else(|| "a_pos yok".to_string())?;
             let a_nrm = gl.get_attrib_location(program, "a_nrm");
+            let a_col = gl.get_attrib_location(program, "a_col");
             let max_samples = gl.get_parameter_i32(glow::MAX_SAMPLES);
             // Bazı sürücüler hata kodu bırakır; temizle.
             while gl.get_error() != glow::NO_ERROR {}
@@ -270,17 +296,26 @@ impl Renderer {
                 program,
                 a_pos,
                 a_nrm,
+                a_col,
                 meshes: Vec::new(),
                 scene_version: u64::MAX,
                 lines: None,
                 grid_version: u64::MAX,
+                world: None,
+                world_version: u64::MAX,
                 target: None,
                 samples: max_samples.clamp(0, 4),
             })
         }
     }
 
-    unsafe fn bind_attribs(&self, gl: &glow::Context, stride: i32, with_normal: bool) {
+    unsafe fn bind_attribs(
+        &self,
+        gl: &glow::Context,
+        stride: i32,
+        with_normal: bool,
+        with_color: bool,
+    ) {
         unsafe {
             gl.enable_vertex_attrib_array(self.a_pos);
             gl.vertex_attrib_pointer_f32(self.a_pos, 3, glow::FLOAT, false, stride, 0);
@@ -291,6 +326,15 @@ impl Renderer {
                 } else {
                     gl.disable_vertex_attrib_array(n);
                     gl.vertex_attrib_3_f32(n, 0.0, 0.0, 1.0);
+                }
+            }
+            if let Some(c) = self.a_col {
+                if with_color {
+                    gl.enable_vertex_attrib_array(c);
+                    gl.vertex_attrib_pointer_f32(c, 4, glow::FLOAT, false, stride, 24);
+                } else {
+                    gl.disable_vertex_attrib_array(c);
+                    gl.vertex_attrib_4_f32(c, 1.0, 1.0, 1.0, 1.0);
                 }
             }
         }
@@ -331,7 +375,7 @@ impl Renderer {
                     &u32_bytes(&m.indices),
                     glow::STATIC_DRAW,
                 );
-                self.bind_attribs(gl, 24, true);
+                self.bind_attribs(gl, 24, true, false);
                 gl.bind_vertex_array(None);
                 self.meshes.push(GpuMesh {
                     kind: part.kind,
@@ -363,13 +407,60 @@ impl Renderer {
             let vbo = gl.create_buffer()?;
             gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
             gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &f32_bytes(&data), glow::STATIC_DRAW);
-            self.bind_attribs(gl, 12, false);
+            self.bind_attribs(gl, 12, false, false);
             gl.bind_vertex_array(None);
             self.lines = Some(GpuLines {
                 vao,
                 vbo,
                 minor: g.minor.len() as i32,
                 major: g.major.len() as i32,
+            });
+        }
+        Ok(())
+    }
+
+    fn upload_world(
+        &mut self,
+        gl: &glow::Context,
+        w: Option<&crate::sim::terrain::WorldMesh>,
+    ) -> Result<(), String> {
+        unsafe {
+            if let Some(old) = self.world.take() {
+                gl.delete_vertex_array(old.vao);
+                gl.delete_buffer(old.vbo);
+                gl.delete_buffer(old.ibo);
+            }
+            let Some(wm) = w else {
+                return Ok(());
+            };
+            if wm.indices.is_empty() || !wm.is_valid() {
+                return Ok(());
+            }
+            let mut inter = Vec::with_capacity(wm.positions.len() * 10);
+            for ((p, n), c) in wm.positions.iter().zip(&wm.normals).zip(&wm.colors) {
+                inter.extend_from_slice(p);
+                inter.extend_from_slice(n);
+                inter.extend_from_slice(c);
+            }
+            let vao = gl.create_vertex_array()?;
+            gl.bind_vertex_array(Some(vao));
+            let vbo = gl.create_buffer()?;
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(vbo));
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &f32_bytes(&inter), glow::STATIC_DRAW);
+            let ibo = gl.create_buffer()?;
+            gl.bind_buffer(glow::ELEMENT_ARRAY_BUFFER, Some(ibo));
+            gl.buffer_data_u8_slice(
+                glow::ELEMENT_ARRAY_BUFFER,
+                &u32_bytes(&wm.indices),
+                glow::STATIC_DRAW,
+            );
+            self.bind_attribs(gl, 40, true, true);
+            gl.bind_vertex_array(None);
+            self.world = Some(GpuWorld {
+                vao,
+                vbo,
+                ibo,
+                count: wm.indices.len() as i32,
             });
         }
         Ok(())
@@ -525,6 +616,11 @@ impl Renderer {
             self.upload_grid(gl, &f.grid)?;
             self.grid_version = f.grid.version;
         }
+        let target_world_ver = f.world.as_ref().map_or(u64::MAX - 1, |wm| wm.version);
+        if self.world_version != target_world_ver {
+            self.upload_world(gl, f.world.as_deref())?;
+            self.world_version = target_world_ver;
+        }
         self.ensure_target(gl, w, h)?;
         let Some(target) = &self.target else {
             return Err("hedef yok".into());
@@ -546,6 +642,35 @@ impl Renderer {
             gl.disable(glow::BLEND);
 
             gl.use_program(Some(self.program));
+            gl.uniform_3_f32(self.u_sky.as_ref(), f.sky[0], f.sky[1], f.sky[2]);
+            gl.uniform_3_f32(self.u_gcol.as_ref(), f.ground[0], f.ground[1], f.ground[2]);
+            if let Some(world) = &self.world {
+                gl.uniform_matrix_4_f32_slice(self.u_vp.as_ref(), false, &f.world_vp);
+                gl.uniform_3_f32(
+                    self.u_light.as_ref(),
+                    f.world_light[0],
+                    f.world_light[1],
+                    f.world_light[2],
+                );
+                gl.uniform_3_f32(
+                    self.u_eye.as_ref(),
+                    f.world_eye[0],
+                    f.world_eye[1],
+                    f.world_eye[2],
+                );
+                gl.uniform_3_f32(
+                    self.u_fill.as_ref(),
+                    f.world_fill[0],
+                    f.world_fill[1],
+                    f.world_fill[2],
+                );
+                gl.uniform_3_f32(self.u_off.as_ref(), 0.0, 0.0, 0.0);
+                gl.uniform_2_f32(self.u_mat.as_ref(), 0.04, 16.0);
+                gl.uniform_4_f32(self.u_color.as_ref(), 1.0, 1.0, 1.0, 1.0);
+                gl.uniform_1_f32(self.u_mode.as_ref(), 1.0);
+                gl.bind_vertex_array(Some(world.vao));
+                gl.draw_elements(glow::TRIANGLES, world.count, glow::UNSIGNED_INT, 0);
+            }
             gl.uniform_matrix_4_f32_slice(self.u_vp.as_ref(), false, &f.view_proj);
             gl.uniform_3_f32(
                 self.u_light.as_ref(),
@@ -560,8 +685,6 @@ impl Renderer {
                 f.fill_dir[1],
                 f.fill_dir[2],
             );
-            gl.uniform_3_f32(self.u_sky.as_ref(), f.sky[0], f.sky[1], f.sky[2]);
-            gl.uniform_3_f32(self.u_gcol.as_ref(), f.ground[0], f.ground[1], f.ground[2]);
 
             let color_of = |k: PartKind| f.colors.iter().find(|(c, _)| *c == k).map(|(_, c)| *c);
             let mat_of = |k: PartKind| {
@@ -598,7 +721,7 @@ impl Renderer {
             // 1b) Zemin temas gölgesi (derinliğe yazmadan, ızgaranın altında)
             if f.shadow_alpha > 0.0 && f.shadow[2] > 0.0 && f.shadow[3] > 0.0 {
                 if self.shadow_quad.is_none() {
-                    self.shadow_quad = Some(make_quad(gl, self.a_pos, self.a_nrm)?);
+                    self.shadow_quad = Some(make_quad(gl, self.a_pos, self.a_nrm, self.a_col)?);
                 }
                 if let Some((vao, _)) = &self.shadow_quad {
                     gl.enable(glow::BLEND);

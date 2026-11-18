@@ -458,3 +458,313 @@ fn every_drone_type_builds_parameters() {
         }
     }
 }
+
+#[test]
+fn terrain_height_is_deterministic_and_finite() {
+    for env in EnvironmentKind::ALL {
+        let (sx, sy, sh) = env.spawn_position();
+        assert_eq!(sh, env.ground_height(sx, sy));
+        assert!(sh.is_finite());
+        for ix in -15..=15 {
+            for iy in -15..=15 {
+                let (x, y) = (ix as f64 * 97.3, iy as f64 * 113.7);
+                let h1 = env.ground_height(x, y);
+                let h2 = env.ground_height(x, y);
+                assert_eq!(h1, h2, "{env:?} at ({x}, {y})");
+                assert!(h1.is_finite() && h1 >= 0.0, "{env:?} h={h1}");
+                let n = env.ground_normal_ned(x, y);
+                assert!(n.is_finite() && (n.norm() - 1.0).abs() < 1e-6);
+            }
+        }
+        assert!(env.ground_height(f64::NAN, 0.0).is_finite());
+        assert!(env.ground_height(f64::INFINITY, -10.0).is_finite());
+
+        let m1 = WorldMesh::build(env, 0.0, 0.0, false, 1);
+        let m2 = WorldMesh::build(env, 0.0, 0.0, false, 1);
+        assert!(m1.is_valid(), "{env:?} invalid mesh");
+        assert!(m1.triangle_count() > 0, "{env:?} empty mesh");
+        assert!(
+            m1.triangle_count() <= terrain::WORLD_TRIANGLE_CAP,
+            "{env:?} tris {}",
+            m1.triangle_count()
+        );
+        assert_eq!(m1.positions, m2.positions);
+        assert_eq!(m1.indices, m2.indices);
+    }
+    // Mountains must have non-trivial elevation outside the flat valley.
+    let mut peak = 0.0_f64;
+    for ix in -10..=10 {
+        for iy in -10..=10 {
+            peak = peak
+                .max(EnvironmentKind::Mountains.ground_height(ix as f64 * 60.0, iy as f64 * 60.0));
+        }
+    }
+    assert!(peak > 50.0, "mountains peak too low: {peak}");
+}
+
+#[test]
+fn city_buildings_never_overlap_spawn_point() {
+    let env = EnvironmentKind::City;
+    let (sx, sy, sh) = env.spawn_position();
+    assert_eq!(sh, 0.0);
+    assert!(env.building_hit(sx, sy, 0.0).is_none());
+    assert!(env.building_hit(sx, sy, 10.0).is_none());
+    for x in (-40..=200).step_by(10) {
+        for y in (-20..=20).step_by(5) {
+            assert!(
+                env.building_hit(x as f64, y as f64, 1.0).is_none(),
+                "building overlaps takeoff corridor at ({x}, {y})"
+            );
+        }
+    }
+    let nearby = env.buildings_near(0.0, 0.0, 250.0);
+    assert!(!nearby.is_empty(), "city should generate nearby buildings");
+    for b in &nearby {
+        let overlaps_spawn = sx >= b.min_x && sx <= b.max_x && sy >= b.min_y && sy <= b.max_y;
+        assert!(!overlaps_spawn, "building {b:?} overlaps spawn");
+    }
+}
+
+#[test]
+fn crash_detected_for_building_and_terrain() {
+    // 1) City building collision
+    let (p, m) = project(Sample::FixedWing);
+    let mut sim_city = sim_for_project_with(
+        &p,
+        &m,
+        StartPosition::Air,
+        TakeoffMode::Runway,
+        EnvironmentKind::City,
+    );
+    let b = EnvironmentKind::City
+        .buildings_near(0.0, 0.0, 300.0)
+        .into_iter()
+        .find(|b| b.height > 15.0)
+        .expect("city building > 15 m");
+    let cx = 0.5 * (b.min_x + b.max_x);
+    let cy = 0.5 * (b.min_y + b.max_y);
+    let alt = (0.5 * b.height).max(4.0);
+    // Start 40 m south of building centre flying north directly into the building.
+    sim_city.state.pos = V3::new(b.min_x - 35.0, cy, -alt);
+    sim_city.state.vel = V3::new(18.0, 0.0, 0.0);
+    sim_city.state.q = Quat::IDENTITY;
+    sim_city.input.throttle = 0.7;
+    for _ in 0..(6.0 / DT) as usize {
+        sim_city.step();
+        if sim_city.is_crashed() {
+            break;
+        }
+    }
+    assert_eq!(
+        sim_city.status,
+        FlightStatus::Crashed(CrashReason::Building),
+        "expected building crash near ({cx}, {cy}), got {:?}",
+        sim_city.status
+    );
+
+    // 2) Mountains terrain collision
+    let mut sim_mtn = sim_for_project_with(
+        &p,
+        &m,
+        StartPosition::Air,
+        TakeoffMode::Runway,
+        EnvironmentKind::Mountains,
+    );
+    let mut target = None;
+    for ix in 2..=15 {
+        for iy in -10..=10 {
+            let (tx, ty) = (ix as f64 * 40.0, iy as f64 * 40.0);
+            let h = EnvironmentKind::Mountains.ground_height(tx, ty);
+            if h > 45.0 {
+                target = Some((tx, ty, h));
+                break;
+            }
+        }
+        if target.is_some() {
+            break;
+        }
+    }
+    let (tx, ty, th) = target.expect("mountain slope > 45 m");
+    let dx = tx;
+    let dy = ty;
+    let dist = dx.hypot(dy).max(1.0);
+    let heading = dy.atan2(dx);
+    sim_mtn.state.pos = V3::new(0.0, 0.0, -(th * 0.55));
+    sim_mtn.state.vel = V3::new(18.0 * dx / dist, 18.0 * dy / dist, 0.0);
+    sim_mtn.state.q = Quat::from_euler(0.0, 0.0, heading);
+    sim_mtn.mode = ControlMode::Manual;
+    sim_mtn.input.throttle = 0.8;
+    for _ in 0..((dist / 10.0) / DT) as usize {
+        sim_mtn.step();
+        if sim_mtn.is_crashed() {
+            break;
+        }
+    }
+    assert_eq!(
+        sim_mtn.status,
+        FlightStatus::Crashed(CrashReason::Terrain),
+        "expected terrain crash, got {:?}",
+        sim_mtn.status
+    );
+}
+
+#[test]
+fn runway_ground_roll_accelerates_steers_and_lifts_off() {
+    let (p, m) = project(Sample::FixedWing);
+    let mut sim = sim_for_project_with(
+        &p,
+        &m,
+        StartPosition::Ground,
+        TakeoffMode::Runway,
+        EnvironmentKind::Runway,
+    );
+    assert!(sim.params.has_wheels);
+    let vs = sim.params.v_stall;
+    sim.input.throttle = 1.0;
+
+    let mut liftoff: Option<(f64, f64, f64)> = None;
+    for _ in 0..(20.0 / DT) as usize {
+        let v = sim.telemetry.airspeed;
+        sim.input.pitch = if v >= 1.08 * vs { 0.65 } else { 0.0 };
+        sim.step();
+        if sim.status == FlightStatus::Airborne && sim.telemetry.agl > 0.6 {
+            liftoff = Some((sim.t, sim.state.pos.x, v));
+            break;
+        }
+    }
+    let (t_lo, dist, v_lo) = liftoff.expect("fixed-wing did not lift off");
+    eprintln!(
+        "Sample FixedWing runway takeoff: dist={dist:.1} m, speed={v_lo:.2} m/s ({:.2} x Vstall={vs:.2}), t={t_lo:.2} s",
+        v_lo / vs
+    );
+    assert!(!sim.is_crashed());
+    assert!(
+        (10.0..=350.0).contains(&dist),
+        "implausible takeoff distance {dist} m"
+    );
+    assert!(
+        v_lo >= 1.0 * vs && v_lo <= 1.45 * vs,
+        "liftoff speed {v_lo} vs Vstall {vs}"
+    );
+
+    // Verify grass rolling resistance is higher than asphalt and brakes slow ground roll.
+    assert!(
+        EnvironmentKind::OpenField.rolling_mu(0.0, 0.0)
+            > EnvironmentKind::Runway.rolling_mu(0.0, 0.0)
+    );
+    let mut sim_steer = sim_for_project_with(
+        &p,
+        &m,
+        StartPosition::Ground,
+        TakeoffMode::Runway,
+        EnvironmentKind::Runway,
+    );
+    sim_steer.input.throttle = 0.5;
+    sim_steer.input.yaw = 0.6;
+    run(&mut sim_steer, 2.5);
+    assert!(
+        sim_steer.telemetry.heading > 0.05 && sim_steer.state.pos.y > 0.1,
+        "nose-wheel steering should turn right: heading={}, y={}",
+        sim_steer.telemetry.heading,
+        sim_steer.state.pos.y
+    );
+
+    // Brakes slow down rolling speed compared to free rolling.
+    let mut sim_roll = sim_for_project_with(
+        &p,
+        &m,
+        StartPosition::Ground,
+        TakeoffMode::Runway,
+        EnvironmentKind::Runway,
+    );
+    sim_roll.input.throttle = 0.8;
+    run(&mut sim_roll, 2.0);
+    sim_roll.input.throttle = 0.0;
+    let mut sim_brake = sim_roll.clone();
+    sim_brake.brakes = 1.0;
+    run(&mut sim_roll, 2.0);
+    run(&mut sim_brake, 2.0);
+    assert!(
+        sim_brake.telemetry.groundspeed < sim_roll.telemetry.groundspeed * 0.5,
+        "brakes {} vs coast {}",
+        sim_brake.telemetry.groundspeed,
+        sim_roll.telemetry.groundspeed
+    );
+
+    // VTOL in fixed-wing runway takeoff mode also gets wheels and lifts off horizontally.
+    let (pv, mv) = project(Sample::Vtol);
+    let mut sim_vtol_rw = sim_for_project_with(
+        &pv,
+        &mv,
+        StartPosition::Ground,
+        TakeoffMode::Runway,
+        EnvironmentKind::Runway,
+    );
+    assert!(sim_vtol_rw.params.has_wheels);
+    assert_eq!(sim_vtol_rw.phase, VtolPhase::Cruise);
+    sim_vtol_rw.input.throttle = 1.0;
+    let mut vtol_air = false;
+    for _ in 0..(25.0 / DT) as usize {
+        if sim_vtol_rw.telemetry.airspeed >= 1.08 * sim_vtol_rw.params.v_stall {
+            sim_vtol_rw.input.pitch = 0.65;
+        }
+        sim_vtol_rw.step();
+        if sim_vtol_rw.status == FlightStatus::Airborne && sim_vtol_rw.telemetry.agl > 0.6 {
+            vtol_air = true;
+            break;
+        }
+    }
+    assert!(vtol_air, "VTOL fixed-wing runway takeoff failed");
+}
+
+#[test]
+fn hand_launch_has_no_wheels_in_physics_or_geometry() {
+    use crate::calc::presets::mission::Launch;
+    use crate::geom3d::{PartKind, ViewOptions, build, from_project};
+
+    for dt in [
+        DroneType::FixedWingConventional,
+        DroneType::FixedWingVTail,
+        DroneType::FlyingWing,
+    ] {
+        let mut p = Project::default();
+        p.set_drone_type(dt);
+        p.simple.mission.launch = Launch::Hand;
+        let m = crate::calc::evaluate(&p, &Library::embedded());
+        let sim = sim_for_project(&p, &m, StartPosition::Ground);
+        assert!(!sim.params.has_wheels, "{dt:?} should not have wheels");
+        assert!(
+            sim.params
+                .contacts
+                .iter()
+                .all(|c| !matches!(c.kind, vehicle::ContactKind::Wheel { .. })),
+            "{dt:?} still has wheel contact"
+        );
+        let opts = ViewOptions {
+            wheels_override: Some(false),
+            ..Default::default()
+        };
+        let sc = build(&from_project(&p, &m, &opts));
+        assert!(
+            sc.part(PartKind::Wheel).is_none(),
+            "{dt:?} drew wheels in hand launch"
+        );
+
+        // Runway launch adds tricycle wheels for all fixed-wing types (incl. FlyingWing).
+        p.simple.mission.launch = Launch::Runway;
+        let sim_rw = sim_for_project(&p, &m, StartPosition::Ground);
+        assert!(
+            sim_rw.params.has_wheels,
+            "{dt:?} should have wheels on runway"
+        );
+        let opts_rw = ViewOptions {
+            wheels_override: Some(true),
+            ..Default::default()
+        };
+        let sc_rw = build(&from_project(&p, &m, &opts_rw));
+        assert!(
+            sc_rw.part(PartKind::Wheel).is_some(),
+            "{dt:?} missing wheels on runway"
+        );
+    }
+}

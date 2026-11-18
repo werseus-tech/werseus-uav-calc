@@ -17,12 +17,14 @@ pub mod control;
 pub mod env;
 pub mod inertia;
 pub mod math;
+pub mod terrain;
 pub mod vehicle;
 pub mod world;
 
 pub use control::{ControlMode, PilotInput, VtolPhase};
 pub use env::WindConfig;
-pub use vehicle::VehicleParams;
+pub use terrain::{BuildingBox, EnvironmentKind, SurfaceType, WorldMesh};
+pub use vehicle::{TakeoffMode, VehicleParams, default_takeoff_for};
 pub use world::{CrashReason, DT, FlightStatus, Sim, SimConfig, StartPosition, Telemetry};
 
 /// Builds a simulator for a project (evaluates the design model first).
@@ -32,6 +34,22 @@ pub fn sim_for_project(
     start: StartPosition,
 ) -> Sim {
     Sim::new(VehicleParams::from_project(p, m), start)
+}
+
+/// Builds a simulator for a project with an explicit takeoff mode and environment.
+pub fn sim_for_project_with(
+    p: &crate::project::Project,
+    m: &crate::calc::Model,
+    start: StartPosition,
+    takeoff: TakeoffMode,
+    env: EnvironmentKind,
+) -> Sim {
+    let mut sim = Sim::new(
+        VehicleParams::from_project_with_takeoff(p, m, takeoff),
+        start,
+    );
+    sim.set_environment(env);
+    sim
 }
 
 #[cfg(test)]

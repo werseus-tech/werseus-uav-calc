@@ -9,9 +9,9 @@ pub mod view;
 
 use crate::calc::Model;
 use crate::i18n::{t, tf};
-use crate::project::Project;
-use crate::sim::{self, ControlMode, Sim, StartPosition, WindConfig};
-use crate::ui::components::{segmented, tool_button};
+use crate::project::{DroneType, Project};
+use crate::sim::{self, ControlMode, EnvironmentKind, Sim, StartPosition, TakeoffMode, WindConfig};
+use crate::ui::components::{segmented, toggle_chip, tool_button};
 use crate::ui::theme::{self, font, space};
 use egui::{Key, RichText, Sense, Ui, vec2};
 
@@ -30,6 +30,9 @@ pub struct FlightSimState {
     project_key: u64,
     running: bool,
     start: StartPosition,
+    env: EnvironmentKind,
+    takeoff: Option<TakeoffMode>,
+    brakes_toggle: bool,
     wind: WindConfig,
     accumulator: f64,
     sticks: Sticks,
@@ -46,6 +49,9 @@ impl Default for FlightSimState {
             project_key: 0,
             running: true,
             start: StartPosition::Ground,
+            env: EnvironmentKind::default(),
+            takeoff: None,
+            brakes_toggle: false,
             wind: WindConfig::default(),
             accumulator: 0.0,
             sticks: Sticks::default(),
@@ -73,15 +79,16 @@ impl FlightSimState {
         self.sim.as_ref()
     }
 
-    /// Rebuilds the simulator when the design changed.
-    fn sync(&mut self, p: &Project, m: &Model) {
-        let key = project_key(p);
-        if self.sim.is_some() && key == self.project_key {
-            return;
+    pub fn set_environment(&mut self, env: EnvironmentKind) {
+        self.env = env;
+        if let Some(s) = self.sim.as_mut() {
+            s.set_environment(env);
         }
-        self.project_key = key;
+    }
+
+    fn rebuild(&mut self, p: &Project, m: &Model, takeoff: TakeoffMode) {
         let mode = self.sim.as_ref().map(|s| s.mode).unwrap_or_default();
-        let mut s = sim::sim_for_project(p, m, self.start);
+        let mut s = sim::sim_for_project_with(p, m, self.start, takeoff, self.env);
         s.mode = mode;
         s.set_wind(self.wind);
         if self.wind != WindConfig::default() {
@@ -89,9 +96,28 @@ impl FlightSimState {
             s.reset(self.start);
         }
         self.sim = Some(s);
-        let spec = crate::geom3d::from_project(p, m, &crate::geom3d::ViewOptions::default());
+        let opts = crate::geom3d::ViewOptions {
+            wheels_override: Some(p.drone_type.has_wing() && takeoff == TakeoffMode::Runway),
+            ..Default::default()
+        };
+        let spec = crate::geom3d::from_project(p, m, &opts);
         self.view.set_scene(crate::geom3d::build(&spec));
         self.fail_index = 0;
+        self.sticks = Sticks::default();
+        self.accumulator = 0.0;
+        self.brakes_toggle = false;
+    }
+
+    /// Rebuilds the simulator when the design changed.
+    fn sync(&mut self, p: &Project, m: &Model) {
+        let key = project_key(p);
+        if self.sim.is_some() && key == self.project_key {
+            return;
+        }
+        self.project_key = key;
+        let takeoff = sim::default_takeoff_for(p);
+        self.takeoff = Some(takeoff);
+        self.rebuild(p, m, takeoff);
     }
 
     fn reset(&mut self) {
@@ -101,6 +127,7 @@ impl FlightSimState {
         }
         self.sticks = Sticks::default();
         self.accumulator = 0.0;
+        self.brakes_toggle = false;
     }
 
     /// Keyboard: arrows = pitch / roll, A/D = yaw, W/S = throttle, Space = pause,
@@ -133,13 +160,14 @@ impl FlightSimState {
                 i.key_pressed(Key::X),
             )
         });
-        let (space_k, r_k, m_k, t_k, g_k) = ui.input(|i| {
+        let (space_k, r_k, m_k, t_k, g_k, b_k) = ui.input(|i| {
             (
                 i.key_pressed(Key::Space),
                 i.key_pressed(Key::R),
                 i.key_pressed(Key::M),
                 i.key_pressed(Key::T),
                 i.key_pressed(Key::G),
+                i.key_down(Key::B),
             )
         });
         let axis = |neg: bool, pos: bool| match (neg, pos) {
@@ -180,6 +208,7 @@ impl FlightSimState {
             if g_k {
                 sim.trigger_gust();
             }
+            sim.brakes = if b_k || self.brakes_toggle { 1.0 } else { 0.0 };
         }
     }
 
@@ -225,7 +254,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut FlightSimState) {
             egui::ScrollArea::vertical()
                 .id_salt("flightsim_controls")
                 .auto_shrink([false, false])
-                .show(ui, |ui| controls(ui, st, &tk));
+                .show(ui, |ui| controls(ui, p, m, st, &tk));
         });
         let avail = ui.available_size();
         let (rect, resp) = ui.allocate_exact_size(
@@ -275,7 +304,16 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut FlightSimState) {
     }
 }
 
-fn controls(ui: &mut Ui, st: &mut FlightSimState, tk: &theme::Tokens) {
+fn env_label(e: EnvironmentKind) -> &'static str {
+    match e {
+        EnvironmentKind::OpenField => t("flightsim.env.open_field"),
+        EnvironmentKind::Runway => t("flightsim.env.runway"),
+        EnvironmentKind::City => t("flightsim.env.city"),
+        EnvironmentKind::Mountains => t("flightsim.env.mountains"),
+    }
+}
+
+fn controls(ui: &mut Ui, p: &Project, m: &Model, st: &mut FlightSimState, tk: &theme::Tokens) {
     ui.label(
         RichText::new(t("flightsim.title"))
             .size(font::HEADING)
@@ -321,6 +359,90 @@ fn controls(ui: &mut Ui, st: &mut FlightSimState, tk: &theme::Tokens) {
         st.reset();
     }
 
+    ui.add_space(space::XS);
+    ui.label(
+        RichText::new(t("flightsim.env"))
+            .size(font::CAPTION)
+            .color(tk.text_weak),
+    );
+    let mut env = st.env;
+    egui::ComboBox::from_id_salt("flightsim_env")
+        .selected_text(env_label(env))
+        .show_ui(ui, |ui| {
+            for e in EnvironmentKind::ALL {
+                ui.selectable_value(&mut env, e, env_label(e));
+            }
+        });
+    if env != st.env {
+        st.set_environment(env);
+    }
+
+    if p.drone_type.has_wing() {
+        ui.add_space(space::XS);
+        ui.label(
+            RichText::new(t("flightsim.takeoff"))
+                .size(font::CAPTION)
+                .color(tk.text_weak),
+        );
+        let cur = st.takeoff.unwrap_or_else(|| sim::default_takeoff_for(p));
+        let mut next = cur;
+        if p.drone_type == DroneType::VtolQuadplane {
+            segmented(
+                ui,
+                &mut next,
+                &[
+                    (TakeoffMode::Vertical, t("flightsim.takeoff.vertical"), ""),
+                    (TakeoffMode::Runway, t("flightsim.takeoff.vtol_runway"), ""),
+                ],
+            );
+        } else {
+            segmented(
+                ui,
+                &mut next,
+                &[
+                    (TakeoffMode::Runway, t("flightsim.takeoff.runway"), ""),
+                    (TakeoffMode::HandLaunch, t("flightsim.takeoff.hand"), ""),
+                ],
+            );
+        }
+        if next != cur {
+            st.takeoff = Some(next);
+            st.rebuild(p, m, next);
+        }
+    }
+
+    let mut brakes_toggle = st.brakes_toggle;
+    let mut brakes_changed = false;
+    {
+        let Some(sim) = st.sim.as_mut() else {
+            return;
+        };
+        if sim.status == sim::FlightStatus::OnGround {
+            if sim.params.takeoff == TakeoffMode::HandLaunch && sim.params.wing.is_some() {
+                ui.add_space(space::XS);
+                if tool_button(ui, t("flightsim.btn.launch"), t("flightsim.btn.launch_tip"))
+                    .clicked()
+                {
+                    sim.hand_launch();
+                }
+            } else if sim.params.has_wheels {
+                ui.add_space(space::XS);
+                if toggle_chip(
+                    ui,
+                    &mut brakes_toggle,
+                    t("flightsim.btn.brakes"),
+                    t("flightsim.btn.brakes_tip"),
+                )
+                .changed()
+                {
+                    brakes_changed = true;
+                }
+            }
+        }
+    }
+    if brakes_changed {
+        st.brakes_toggle = brakes_toggle;
+    }
     let Some(sim) = st.sim.as_mut() else {
         return;
     };
@@ -594,6 +716,40 @@ mod tests {
             }
             assert!(st.sim().is_some(), "{dt:?}");
             assert!(st.sim().unwrap().state.is_finite());
+        }
+    }
+
+    #[test]
+    fn headless_render_of_each_environment_in_both_themes() {
+        let p = Project::from_json(crate::project::EX_FIXED_WING).unwrap();
+        let m = crate::calc::evaluate(&p, &crate::calc::Library::embedded());
+        for choice in [
+            crate::ui::theme::ThemeChoice::Dark,
+            crate::ui::theme::ThemeChoice::Light,
+        ] {
+            for env in EnvironmentKind::ALL {
+                let ctx = egui::Context::default();
+                crate::ui::theme::install(&ctx, choice);
+                let mut st = FlightSimState::default();
+                st.set_environment(env);
+                for frame in 0..2 {
+                    let mut input = egui::RawInput::default();
+                    input.screen_rect = Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        vec2(1100.0, 700.0),
+                    ));
+                    if frame == 1 {
+                        st.view.force_gl_failure();
+                    }
+                    let mut out = ctx.run_ui(input, |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| show(ui, &p, &m, &mut st));
+                    });
+                    out.textures_delta.clear();
+                }
+                let sim = st.sim().expect("sim created");
+                assert_eq!(sim.env, env, "{choice:?} {env:?}");
+                assert!(sim.state.is_finite(), "{choice:?} {env:?}");
+            }
         }
     }
 }
