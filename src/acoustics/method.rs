@@ -467,8 +467,9 @@ mod tests {
         rs.blades = 3;
         let e = est(&rs, 10.0, false);
         assert!((e.bpf - 450.0).abs() < 1e-9);
-        for k in 0..5 {
-            assert!((e.harmonics[k] - 450.0 * (k as f64 + 1.0)).abs() < 1e-9);
+        assert_eq!(e.harmonics.len(), 5);
+        for (k, h) in e.harmonics.iter().enumerate() {
+            assert!((h - 450.0 * (k as f64 + 1.0)).abs() < 1e-9);
         }
         assert_eq!(e.spectrum.tones.len(), 5);
     }

@@ -599,10 +599,10 @@ mod tests {
         let vp = proj * view;
         let inv = vp.inverse().expect("vp invertible");
         let prod = vp * inv;
-        for c in 0..4 {
-            for r in 0..4 {
+        for (c, col) in prod.cols.iter().enumerate() {
+            for (r, v) in col.iter().enumerate() {
                 let want = if c == r { 1.0 } else { 0.0 };
-                assert!((prod.cols[c][r] - want).abs() < 1e-4, "{c} {r}");
+                assert!((v - want).abs() < 1e-4, "{c} {r}");
             }
         }
     }

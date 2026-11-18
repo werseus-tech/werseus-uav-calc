@@ -5,6 +5,30 @@ Format [Keep a Changelog](https://keepachangelog.com/tr/1.1.0/) standardına day
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-11-18
+
+Tasarımdan teste uzanan analiz ekranları, uçuş simülatörü ve canlı rüzgâr tüneli.
+
+### Added
+- **Uçuş simülatörü**: sabit kanat, multirotor ve VTOL için 6 serbestlik dereceli fizik (RK4, 400 Hz), trim çözücü, motor arızasına dayanıklı rotor dağıtımı; takip kamerası, gösterge ekranı ve senaryolar. Basit modda da açılır. Açık arazi, pist, şehir ve dağ ortamları; arazi ve bina çarpışması; tekerlekli pist kalkışı (yuvarlanma sürtünmesi, fren, burun tekeri); hareket eden kumanda yüzeyleri, dönen pervaneler ve canlı dümen sapma paneli.
+- **Canlı rüzgâr tüneli**: uçak kesitleri etrafında D2Q9 lattice-Boltzmann akış çözücüsü, duman ve basınç görünümleri; arka planda çalışır.
+- **Aerodinamik ve itki**: pervane–gövde etkileşimi (downwash), sınır işaretli itki eğrileri ve uçuş modu tablosu, rüzgâr/sağanaklı görev enerji bütçesi, ısıl ve güç dağıtımı analizi.
+- **Denge ve kontrol**: kütle özellikleri (ağırlık merkezi, atalet tensörü, itki merkezi kayması); kontrol ayarı (PID/filtre önerileri, uçuş yazılımına aktarma, motor kaybı kontrol edilebilirlik matrisi).
+- **Yapı**: kiriş sonlu elemanlar ile dayanım ve titreşim analizi; düz parçalar için 2D topoloji optimizasyonu.
+- **Sistemler**: kablo demeti ve uçuş kontrolcüsü pin planı, RF bağlantı bütçesi/anten yerleşimi/EMI kontrolü, sensör görüş alanı ve titreşim sönümleme, görev bilgisayarı yükü, pervane gürültüsü, radar kesit alanı/IR izi/GNSS kaybı kayması, güvenilirlik (MTBF).
+- **Doğrulama**: itki standı verisi içe aktarma ve SITL/HIL parametre çıktısı, uçuş kaydı ile tasarım karşılaştırması, sürü düzeni ve ağ kontrolü.
+- **Mevzuat**: EASA, FAA ve SHGM sınıf kontrolü ve kural tablosu.
+- **Çıktılar**: maliyetli malzeme listesi ve DXF levha yerleşimi; FreeCAD'in yanında hızlı build123d CAD yolu (STEP, STL, DXF).
+- **Bileşen kütüphanesi**: mekanik standartlar ve bileşen kayıtları; görüntüleme, düzenleme, içe/dışa aktarma ve bataryayı tasarıma uygulama.
+- **Tasarım yardımcıları**: profil seçilen her yerde 2D kanat profili çizimi (kalınlık ve kamber değerleriyle); VTOL için kuyruk tipi seçimi.
+
+### Changed
+- Uzman moddaki sekmeler tasarım sırasına göre dizildi: gereksinimler, geometri ve ağırlık, aerodinamik, itki ve enerji, denge ve kontrol, yapı, sistemler, doğrulama, çıktılar.
+- 3D görünüm: profilli kanat yüzeyleri, yapı ağları ve ışıklandırma.
+
+### Fixed
+- VTOL'da itici motor ve pervanenin kuyruk yüzeylerine çakışması giderildi; açıklık sağlanamazsa uyarı gösterilir.
+
 ## [0.0.1] - 2026-11-11
 
 İlk herkese açık sürüm (Windows x64, Türkçe ve İngilizce).
