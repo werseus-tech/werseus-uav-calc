@@ -21,6 +21,7 @@ pub mod regulation;
 pub mod reliability;
 pub mod report;
 pub mod rfemi;
+pub mod sensorfov;
 pub mod sim;
 pub mod structfea;
 pub mod support;

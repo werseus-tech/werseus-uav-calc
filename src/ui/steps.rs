@@ -69,6 +69,7 @@ pub enum Screen {
     RfEmi,
     /// Uçuş logu içe aktarma ve tasarım-gerçek karşılaştırması (merkez yuvası).
     FlightLog,
+    SensorFov,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -91,6 +92,7 @@ pub enum CenterSlot {
     MissionEnergy,
     RfEmi,
     FlightLog,
+    SensorFov,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -157,6 +159,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::MissionEnergy => Screen::MissionEnergy,
         Tab::RfEmi => Screen::RfEmi,
         Tab::FlightLog => Screen::FlightLog,
+        Tab::SensorFov => Screen::SensorFov,
     }
 }
 
@@ -191,6 +194,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::MissionEnergy => Some(CenterSlot::MissionEnergy),
         Screen::RfEmi => Some(CenterSlot::RfEmi),
         Screen::FlightLog => Some(CenterSlot::FlightLog),
+        Screen::SensorFov => Some(CenterSlot::SensorFov),
         _ => None,
     }
 }
@@ -209,6 +213,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::SensorFov
             | Screen::FlightLog
             | Screen::Bom
             | Screen::ControlTuning
@@ -243,6 +248,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
@@ -301,6 +307,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Schematic
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::SensorFov
             | Screen::FlightLog
             | Screen::Bom
             | Screen::ControlTuning
@@ -348,6 +355,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::SensorFov
         | Screen::FlightLog
         | Screen::Bom
         | Screen::ControlTuning
@@ -390,6 +398,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
@@ -471,6 +480,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
@@ -570,6 +580,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::SensorFov
         | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy

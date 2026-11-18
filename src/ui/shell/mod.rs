@@ -896,6 +896,9 @@ impl App {
             Some(super::steps::CenterSlot::FlightLog) => {
                 super::flightlog::show(ui, &self.project, model, &self.lib);
             }
+            Some(super::steps::CenterSlot::SensorFov) => {
+                super::sensorfov::show(ui, &self.project, model);
+            }
             None => {}
         }
     }

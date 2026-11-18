@@ -30,6 +30,7 @@ pub mod regulation;
 pub mod reliability;
 pub mod rfemi;
 pub mod schematic;
+pub mod sensorfov;
 pub mod settings_page;
 pub mod shell;
 pub mod simple_steps;
@@ -94,6 +95,7 @@ pub enum Tab {
     MissionEnergy,
     RfEmi,
     FlightLog,
+    SensorFov,
 }
 
 impl Tab {
@@ -127,6 +129,7 @@ impl Tab {
             Tab::MissionEnergy => t("tab_missionenergy"),
             Tab::RfEmi => t("tab_rfemi"),
             Tab::FlightLog => t("tab_flightlog"),
+            Tab::SensorFov => t("tab_sensorfov"),
         }
     }
 
@@ -156,6 +159,7 @@ impl Tab {
                 Tab::MissionEnergy,
                 Tab::RfEmi,
                 Tab::FlightLog,
+                Tab::SensorFov,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -186,6 +190,7 @@ impl Tab {
                 Tab::MissionEnergy,
                 Tab::RfEmi,
                 Tab::FlightLog,
+                Tab::SensorFov,
             ],
             _ => vec![
                 Tab::Summary,
@@ -215,6 +220,7 @@ impl Tab {
                 Tab::MissionEnergy,
                 Tab::RfEmi,
                 Tab::FlightLog,
+                Tab::SensorFov,
             ],
         }
     }
