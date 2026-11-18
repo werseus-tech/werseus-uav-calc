@@ -68,6 +68,7 @@ impl Chemistry {
 /// Behaviour shared by all record kinds.
 pub trait Record: Clone + PartialEq {
     fn name(&self) -> &str;
+    fn set_name(&mut self, name: String);
     fn source(&self) -> &Source;
     fn set_source(&mut self, source: Source);
     fn notes(&self) -> &str;
@@ -201,6 +202,9 @@ impl Record for Motor {
     fn name(&self) -> &str {
         &self.name
     }
+    fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
     fn source(&self) -> &Source {
         &self.source
     }
@@ -220,6 +224,22 @@ impl Record for Motor {
         c.range("no-load current", self.i_noload_a, 0.0, 50.0, "A");
         c.range("no-load voltage", self.i_noload_v, 0.1, 100.0, "V");
         c.range("max current", self.max_current_a, 0.1, 1000.0, "A");
+        if self.i_noload_a.is_finite()
+            && self.max_current_a.is_finite()
+            && self.i_noload_a >= self.max_current_a
+        {
+            c.errors
+                .push("motor: no-load current must be lower than max current".into());
+        }
+        if self.i_noload_a.is_finite()
+            && self.r_internal_ohm.is_finite()
+            && self.i_noload_v.is_finite()
+            && self.i_noload_a * self.r_internal_ohm >= self.i_noload_v
+        {
+            c.errors.push(
+                "motor: no-load resistive voltage drop must be lower than no-load voltage".into(),
+            );
+        }
         c.range("max power", self.max_power_w, 1.0, 50_000.0, "W");
         c.range("mass", self.mass_g, 0.1, 20_000.0, "g");
         if let Some(m) = &self.mount {
@@ -244,6 +264,9 @@ impl Record for Propeller {
     fn name(&self) -> &str {
         &self.name
     }
+    fn set_name(&mut self, name: String) {
+        self.name = name;
+    }
     fn source(&self) -> &Source {
         &self.source
     }
@@ -256,8 +279,8 @@ impl Record for Propeller {
         c.range("pitch", self.pitch_in, 0.1, 100.0, "in");
         c.int_range("blades", self.blades, 1, 8);
         c.range("mass", self.mass_g, 0.1, 2000.0, "g");
-        c.opt_range("Ct", self.ct, 0.0, 2.0, "");
-        c.opt_range("Cp", self.cp, 0.0, 2.0, "");
+        c.opt_range("Ct", self.ct, 0.001, 2.0, "");
+        c.opt_range("Cp", self.cp, 0.001, 2.0, "");
         c.errors
     }
 }
@@ -274,6 +297,9 @@ impl Record for Esc {
     }
     fn name(&self) -> &str {
         &self.name
+    }
+    fn set_name(&mut self, name: String) {
+        self.name = name;
     }
     fn source(&self) -> &Source {
         &self.source
@@ -319,6 +345,9 @@ impl Record for Battery {
     }
     fn name(&self) -> &str {
         &self.name
+    }
+    fn set_name(&mut self, name: String) {
+        self.name = name;
     }
     fn source(&self) -> &Source {
         &self.source

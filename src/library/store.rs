@@ -207,11 +207,12 @@ impl ComponentLibrary {
     }
 
     /// Adds a new record after validating it; names must be unique within the category.
-    pub fn add<T: Item>(&mut self, item: T) -> Result<(), Vec<String>> {
+    pub fn add<T: Item>(&mut self, mut item: T) -> Result<(), Vec<String>> {
+        item.set_name(item.name().trim().to_string());
         let mut problems = item.validate();
         let n = norm(item.name());
         if T::list(self).iter().any(|x| norm(x.name()) == n) {
-            problems.push(format!("\"{}\" already exists", item.name().trim()));
+            problems.push(format!("\"{}\" already exists", item.name()));
         }
         if problems.is_empty() {
             T::list_mut(self).push(item);
@@ -222,7 +223,8 @@ impl ComponentLibrary {
     }
 
     /// Replaces the record called `old_name` (the name may change, but not onto another record).
-    pub fn replace<T: Item>(&mut self, old_name: &str, item: T) -> Result<(), Vec<String>> {
+    pub fn replace<T: Item>(&mut self, old_name: &str, mut item: T) -> Result<(), Vec<String>> {
+        item.set_name(item.name().trim().to_string());
         let mut problems = item.validate();
         let (old, new) = (norm(old_name), norm(item.name()));
         let list = T::list(self);
@@ -230,7 +232,7 @@ impl ComponentLibrary {
             return Err(vec![format!("\"{}\" no longer exists", old_name.trim())]);
         };
         if new != old && list.iter().any(|x| norm(x.name()) == new) {
-            problems.push(format!("\"{}\" already exists", item.name().trim()));
+            problems.push(format!("\"{}\" already exists", item.name()));
         }
         if problems.is_empty() {
             T::list_mut(self)[idx] = item;
@@ -266,6 +268,7 @@ impl ComponentLibrary {
         ) {
             for mut it in src {
                 let name = it.name().trim().to_string();
+                it.set_name(name.clone());
                 let problems = it.validate();
                 if !problems.is_empty() {
                     rep.invalid.extend(problems);
@@ -275,11 +278,14 @@ impl ComponentLibrary {
                 match dst.find::<T>(&name) {
                     Some(existing) => {
                         let mut probe = it.clone();
+                        probe.set_name(existing.name().to_string());
                         probe.set_source(existing.source().clone());
                         if probe == *existing {
-                            rep.duplicates.push((T::CATEGORY, name));
+                            rep.duplicates
+                                .push((T::CATEGORY, existing.name().to_string()));
                         } else {
-                            rep.conflicts.push((T::CATEGORY, name));
+                            rep.conflicts
+                                .push((T::CATEGORY, existing.name().to_string()));
                         }
                     }
                     None => {

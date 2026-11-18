@@ -94,11 +94,11 @@ pub fn examples() -> ComponentLibrary {
             motor(
                 "Example 1404 3000KV",
                 3000.0,
-                0.090,
-                1.2,
+                0.22,
+                0.4,
                 12.0,
                 150.0,
-                17.0,
+                9.0,
                 "9x9 M2",
             ),
             motor(
