@@ -10,6 +10,7 @@ pub mod computebudget;
 pub mod controltuning;
 pub mod design_point;
 pub mod endurance;
+pub mod flightlog;
 pub mod flightsim;
 pub mod flow_tunnel;
 pub mod formulas;
@@ -92,6 +93,7 @@ pub enum Tab {
     Reliability,
     MissionEnergy,
     RfEmi,
+    FlightLog,
 }
 
 impl Tab {
@@ -124,6 +126,7 @@ impl Tab {
             Tab::Reliability => t("tab_reliability"),
             Tab::MissionEnergy => t("tab_missionenergy"),
             Tab::RfEmi => t("tab_rfemi"),
+            Tab::FlightLog => t("tab_flightlog"),
         }
     }
 
@@ -152,6 +155,7 @@ impl Tab {
                 Tab::Reliability,
                 Tab::MissionEnergy,
                 Tab::RfEmi,
+                Tab::FlightLog,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -181,6 +185,7 @@ impl Tab {
                 Tab::Reliability,
                 Tab::MissionEnergy,
                 Tab::RfEmi,
+                Tab::FlightLog,
             ],
             _ => vec![
                 Tab::Summary,
@@ -209,6 +214,7 @@ impl Tab {
                 Tab::Reliability,
                 Tab::MissionEnergy,
                 Tab::RfEmi,
+                Tab::FlightLog,
             ],
         }
     }

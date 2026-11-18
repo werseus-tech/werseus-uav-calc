@@ -53,6 +53,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("library.rs", include_str!("library.rs")),
         ("reliability.rs", include_str!("reliability.rs")),
         ("missionenergy.rs", include_str!("missionenergy.rs")),
+        ("flightlog.rs", include_str!("flightlog.rs")),
         ("formulas.rs", include_str!("formulas.rs")),
         ("help.rs", include_str!("help.rs")),
         ("schematic.rs", include_str!("schematic.rs")),

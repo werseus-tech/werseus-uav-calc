@@ -67,6 +67,8 @@ pub enum Screen {
     MissionEnergy,
     /// Uzman modundaki RF / anten / EMI sekmesi (merkezde yuvada çizilir).
     RfEmi,
+    /// Uçuş logu içe aktarma ve tasarım-gerçek karşılaştırması (merkez yuvası).
+    FlightLog,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -88,6 +90,7 @@ pub enum CenterSlot {
     Reliability,
     MissionEnergy,
     RfEmi,
+    FlightLog,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -153,6 +156,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Reliability => Screen::Reliability,
         Tab::MissionEnergy => Screen::MissionEnergy,
         Tab::RfEmi => Screen::RfEmi,
+        Tab::FlightLog => Screen::FlightLog,
     }
 }
 
@@ -186,6 +190,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Reliability => Some(CenterSlot::Reliability),
         Screen::MissionEnergy => Some(CenterSlot::MissionEnergy),
         Screen::RfEmi => Some(CenterSlot::RfEmi),
+        Screen::FlightLog => Some(CenterSlot::FlightLog),
         _ => None,
     }
 }
@@ -204,6 +209,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::FlightLog
             | Screen::Bom
             | Screen::ControlTuning
             | Screen::Library
@@ -237,6 +243,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
@@ -294,6 +301,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Schematic
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::FlightLog
             | Screen::Bom
             | Screen::ControlTuning
             | Screen::Library
@@ -340,6 +348,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::FlightLog
         | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
@@ -381,6 +390,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
@@ -461,6 +471,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability
@@ -559,6 +570,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::FlightLog
         | Screen::RfEmi
         | Screen::MissionEnergy
         | Screen::Reliability

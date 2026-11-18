@@ -893,6 +893,9 @@ impl App {
             Some(super::steps::CenterSlot::RfEmi) => {
                 super::rfemi::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::FlightLog) => {
+                super::flightlog::show(ui, &self.project, model, &self.lib);
+            }
             None => {}
         }
     }
