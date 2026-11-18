@@ -72,7 +72,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "gh release upload başarısız (kod $LASTEXITCODE)" }
           } else {
             $notes = "docs/release-notes/$tag.md"
-            $notesArgs = if (Test-Path $notes) { @("--notes-file", $notes) } else { @("--generate-notes") }
+            # @( ) dizi olarak tutar; yoksa tek elemanlı sonuç metne döner ve splat harf harf bölünür.
+            $notesArgs = @(if (Test-Path $notes) { "--notes-file", $notes } else { "--generate-notes" })
             gh release create $tag @assets --title "WerSeuS $([char]0x2013) UAV Calc $tag" @notesArgs --verify-tag
             if ($LASTEXITCODE -ne 0) { throw "gh release create başarısız (kod $LASTEXITCODE)" }
           }
