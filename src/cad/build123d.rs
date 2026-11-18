@@ -1014,6 +1014,18 @@ pub fn run_fast_outputs_controlled(
                     abort(AbortReason::TotalTimeout, sum.parts.len(), removed);
                     return;
                 }
+                // With no part left in this run the stuck stage is the assembly.
+                RunOutcome::PartTimeout(_) if batch.is_empty() => {
+                    sum.failed.push(format!(
+                        "assembly: {}",
+                        crate::i18n::tf(
+                            "out.timeout_asm_fmt",
+                            &[minutes_text(Duration::from_secs(limits.assembly_secs))]
+                        )
+                    ));
+                    next = n_parts;
+                    asm_done = true;
+                }
                 RunOutcome::PartTimeout(i) => {
                     let i = i.min(batch.len().saturating_sub(1));
                     if let Some(q) = batch.get(i) {
@@ -1035,7 +1047,7 @@ pub fn run_fast_outputs_controlled(
                             )
                         ));
                     }
-                    next += i + 1;
+                    next = (next + i + 1).min(n_parts);
                 }
                 RunOutcome::AssemblyTimeout => {
                     let asm_snap: Vec<_> = snap
@@ -1080,10 +1092,8 @@ pub fn run_fast_outputs_controlled(
         if let Some(r) = asm_result.filter(|_| !sum.parts.is_empty()) {
             if r.ok == Some(false) || r.status == "error" {
                 let e = r.error.clone().unwrap_or_default();
-                sum.failed.push(format!(
-                    "assembly: {}",
-                    e.lines().next().unwrap_or("")
-                ));
+                sum.failed
+                    .push(format!("assembly: {}", e.lines().next().unwrap_or("")));
             } else {
                 let items = assembly_items(&p, &m, &sum.parts);
                 let mut classes = classify_pairs(&r.pairs);
@@ -1109,4 +1119,510 @@ pub fn run_fast_outputs_controlled(
         send(RunEvent::Done(Box::new(sum)));
     });
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cad::outputs::{available_parts, plan_part};
+    use crate::calc::geometry::TailKind;
+    use crate::calc::{Library, evaluate};
+    use crate::project::DroneType;
+
+    const EXAMPLES: [&str; 6] = [
+        "fixed_wing_2kg_1600mm.json",
+        "flying_wing_1200mm.json",
+        "hexa_550_x.json",
+        "quad_250_x.json",
+        "quad_275_x.json",
+        "vtol_quadplane.json",
+    ];
+
+    /// Every vehicle type of the project model (and the tail variants of fixed wings).
+    fn all_vehicles() -> Vec<(String, Project)> {
+        let mut v: Vec<(String, Project)> = EXAMPLES
+            .iter()
+            .map(|f| (f.to_string(), crate::project::load_example(f).unwrap()))
+            .collect();
+        for dt in DroneType::ALL {
+            for tk in [TailKind::Conventional, TailKind::VTail] {
+                let p = Project {
+                    drone_type: dt,
+                    tail_kind: tk,
+                    ..Project::default()
+                };
+                v.push((format!("{dt:?}/{tk:?}"), p));
+            }
+        }
+        v
+    }
+
+    fn job_for(p: &Project, out: &Path) -> (Vec<FastPartPlan>, String) {
+        let m = evaluate(p, &Library::embedded());
+        let lay = Layout::new(p, &m);
+        let plans: Vec<FastPartPlan> = available_parts(p)
+            .into_iter()
+            .map(|id| plan_fast_part(id, p, &lay))
+            .collect();
+        let items = fast_assembly_items(p, &lay, &plans);
+        let script = generate_fast_script(&FastJob {
+            out_dir: out,
+            scratch_dir: &out.join("scratch"),
+            formats: FastFormats::default(),
+            parts: &plans,
+            assembly_items: Some(items),
+        });
+        (plans, script)
+    }
+
+    /// The JSON literal on the `JOB = json.loads(...)` line, decoded.
+    fn job_of(script: &str) -> (Value, String) {
+        let line = script
+            .lines()
+            .find(|l| l.starts_with("JOB = json.loads("))
+            .expect("JOB line");
+        let lit = line
+            .strip_prefix("JOB = json.loads(")
+            .and_then(|r| r.strip_suffix(')'))
+            .expect("literal");
+        let text: String = serde_json::from_str(lit).expect("JSON string literal");
+        (
+            serde_json::from_str(&text).expect("job JSON"),
+            line.to_string(),
+        )
+    }
+
+    /// Nulls only where a value is optional; no NaN/inf can hide as null.
+    fn assert_no_bad_nulls(v: &Value, key: &str, ctx: &str) {
+        const OPTIONAL: [&str; 6] = ["spar", "saddle", "pad", "inner", "assembly", "mirror_axis"];
+        match v {
+            Value::Null => assert!(OPTIONAL.contains(&key), "{ctx}: null at {key}"),
+            Value::Number(n) => assert!(n.as_f64().is_some_and(f64::is_finite), "{ctx}: {key}"),
+            Value::Array(a) => a.iter().for_each(|x| assert_no_bad_nulls(x, key, ctx)),
+            Value::Object(o) => o.iter().for_each(|(k, x)| assert_no_bad_nulls(x, k, ctx)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn every_vehicle_type_produces_a_script_with_the_freecad_part_list() {
+        let out = PathBuf::from("C:/tmp/werseus_fast");
+        for (name, p) in all_vehicles() {
+            let m = evaluate(&p, &Library::embedded());
+            let (plans, script) = job_for(&p, &out);
+            assert!(!plans.is_empty(), "{name}");
+            let (job, _) = job_of(&script);
+            assert_no_bad_nulls(&job, "", &name);
+            // Same parts, same order, same file stems and quantities as the FreeCAD path.
+            let fc: Vec<(PartId, String, u32)> = available_parts(&p)
+                .into_iter()
+                .map(|id| {
+                    let pl = plan_part(id, &p, &m, &out);
+                    (id, pl.stem, pl.qty)
+                })
+                .collect();
+            let fast: Vec<(PartId, String, u32)> = plans
+                .iter()
+                .map(|q| (q.id, q.stem.clone(), q.qty))
+                .collect();
+            assert_eq!(fast, fc, "{name}");
+            let parts = job["parts"].as_array().unwrap();
+            assert_eq!(parts.len(), plans.len(), "{name}");
+            for (jp, q) in parts.iter().zip(&plans) {
+                assert_eq!(jp["stem"], q.stem.as_str(), "{name}");
+                assert_eq!(jp["key"], q.id.key(), "{name}");
+                assert!(jp["spec"]["kind"].is_string(), "{name}");
+            }
+            // Assembly: one item per placed copy, like the FreeCAD assembly.
+            let items = job["assembly"]["items"].as_array().unwrap();
+            let lay = Layout::new(&p, &m);
+            assert_eq!(items.len(), lay.instances.len(), "{name}");
+            for (it, inst) in items.iter().zip(&lay.instances) {
+                assert_eq!(it["label"], sanitize_ident(&inst.label).as_str());
+                assert_eq!(it["mirror_axis"].is_null(), !inst.mirror, "{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn hollow_parts_carry_the_manufacturable_structure() {
+        let p = crate::project::load_example("fixed_wing_2kg_1600mm.json").unwrap();
+        let m = evaluate(&p, &Library::embedded());
+        let lay = Layout::new(&p, &m);
+        let wing = part_spec(PartId::Wing, &p, &lay);
+        let st = lay.wing.structure();
+        assert!(st.is_hollow());
+        assert_eq!(wing["bays"].as_array().unwrap().len(), st.rib_bays as usize);
+        // Root rib + intermediate ribs + tip cap as DXF sections.
+        assert_eq!(
+            wing["dxf"].as_array().unwrap().len(),
+            st.rib_stations_mm().len() + 2
+        );
+        assert!(wing["spar"].is_object());
+        let poles = wing["bays"][0]["a"]["poles"].as_array().unwrap();
+        let knots = wing["knots"].as_array().unwrap().len();
+        let mults: u64 = wing["mults"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_u64().unwrap())
+            .sum();
+        // Clamped cubic B-spline: sum(mults) = poles + degree + 1.
+        assert_eq!(mults as usize, poles.len() + 4);
+        assert_eq!(knots, poles.len() - 2);
+        let fuse = part_spec(PartId::Fuselage, &p, &lay);
+        let fst = lay.fuselage.structure();
+        assert!(fuse["inner"].is_array());
+        assert_eq!(
+            fuse["formers"].as_array().unwrap().len(),
+            fst.former_fracs.len()
+        );
+        assert_eq!(
+            fuse["plugs"].as_array().unwrap().len(),
+            lay.fuselage.plugs.len()
+        );
+        // Solid (wall 0) surface: no bays, one DXF profile.
+        let mut q = p.clone();
+        q.t_wall = 0.0;
+        let m2 = evaluate(&q, &Library::embedded());
+        let lay2 = Layout::new(&q, &m2);
+        let w2 = part_spec(PartId::TailHorizontal, &q, &lay2);
+        assert!(w2["bays"].as_array().unwrap().is_empty());
+        assert_eq!(w2["dxf"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn user_text_reaches_python_only_inside_the_json_literal() {
+        let evil = "x\"); import os; os.system(\"calc\") #\n'''\\ ${} {{}} \u{15f}";
+        let mut p = crate::project::load_example("vtol_quadplane.json").unwrap();
+        p.name = evil.to_string();
+        let out = PathBuf::from(format!("C:/tmp/{evil}"));
+        let (plans, script) = job_for(&p, &out);
+        let (job, line) = job_of(&script);
+        // Outside the literal line the script is the fixed library only.
+        let rest: String = script
+            .lines()
+            .filter(|l| *l != line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !rest.contains("os.system"),
+            "injected text outside the literal"
+        );
+        assert!(!rest.contains("calc"));
+        assert_eq!(rest.matches("json.loads(").count(), 0);
+        assert!(script.contains(PY_LIB));
+        // Stems are sanitized identifiers; the path survives exactly as data.
+        for q in &plans {
+            assert!(
+                q.stem
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "{}",
+                q.stem
+            );
+        }
+        assert_eq!(job["out_dir"], path_str(&out).as_str());
+        for it in job["assembly"]["items"].as_array().unwrap() {
+            let l = it["label"].as_str().unwrap();
+            assert!(l.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+        }
+    }
+
+    #[test]
+    fn section_place_matches_the_surface_geometry() {
+        let p = crate::project::load_example("fixed_wing_2kg_1600mm.json").unwrap();
+        let m = evaluate(&p, &Library::embedded());
+        let lay = Layout::new(&p, &m);
+        let g = lay.wing.geom();
+        for z in [0.0, 0.3 * g.span, g.span] {
+            for att in [None, Some((0.0, 0.0))] {
+                let s = section_place(&g, z, att);
+                assert!((s[0] - g.chord_at(z)).abs() < 1e-9);
+                assert!((s[1] - g.le_x_at(z)).abs() < 1e-9);
+                assert!(s[2].abs() < 1e-12 && s[3].abs() < 1e-12);
+            }
+        }
+        // Twist about the quarter chord: the tip quarter-chord point stays on the sweep line.
+        let s = section_place(&g, g.span, Some((3.0, -2.0)));
+        assert!((s[0] - g.c_tip).abs() < 1e-9);
+        assert!((s[3] - 2f64.to_radians()).abs() < 1e-9);
+        let (c, sn) = (s[3].cos(), s[3].sin());
+        let qx = s[1] + 0.25 * g.c_tip * c;
+        let qy = s[2] + 0.25 * g.c_tip * sn;
+        assert!((qx - (g.le_x_at(g.span) + 0.25 * g.c_tip)).abs() < 1e-9);
+        assert!((qy - g.span * 3f64.to_radians().tan()).abs() < 1e-9);
+    }
+
+    #[test]
+    fn probe_and_launcher_output_parsing() {
+        assert_eq!(
+            parse_probe_output("3.12.4\n0.13.0\n"),
+            Some(("3.12.4".into(), Some("0.13.0".into())))
+        );
+        assert_eq!(
+            parse_probe_output("3.15.2\r\n"),
+            Some(("3.15.2".into(), None))
+        );
+        assert_eq!(
+            parse_probe_output("3.15.2\nTraceback (most recent call last):"),
+            Some(("3.15.2".into(), None))
+        );
+        assert_eq!(parse_probe_output("Python was not found"), None);
+        assert_eq!(parse_probe_output(""), None);
+        let list = " -V:3.15 *        C:\\Users\\a\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe\n -V:3.12          D:\\py312\\python.exe\n";
+        assert_eq!(
+            parse_py_launcher_list(list),
+            vec![
+                PathBuf::from(
+                    "C:\\Users\\a\\AppData\\Local\\Python\\pythoncore-3.15-64\\python.exe"
+                ),
+                PathBuf::from("D:\\py312\\python.exe")
+            ]
+        );
+        assert!(parse_py_launcher_list("No installed Pythons found!").is_empty());
+    }
+
+    #[test]
+    fn detection_prefers_a_python_with_build123d_and_lists_the_others() {
+        let dir = std::env::temp_dir().join(format!("werseus_pydet_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a_python.exe");
+        let b = dir.join("b_python.exe");
+        std::fs::write(&a, b"").unwrap();
+        std::fs::write(&b, b"").unwrap();
+        let (a2, b2, b3) = (a.clone(), b.clone(), b.clone());
+        // Configured interpreter without build123d, launcher one with it.
+        let det = detect_python_with(
+            Some(a.to_str().unwrap()),
+            move || vec![b2],
+            |prog, _| {
+                if prog == a2 {
+                    Some(("3.15.2".into(), None))
+                } else if prog == b3 {
+                    Some(("3.12.1".into(), Some("0.13.0".into())))
+                } else {
+                    None
+                }
+            },
+        );
+        let f = det.found.expect("found");
+        assert_eq!(f.program, b);
+        assert_eq!(f.build123d_version, "0.13.0");
+        assert!(det.without_build123d.iter().any(|s| s.contains("3.15.2")));
+        // The configured interpreter is tried first.
+        let mut order = Vec::new();
+        let _ = detect_python_with(
+            Some(a.to_str().unwrap()),
+            || vec![b.clone()],
+            |prog, _| {
+                order.push(prog.to_path_buf());
+                None
+            },
+        );
+        assert_eq!(order.first(), Some(&a));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn part_lines_parse_and_reject_noise() {
+        let l = format!(
+            "{PART_TAG}{{\"key\":\"wing\",\"stem\":\"X_Kanat\",\"ok\":true,\"valid\":true,\"solids\":1,\"volume_mm3\":12.5,\"files\":[\"a.step\"],\"secs\":0.4}}"
+        );
+        let p = parse_part_line(&l).unwrap();
+        assert!(p.ok && p.solids == 1 && p.stem == "X_Kanat");
+        assert!(parse_part_line("random output").is_none());
+        assert!(parse_part_line(&format!("{PART_TAG}not json")).is_none());
+    }
+
+    /// Stand-in interpreter: `cmd /C <bat>` ignores `-u <script>` and runs a batch file.
+    #[cfg(windows)]
+    fn fake_python(dir: &Path, body: &str) -> PythonInstallation {
+        let bat = dir.join("fake_py.cmd");
+        std::fs::write(&bat, body).unwrap();
+        PythonInstallation {
+            program: PathBuf::from("cmd"),
+            args: vec!["/C".into(), bat.to_string_lossy().into_owned()],
+            python_version: "fake".into(),
+            build123d_version: "fake".into(),
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn watchdog_kills_a_part_over_its_limit_and_reports_which() {
+        let dir = std::env::temp_dir().join(format!("werseus_fast_wd_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let py = fake_python(
+            &dir,
+            &format!(
+                "@echo off\r\necho __WERSEUS_STAGE__:import\r\necho __WERSEUS_STAGE__:part:1/2\r\necho {PART_TAG}{{\"stem\":\"a\",\"ok\":true}}\r\necho __WERSEUS_STAGE__:part:2/2\r\nping -n 30 127.0.0.1 >nul\r\n"
+            ),
+        );
+        let script = dir.join("job.py");
+        std::fs::write(&script, "").unwrap();
+        let limits = CadLimits {
+            part_secs: 2,
+            assembly_secs: 60,
+            total_secs: 60,
+        };
+        let t0 = Instant::now();
+        let mut seen = Vec::new();
+        let mut parts = 0;
+        let out = run_once(
+            &py,
+            &script,
+            Duration::from_secs(60),
+            &limits,
+            &CancelFlag::new(),
+            |i| seen.push(i),
+            |_| parts += 1,
+            |_| {},
+        );
+        assert!(
+            matches!(out, RunOutcome::PartTimeout(1)),
+            "part 2 timed out"
+        );
+        assert!(t0.elapsed() < Duration::from_secs(15), "{:?}", t0.elapsed());
+        assert_eq!(seen, vec![0, 1]);
+        assert_eq!(parts, 1);
+        // User cancel wins over limits.
+        let cancel = CancelFlag::new();
+        let c2 = cancel.clone();
+        let h = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(800));
+            c2.cancel();
+        });
+        let relaxed = CadLimits {
+            part_secs: 60,
+            ..limits
+        };
+        let out = run_once(
+            &py,
+            &script,
+            Duration::from_secs(60),
+            &relaxed,
+            &cancel,
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        let _ = h.join();
+        assert!(matches!(out, RunOutcome::UserCancelled));
+        // Total limit.
+        let out = run_once(
+            &py,
+            &script,
+            Duration::from_secs(1),
+            &relaxed,
+            &CancelFlag::new(),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        assert!(matches!(out, RunOutcome::TotalTimeout));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cancel_through_the_runner_aborts_and_keeps_files_it_did_not_write() {
+        let p = crate::project::load_example("quad_250_x.json").unwrap();
+        let m = evaluate(&p, &Library::embedded());
+        let dir = std::env::temp_dir().join(format!("werseus_fast_cancel_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("out")).unwrap();
+        // A pre-existing user file with a part's name must survive the cancel.
+        let lay = Layout::new(&p, &m);
+        let stem = plan_fast_part(PartId::MrPlate, &p, &lay).stem;
+        let keep = dir.join("out").join(format!("{stem}.step"));
+        std::fs::write(&keep, b"user file").unwrap();
+        let py = fake_python(&dir, "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n");
+        let cancel = CancelFlag::new();
+        let rx = run_fast_outputs_controlled(
+            py,
+            p.clone(),
+            m,
+            available_parts(&p),
+            dir.join("out"),
+            FastFormats::default(),
+            CadLimits::default(),
+            cancel.clone(),
+        );
+        std::thread::sleep(Duration::from_millis(800));
+        cancel.cancel();
+        let t0 = Instant::now();
+        let mut aborted = false;
+        while let Ok(ev) = rx.recv_timeout(Duration::from_secs(20)) {
+            if let RunEvent::Aborted {
+                reason, completed, ..
+            } = ev
+            {
+                assert_eq!(reason, AbortReason::Cancelled);
+                assert_eq!(completed, 0);
+                aborted = true;
+                break;
+            }
+        }
+        assert!(aborted && t0.elapsed() < Duration::from_secs(10));
+        assert_eq!(std::fs::read(&keep).unwrap(), b"user file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A part over its limit fails alone; the next process continues with the rest.
+    #[cfg(windows)]
+    #[test]
+    fn part_timeout_restarts_with_the_remaining_parts() {
+        let p = crate::project::load_example("quad_250_x.json").unwrap();
+        let m = evaluate(&p, &Library::embedded());
+        let dir = std::env::temp_dir().join(format!("werseus_fast_restart_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // The first process hangs in part 1; later processes exit at once without results,
+        // so those parts are reported as crashed, not hung.
+        let marker = dir.join("started.txt");
+        let py = fake_python(
+            &dir,
+            &format!(
+                "@echo off\r\nif exist \"{m}\" (echo __WERSEUS_STAGE__:part:1/1\r\nexit /b 0)\r\necho x> \"{m}\"\r\necho __WERSEUS_STAGE__:part:1/4\r\nping -n 30 127.0.0.1 >nul\r\n",
+                m = marker.display()
+            ),
+        );
+        let limits = CadLimits {
+            part_secs: 2,
+            assembly_secs: 60,
+            total_secs: 120,
+        };
+        let ids = available_parts(&p);
+        let rx = run_fast_outputs_controlled(
+            py,
+            p.clone(),
+            m,
+            ids.clone(),
+            dir.join("out"),
+            FastFormats::default(),
+            limits,
+            CancelFlag::new(),
+        );
+        let mut done = None;
+        while let Ok(ev) = rx.recv_timeout(Duration::from_secs(60)) {
+            match ev {
+                RunEvent::Done(s) => {
+                    done = Some(s);
+                    break;
+                }
+                RunEvent::Aborted { .. } | RunEvent::Error(_) => break,
+                _ => {}
+            }
+        }
+        let s = done.expect("finished");
+        assert!(s.parts.is_empty());
+        assert!(s.failed[0].starts_with(ids[0].key()), "{:?}", s.failed);
+        assert!(s.failed[0].contains("2") || s.failed[0].contains("0.0"));
+        // Every other part was attempted in the second process.
+        for id in &ids[1..] {
+            assert!(s.failed.iter().any(|f| f.starts_with(id.key())), "{id:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -158,6 +158,9 @@ pub struct AppSettings {
     /// CAD üretimi süre sınırları (parça, montaj, toplam).
     #[serde(default)]
     pub cad_limits: crate::cad::CadLimits,
+    /// Python interpreter with build123d for the fast CAD backend (empty: auto-detect).
+    #[serde(default)]
+    pub python_cmd_path: Option<String>,
 }
 
 fn default_ui_scale() -> f32 {
@@ -180,6 +183,7 @@ impl Default for AppSettings {
             view_grid: true,
             view_ortho: false,
             cad_limits: crate::cad::CadLimits::default(),
+            python_cmd_path: None,
         }
     }
 }

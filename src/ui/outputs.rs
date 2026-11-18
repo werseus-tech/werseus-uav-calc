@@ -4,6 +4,7 @@
 //! arayüzdür.
 
 use super::theme;
+use crate::cad::build123d::CadBackend;
 use crate::cad::outputs::{
     AbortReason, FREECAD_DOWNLOAD_URL, MASS_RATIO_MAX, MASS_RATIO_MIN, MassTarget, OutputsProgress,
     OutputsSummary, RunEvent, RunPhase, Selection, apply_mass_to_project, available_parts,
@@ -64,6 +65,8 @@ pub struct OutputsUi {
     /// Geri alma için: aktarılan alan, eski değer ve yazılan değer.
     pub undo: Option<(MassTarget, f64, f64)>,
     init_for: Option<DroneType>,
+    /// Backend choice, formats and Python detection of the fast (build123d) backend.
+    pub fast: super::cad_fast::FastUi,
 }
 
 impl OutputsUi {
@@ -157,6 +160,40 @@ impl OutputsUi {
             m.clone(),
             chosen,
             self.out_dir.clone(),
+            self.run_limits,
+            cancel,
+        ));
+    }
+
+    /// Starts generation with the fast build123d backend (same events, limits and cancel).
+    fn start_fast(
+        &mut self,
+        py: crate::cad::build123d::PythonInstallation,
+        p: &Project,
+        m: &Model,
+        chosen: Vec<crate::cad::outputs::PartId>,
+    ) {
+        self.summary = None;
+        self.error = None;
+        self.notice = None;
+        self.applied_msg = None;
+        self.confirm_apply = false;
+        self.undo = None;
+        self.log.clear();
+        self.running = true;
+        self.cancelling = false;
+        self.progress = None;
+        self.started = Some(Instant::now());
+        let cancel = CancelFlag::new();
+        self.cancel = Some(cancel.clone());
+        self.run_limits = self.limits.clamped();
+        self.rx = Some(crate::cad::build123d::run_fast_outputs_controlled(
+            py,
+            p.clone(),
+            m.clone(),
+            chosen,
+            self.out_dir.clone(),
+            self.fast.formats,
             self.run_limits,
             cancel,
         ));
@@ -336,19 +373,27 @@ pub fn show(
     });
     ui.add_space(4.0);
 
-    match fc {
-        Some(f) => {
-            ui.colored_label(tk.success, tf("out.freecad_found", &[f.version.as_str()]));
+    super::cad_fast::backend_controls(ui, &mut st.fast, st.running);
+    ui.add_space(4.0);
+    let fast = st.fast.backend == CadBackend::Fast;
+    let tool_ready = if fast {
+        super::cad_fast::fast_status(ui, &mut st.fast, st.running)
+    } else {
+        match fc {
+            Some(f) => {
+                ui.colored_label(tk.success, tf("out.freecad_found", &[f.version.as_str()]));
+            }
+            None => {
+                ui.colored_label(tk.warning, t("out.freecad_missing"));
+                ui.hyperlink_to(t("out.freecad_install_link"), FREECAD_DOWNLOAD_URL);
+            }
         }
-        None => {
-            ui.colored_label(tk.warning, t("out.freecad_missing"));
-            ui.hyperlink_to(t("out.freecad_install_link"), FREECAD_DOWNLOAD_URL);
-        }
-    }
+        fc.is_some()
+    };
     ui.add_space(6.0);
 
     let chosen = st.selection.selected_for(p);
-    let can_run = fc.is_some() && !st.running && !chosen.is_empty();
+    let can_run = tool_ready && !st.running && !chosen.is_empty();
     ui.horizontal(|ui| {
         if ui
             .add_enabled(
@@ -357,7 +402,11 @@ pub fn show(
             )
             .clicked()
         {
-            if let Some(f) = fc {
+            if fast {
+                if let Some(py) = st.fast.found().cloned() {
+                    st.start_fast(py, p, m, chosen.clone());
+                }
+            } else if let Some(f) = fc {
                 st.start(f, p, m, chosen.clone());
             }
         }

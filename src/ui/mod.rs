@@ -3,6 +3,7 @@
 pub mod aero;
 pub mod aero_simple;
 pub mod ai;
+pub mod cad_fast;
 pub mod components;
 pub mod design_point;
 pub mod endurance;

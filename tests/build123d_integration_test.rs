@@ -202,8 +202,12 @@ fn expected_volume(id: PartId, p: &Project, lay: &Layout) -> Option<(f64, f64)> 
                     v += PI * (r_in * r_in - r_h * r_h) * st.former_t_mm;
                 }
             }
-            // Wing/tail slots and the gear pad are not estimated: wide band.
-            (v, 0.08)
+            // Each wing/tail slot cuts the skin once: section area x wall. Formers crossed
+            // by a slot and the gear pad are not estimated.
+            for pl in &f.plugs {
+                v -= poly_area(&pl.pts) * pl.c_r * pl.c_r * st.wall_mm;
+            }
+            (v, 0.06)
         }
         PartId::WingSpar | PartId::VtolBoom => {
             let t = if id == PartId::VtolBoom {
@@ -268,11 +272,45 @@ fn expected_volume(id: PartId, p: &Project, lay: &Layout) -> Option<(f64, f64)> 
         PartId::BoomWingClamp => {
             let c = &lay.clamp;
             let ro = c.bore_mm / 2.0 + c.wall_mm;
-            let v = PI * ro * ro * c.width_mm / 2.0 + 2.0 * ro * c.width_mm * c.pillar_top_mm
-                - PI * c.bore_mm.powi(2) / 4.0 * c.width_mm;
-            // Saddle cut and slit not estimated.
+            let rb = c.bore_mm / 2.0;
+            // Pillar height up to the wing's lower surface (the saddle cut): mean height of
+            // lower-surface samples over the pillar footprint, in clamp coordinates.
+            let h = match &c.saddle {
+                Some(sd) => {
+                    let prof = lay.wing.geom().profile;
+                    let (mut sum, mut n) = (0.0, 0);
+                    for i in 0..=40 {
+                        let z = sd.z0 + (sd.z1 - sd.z0) * i as f64 / 40.0;
+                        let s_ = z.abs();
+                        let ch = sd.c_r + (sd.c_t - sd.c_r) * s_ / sd.span;
+                        let x0 = s_ * sd.sweep.to_radians().tan();
+                        for j in 0..=200 {
+                            let f = j as f64 / 200.0;
+                            let q = [x0 + f * ch, prof.yl(f) * ch, z];
+                            let m = &sd.m;
+                            let gx = m[0] * q[0] + m[1] * q[1] + m[2] * q[2] + m[3];
+                            let gy = m[4] * q[0] + m[5] * q[1] + m[6] * q[2] + m[7];
+                            let gz = m[8] * q[0] + m[9] * q[1] + m[10] * q[2] + m[11];
+                            if gx.abs() <= c.width_mm / 2.0 && gy.abs() <= ro {
+                                sum += gz;
+                                n += 1;
+                            }
+                        }
+                    }
+                    if n > 0 {
+                        sum / n as f64
+                    } else {
+                        c.pillar_top_mm
+                    }
+                }
+                None => c.pillar_top_mm,
+            };
+            let w = c.width_mm;
+            let v = PI * ro * ro * w / 2.0 + 2.0 * ro * w * h
+                - PI * rb * rb * w
+                - c.slit_mm * w * (ro - rb);
             let _ = p;
-            (v, 0.3)
+            (v, 0.05)
         }
     })
 }
