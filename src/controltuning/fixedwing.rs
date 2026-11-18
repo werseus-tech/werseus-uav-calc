@@ -42,10 +42,9 @@ fn pos(x: f64, fb: f64) -> f64 {
 
 pub fn fixed_wing_hints(p: &Project, m: &Model) -> FixedWingHints {
     let v_stall = pos(m.aero.v_stall, 10.0);
-    let v_cruise = pos(p.v_cr, 1.6 * v_stall);
-    let v_min = (1.25 * v_stall)
-        .max(pos(m.aero.v_end, 0.0))
-        .min(0.95 * v_cruise.max(1.3 * v_stall));
+    let v_min = (1.25 * v_stall).max(pos(m.aero.v_end, 0.0));
+    // The cruise speed must stay above the minimum speed (and a margin above stall).
+    let v_cruise = pos(p.v_cr, 1.6 * v_stall).max((v_min / 0.95).max(1.3 * v_stall));
     let v_max = 1.35 * v_cruise;
     let climb_max = pos(p.rc, 3.0).clamp(0.5, 15.0);
     let sink_min = if m.aero.ld_end.is_finite() && m.aero.ld_end > 1.0 {

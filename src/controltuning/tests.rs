@@ -96,7 +96,7 @@ fn suggested_gains_give_stable_loops_with_margin() {
 /// [rad/s²]. (The raw P in firmware units need not drop: inertia per unit control authority,
 /// J/K, grows with size, so the same bandwidth would need *more* P.)
 #[test]
-fn larger_heavier_vehicle_gets_lower_gains() {
+fn larger_heavier_vehicle_gets_lower_normalised_loop_gains() {
     let base = load(project::EX_QUAD_275);
     let scaled = |s: f64| {
         let mut p = base.clone();
@@ -207,7 +207,7 @@ fn quad_loses_hover_on_single_motor_loss() {
         assert_eq!(f.healthy.class, HoverClass::Full);
         assert_eq!(f.singles.len(), 4);
         for c in &f.singles {
-            assert_ne!(c.class, HoverClass::Full, "{c:?}");
+            assert_eq!(c.class, HoverClass::NoHover, "{c:?}");
             assert!(c.lost_axes.contains(&2));
         }
     }
@@ -328,4 +328,144 @@ fn motor_time_constant_override_is_used() {
     assert!(!fast.vehicle.motor_tau_estimated);
     let wc = |r: &ControlReport| r.firmwares[1].axes[0].result.unwrap().1.crossover_hz;
     assert!(wc(&slow) < wc(&fast));
+}
+
+#[test]
+fn designed_gains_use_d_when_enabled() {
+    use super::loopdesign::{DesignOpts, Filter, LoopFilters, Plant, design};
+    let p = Plant {
+        k_over_j: 800.0,
+        tau: 0.04,
+        delay: 0.004,
+    };
+    let f = LoopFilters {
+        gyro: vec![Filter::biquad(45.0)],
+        dterm: vec![Filter::pt1(22.0)],
+    };
+    // A limit on Kp lowers the crossover so that plain PI already meets the margins.
+    for max_kp in [f64::INFINITY, 0.01] {
+        let opts = DesignOpts {
+            max_kp,
+            ..Default::default()
+        };
+        let (g, m) = design(&p, &f, &opts).expect("design");
+        assert!(g.kd > 0.0, "max_kp {max_kp}: kd {}", g.kd);
+        assert!(m.phase_margin_deg >= 50.0);
+        let pi = design(
+            &p,
+            &f,
+            &DesignOpts {
+                use_d: false,
+                ..opts
+            },
+        )
+        .unwrap();
+        assert_eq!(pi.0.kd, 0.0);
+    }
+}
+
+#[test]
+fn closed_loop_setpoint_path_excludes_the_d_term() {
+    use super::loopdesign::{Filter, Gains, LoopFilters, Plant, closed_loop_mag, open_loop};
+    let p = Plant {
+        k_over_j: 800.0,
+        tau: 0.04,
+        delay: 0.004,
+    };
+    let f = LoopFilters {
+        gyro: vec![Filter::biquad(45.0)],
+        dterm: vec![Filter::pt1(22.0)],
+    };
+    let base = Gains {
+        kp: 0.05,
+        ki: 0.5,
+        kd: 0.0,
+        kff: 0.0,
+    };
+    let with_d = Gains { kd: 0.004, ..base };
+    for w in [5.0, 30.0, 100.0, 300.0] {
+        // Numerator = |T|·|1 + L| must not depend on Kd.
+        let num = |g: &Gains| {
+            let (mag, ph) = open_loop(&p, &f, g, w);
+            let den = ((1.0 + mag * ph.cos()).powi(2) + (mag * ph.sin()).powi(2)).sqrt();
+            closed_loop_mag(&p, &f, g, w) * den
+        };
+        let (a, b) = (num(&base), num(&with_d));
+        assert!((a / b - 1.0).abs() < 1e-9, "w {w}: {a} vs {b}");
+    }
+}
+
+#[test]
+fn px4_mixer_exists_for_three_rotor_layouts() {
+    let mut p = load(project::EX_QUAD_275);
+    p.mr_arm_count = 3;
+    let m = evaluate(&p, &Library::embedded());
+    let v = vehicle::vehicle_data(&p, &m, None);
+    assert_eq!(v.rotors.len(), 3);
+    let f = firmware::mixer_factors(Firmware::Px4, &v).expect("PX4 mixer");
+    assert!(f.iter().flatten().all(|x| x.is_finite()));
+    assert!(f.iter().any(|r| r[0].abs() > 1e-3 || r[1].abs() > 1e-3));
+    let r = report(&p);
+    let px4 = r
+        .firmwares
+        .iter()
+        .find(|t| t.firmware == Firmware::Px4)
+        .unwrap();
+    assert!(px4.applicable);
+    let (g, _) = px4.axes[0].result.expect("roll gains");
+    assert!(g.kp > 0.0);
+}
+
+#[test]
+fn underpowered_vehicle_has_consistent_rpm_limits() {
+    let mut p = load(project::EX_QUAD_275);
+    let m = evaluate(&p, &Library::embedded());
+    let healthy = vehicle::vehicle_data(&p, &m, None);
+    assert!(healthy.hover_rpm < healthy.max_rpm);
+    p.mr_t_max_motor = 0.2 * healthy.weight / healthy.rotors.len() as f64;
+    let v = vehicle::vehicle_data(&p, &m, None);
+    assert!(
+        v.hover_rpm <= v.max_rpm + 1e-9,
+        "{} > {}",
+        v.hover_rpm,
+        v.max_rpm
+    );
+    assert!(v.hover_frac <= 1.0);
+}
+
+#[test]
+fn fixed_wing_airspeed_hints_keep_their_order() {
+    let mut p = load(project::EX_FIXED_WING);
+    let m = evaluate(&p, &Library::embedded());
+    for factor in [0.9, 1.1, 1.25, 1.3, 1.6] {
+        p.v_cr = factor * m.aero.v_stall;
+        let h = fixedwing::fixed_wing_hints(&p, &m);
+        assert!(h.v_min >= 1.25 * h.v_stall - 1e-9, "{factor}: {h:?}");
+        assert!(h.v_min <= h.v_cruise + 1e-9, "{factor}: {h:?}");
+        assert!(h.v_cruise <= h.v_max);
+    }
+}
+
+#[test]
+fn nan_cg_does_not_collapse_multirotor_inertia() {
+    let p = load(project::EX_QUAD_275);
+    let mut m = evaluate(&p, &Library::embedded());
+    m.mr.cg_x = 0.0;
+    m.mr.cg_y = 0.0;
+    let clean = vehicle::inertia_estimate(&p, &m);
+    m.mr.cg_x = f64::NAN;
+    m.mr.cg_y = f64::NAN;
+    assert_eq!(vehicle::inertia_estimate(&p, &m), clean);
+}
+
+#[test]
+fn fixed_wing_roll_inertia_without_wing_components_is_not_tiny() {
+    let mut p = load(project::EX_FIXED_WING);
+    for c in &mut p.components {
+        c.link = project::Link::None;
+    }
+    let m = evaluate(&p, &Library::embedded());
+    let i = vehicle::inertia_estimate(&p, &m);
+    let mass = m.weight.m_mtow;
+    assert!(i[0] >= mass * (0.25 * p.b / 2.0).powi(2) * 0.999, "{i:?}");
 }

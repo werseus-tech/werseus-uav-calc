@@ -301,7 +301,16 @@ pub fn mixer_factors(fw: Firmware, v: &VehicleData) -> Option<Vec<[f64; 3]>> {
             for k in 0..3 {
                 let mut e = vec![0.0; 4];
                 e[k] = 1.0;
-                let z = solve_small(bbt.clone(), e)?;
+                // Rank-deficient layouts (three rotors) make B·Bᵀ singular: fall back to a
+                // lightly damped (Tikhonov) solve, which gives the pseudo-inverse.
+                let z = solve_small(bbt.clone(), e.clone()).or_else(|| {
+                    let tr: f64 = (0..4).map(|i| bbt[i][i]).sum();
+                    let mut damped = bbt.clone();
+                    for (i, row) in damped.iter_mut().enumerate() {
+                        row[i] += 1e-6 * tr.max(1e-12);
+                    }
+                    solve_small(damped, e)
+                })?;
                 let col: Vec<f64> = (0..r.len())
                     .map(|i| (0..4).map(|j| rows[j][i] * z[j]).sum())
                     .collect();

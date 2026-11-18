@@ -192,18 +192,21 @@ pub fn open_loop(p: &Plant, f: &LoopFilters, g: &Gains, w: f64) -> (f64, f64) {
     (mag, ph)
 }
 
-/// Setpoint → rate closed loop |C·P / (1 + C·P·F_g)| (D on error for this estimate).
-fn closed_loop_mag(p: &Plant, f: &LoopFilters, g: &Gains, w: f64) -> f64 {
+/// Setpoint → rate closed loop |(Kp + Ki/s)·P / (1 + C·P·F_g)|. D acts on the measurement
+/// only (as in all three firmwares and in `simulate_step`), so it is in the loop but not in
+/// the setpoint path.
+pub(super) fn closed_loop_mag(p: &Plant, f: &LoopFilters, g: &Gains, w: f64) -> f64 {
     let c = controller(g, f, w);
     let lag = Cx::new(1.0, 0.0).cdiv(Cx::new(1.0, w * p.tau));
     let delay = Cx::new((w * p.delay).cos(), -(w * p.delay).sin());
     let plant = Cx::new(0.0, -p.k_over_j / w).cmul(lag).cmul(delay);
     let cp = c.cmul(plant);
+    let pi_p = Cx::new(g.kp, -g.ki / w).cmul(plant);
     let mut fg = Cx::new(1.0, 0.0);
     for flt in &f.gyro {
         fg = fg.cmul(flt.response(w));
     }
-    cp.cdiv(Cx::new(1.0, 0.0).cadd(cp.cmul(fg))).abs()
+    pi_p.cdiv(Cx::new(1.0, 0.0).cadd(cp.cmul(fg))).abs()
 }
 
 fn grid() -> impl Iterator<Item = f64> {
@@ -272,8 +275,10 @@ pub fn design(p: &Plant, f: &LoopFilters, opts: &DesignOpts) -> Option<(Gains, L
         return None;
     }
     let lag = p.tau + p.delay;
+    // With D enabled the positive lead times are tried first and the one with the best phase
+    // margin wins; pure PI is only the fallback when no D lead meets the margins and limits.
     let td_ratios: &[f64] = if opts.use_d {
-        &[0.0, 0.15, 0.3, 0.45]
+        &[0.15, 0.3, 0.45, 0.0]
     } else {
         &[0.0]
     };
@@ -281,6 +286,9 @@ pub fn design(p: &Plant, f: &LoopFilters, opts: &DesignOpts) -> Option<(Gains, L
     while wc > 0.5 {
         let mut best: Option<(Gains, LoopMetrics)> = None;
         for &r in td_ratios {
+            if r == 0.0 && opts.use_d && best.is_some() {
+                break;
+            }
             let unit = Gains {
                 kp: 1.0,
                 ki: wc / opts.ki_div,
@@ -307,8 +315,15 @@ pub fn design(p: &Plant, f: &LoopFilters, opts: &DesignOpts) -> Option<(Gains, L
                 && met.gain_margin_db >= opts.gm_target_db
                 && (wx / wc - 1.0).abs() < 0.35
             {
-                best = Some((g, met));
-                break;
+                let better = best
+                    .as_ref()
+                    .is_none_or(|(_, b)| met.phase_margin_deg > b.phase_margin_deg);
+                if better {
+                    best = Some((g, met));
+                }
+                if !opts.use_d {
+                    break;
+                }
             }
         }
         if best.is_some() {

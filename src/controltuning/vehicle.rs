@@ -127,7 +127,7 @@ fn rpm_for_thrust(t: f64, rho: f64, d: f64) -> f64 {
 fn hover_rotors(p: &Project, cx: f64, cy: f64) -> Vec<Rotor> {
     let n = arm_count(p);
     let pos = motor_positions(p.mr_frame_size, n, p.mr_layout, p.mr_h_lx, p.mr_h_wy);
-    let t_max = p.mr_t_max_motor.max(0.0);
+    let t_max = finite_pos(p.mr_t_max_motor, 1.0);
     let mut out = Vec::with_capacity(pos.len() * 2);
     for (i, &(x, y)) in pos.iter().enumerate() {
         let s = if i % 2 == 0 { 1.0 } else { -1.0 };
@@ -184,8 +184,8 @@ pub fn inertia_estimate(p: &Project, m: &Model) -> [f64; 3] {
 
 fn multirotor_inertia(p: &Project, m: &Model) -> [f64; 3] {
     let n = arm_count(p);
-    let cx = m.mr.cg_x;
-    let cy = m.mr.cg_y;
+    let cx = fin(m.mr.cg_x);
+    let cy = fin(m.mr.cg_y);
     let rotors = hover_rotors(p, cx, cy);
     let mut i = [0.0_f64; 3];
     fn add_point(i: &mut [f64; 3], mass: f64, x: f64, y: f64) {
@@ -274,6 +274,7 @@ fn fixed_wing_inertia(p: &Project, m: &Model) -> [f64; 3] {
         return sanitize(fallback, mass, b / 2.0);
     }
     let mut i = [0.0_f64; 3];
+    let mut has_wing = false;
     for (k, c) in comps.iter().enumerate() {
         if !(c.mass.is_finite() && c.mass > 0.0) {
             continue;
@@ -285,6 +286,7 @@ fn fixed_wing_inertia(p: &Project, m: &Model) -> [f64; 3] {
         i[2] += c.mass * (dx * dx + dy * dy);
         match p.components.get(k).map(|c| c.link) {
             Some(Link::Wing) => {
+                has_wing = true;
                 i[0] += c.mass * b * b / 12.0;
                 i[2] += c.mass * b * b / 12.0;
             }
@@ -294,6 +296,11 @@ fn fixed_wing_inertia(p: &Project, m: &Model) -> [f64; 3] {
             }
             _ => {}
         }
+    }
+    // Without a wing-linked component the roll inertia has no spanwise spread: use the typical
+    // radius of gyration as a lower bound.
+    if !has_wing {
+        i[0] = i[0].max(fallback[0]);
     }
     // Mass not represented in the table sits at the CG with the fallback distribution.
     let missing = (mass - comp_mass).max(0.0) / mass;
@@ -338,18 +345,26 @@ pub fn vehicle_data(p: &Project, m: &Model, tau_override: Option<f64>) -> Vehicl
     let t_max = finite_pos(p.mr_t_max_motor, 1.0);
     let n = rotors.len().max(1) as f64;
     let t_hover = weight / n;
-    let hover_frac = (t_hover / t_max).clamp(0.0, 1.5);
+    let hover_frac = (t_hover / t_max).clamp(0.0, 1.0);
     let mut hover_rpm = rpm_for_thrust(t_hover, rho, d_prop);
-    if kind == VehicleKind::Multirotor
+    let overridden = kind == VehicleKind::Multirotor
         && p.mr_hover_rpm_override.is_finite()
-        && p.mr_hover_rpm_override > 0.0
-    {
+        && p.mr_hover_rpm_override > 0.0;
+    if overridden {
         hover_rpm = p.mr_hover_rpm_override;
     }
-    let max_rpm = if hover_frac > 0.0 {
+    // RPM scales with sqrt(thrust). An overridden hover RPM scales to the maximum with the
+    // hover fraction; otherwise the maximum follows directly from the maximum thrust. An
+    // underpowered vehicle (hover thrust above the maximum) cannot hover above `max_rpm`.
+    let max_rpm = if overridden && hover_frac > 0.0 {
         hover_rpm / hover_frac.sqrt()
     } else {
         rpm_for_thrust(t_max, rho, d_prop)
+    };
+    let hover_rpm = if max_rpm > 0.0 {
+        hover_rpm.min(max_rpm)
+    } else {
+        hover_rpm
     };
     let (motor_tau, est) = match tau_override {
         Some(t) if t.is_finite() && t > 0.0 => (t.clamp(0.003, 0.5), false),

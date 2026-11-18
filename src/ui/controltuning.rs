@@ -396,11 +396,10 @@ fn failure_section(ui: &mut Ui, rep: &ControlReport, st: &mut CtState) {
                             }
                             let (s, txt) = class_badge(c.class);
                             components::badge(ui, s, txt);
-                            if c.class == HoverClass::NoHover && c.thrust_margin < 0.0 {
-                                ui.label("—");
-                            } else {
-                                ui.label(format!("{:+.0} %", 100.0 * c.thrust_margin));
-                            }
+                            match c.displayed_thrust_margin() {
+                                Some(x) => ui.label(format!("{:+.0} %", 100.0 * x)),
+                                None => ui.label("—"),
+                            };
                             let a: Vec<String> = c
                                 .authority
                                 .iter()

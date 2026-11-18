@@ -54,6 +54,20 @@ pub struct FailureCase {
     pub lost_axes: Vec<usize>,
 }
 
+impl FailureCase {
+    /// Thrust margin to show next to the result. `None` when hover fails because no static
+    /// equilibrium exists although the motors have thrust to spare (a quadrotor with one motor
+    /// out): a positive margin there would suggest it can hover. A negative margin (too little
+    /// thrust) is shown.
+    pub fn displayed_thrust_margin(&self) -> Option<f64> {
+        if self.class == HoverClass::NoHover && self.thrust_margin >= -1e-6 {
+            None
+        } else {
+            Some(self.thrust_margin)
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FailureReport {
     pub healthy: FailureCase,
@@ -215,13 +229,19 @@ fn generators(rotors: &[Rotor], failed: &[usize], weight: f64, l_ref: f64) -> Ve
         .collect()
 }
 
+/// Raw reaches about hover (roll, pitch, yaw; −/+) in the 4-D set and in the yaw-free 3-D set.
+struct Reach {
+    r4: [[f64; 2]; 3],
+    r3: [[f64; 2]; 3],
+}
+
 fn evaluate_case(
     rotors: &[Rotor],
     failed: Vec<usize>,
     weight: f64,
     l_ref: f64,
-    healthy_auth: Option<&[[f64; 2]; 3]>,
-) -> FailureCase {
+    healthy_reach: Option<&Reach>,
+) -> (FailureCase, Reach) {
     let gens = generators(rotors, &failed, weight, l_ref);
     let g = [1.0, 0.0, 0.0, 0.0];
     let s4 = eval_set(&gens, 4, &g);
@@ -233,23 +253,34 @@ fn evaluate_case(
     } else {
         HoverClass::NoHover
     };
-    let mut auth = [[0.0; 2]; 3];
-    for (axis, a) in auth.iter_mut().enumerate() {
+    // Reaches in the 4-D set (yaw held at zero) and in the 3-D yaw-free projection. A reach is
+    // only comparable with the healthy vehicle's reach in the same space.
+    let mut r4 = [[0.0; 2]; 3];
+    let mut r3 = [[0.0; 2]; 3];
+    for axis in 0..3 {
         for (k, sign) in [-1.0, 1.0].into_iter().enumerate() {
-            a[k] = match (class, axis) {
-                (HoverClass::Full, _) => reach(&s4, &g, axis + 1, sign, 4),
-                (HoverClass::NoYaw, 2) => reach(&s4, &g, 3, sign, 4),
-                (HoverClass::NoYaw, _) => reach(&s3, &g, axis + 1, sign, 3),
-                (HoverClass::NoHover, 2) => 0.0,
-                (HoverClass::NoHover, _) => reach(&s3, &g, axis + 1, sign, 3),
-            };
+            r4[axis][k] = reach(&s4, &g, axis + 1, sign, 4);
+            if axis < 2 {
+                r3[axis][k] = reach(&s3, &g, axis + 1, sign, 3);
+            }
         }
     }
-    if let Some(h) = healthy_auth {
-        for (a, hh) in auth.iter_mut().zip(h) {
-            for (v, hv) in a.iter_mut().zip(hh) {
-                *v = if *hv > EPS { *v / hv } else { 0.0 };
-            }
+    let mut auth = [[0.0; 2]; 3];
+    for axis in 0..3 {
+        for k in 0..2 {
+            let in_4d = class == HoverClass::Full || axis == 2;
+            let raw = match (class, axis) {
+                (HoverClass::NoHover, 2) => 0.0,
+                (_, _) if in_4d => r4[axis][k],
+                _ => r3[axis][k],
+            };
+            auth[axis][k] = match healthy_reach {
+                Some(h) => {
+                    let hv = if in_4d { h.r4[axis][k] } else { h.r3[axis][k] };
+                    if hv > EPS { (raw / hv).min(1.0) } else { 0.0 }
+                }
+                None => raw,
+            };
         }
     }
     let mut lost: Vec<usize> = (0..3)
@@ -263,15 +294,18 @@ fn evaluate_case(
     } else {
         max_thrust(&s3)
     };
-    FailureCase {
-        failed,
-        class,
-        acai4: s4.rho,
-        acai3: s3.rho,
-        thrust_margin: thrust_line - 1.0,
-        authority: auth,
-        lost_axes: lost,
-    }
+    (
+        FailureCase {
+            failed,
+            class,
+            acai4: s4.rho,
+            acai3: s3.rho,
+            thrust_margin: thrust_line - 1.0,
+            authority: auth,
+            lost_axes: lost,
+        },
+        Reach { r4, r3 },
+    )
 }
 
 /// Builds the motor-loss matrix. `l_ref` is the moment normalisation length (mean arm).
@@ -281,23 +315,18 @@ pub fn analyze_failures(
     l_ref: f64,
     include_pairs: bool,
 ) -> FailureReport {
-    let mut healthy = evaluate_case(rotors, Vec::new(), weight, l_ref, None);
-    let h_auth = healthy.authority;
-    healthy.authority = h_auth.map(|a| a.map(|v| if v > EPS { 1.0 } else { 0.0 }));
+    let (mut healthy, h_reach) = evaluate_case(rotors, Vec::new(), weight, l_ref, None);
+    healthy.authority = healthy
+        .authority
+        .map(|a| a.map(|v| if v > EPS { 1.0 } else { 0.0 }));
     let singles = (0..rotors.len())
-        .map(|i| evaluate_case(rotors, vec![i], weight, l_ref, Some(&h_auth)))
+        .map(|i| evaluate_case(rotors, vec![i], weight, l_ref, Some(&h_reach)).0)
         .collect();
     let mut pairs = Vec::new();
     if include_pairs {
         for i in 0..rotors.len() {
             for j in i + 1..rotors.len() {
-                pairs.push(evaluate_case(
-                    rotors,
-                    vec![i, j],
-                    weight,
-                    l_ref,
-                    Some(&h_auth),
-                ));
+                pairs.push(evaluate_case(rotors, vec![i, j], weight, l_ref, Some(&h_reach)).0);
             }
         }
     }
@@ -353,6 +382,36 @@ mod tests {
             assert_eq!(c.class, HoverClass::NoYaw, "{c:?}");
             assert!(c.acai3 > 0.0);
         }
+    }
+
+    #[test]
+    fn authority_never_exceeds_the_healthy_vehicle() {
+        for (n, off) in [
+            (6, std::f64::consts::PI / 6.0),
+            (4, std::f64::consts::FRAC_PI_4),
+        ] {
+            let r = ring(n, off, 10.0);
+            let rep = analyze_failures(&r, 10.0 * n as f64 / 2.0, 0.3, true);
+            for c in rep.singles.iter().chain(&rep.pairs) {
+                for a in c.authority.iter().flatten() {
+                    assert!(*a <= 1.0 + 1e-9, "{c:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quad_single_loss_shows_no_positive_thrust_margin() {
+        for t_max in [10.0, 15.0] {
+            let r = ring(4, std::f64::consts::FRAC_PI_4, t_max);
+            let rep = analyze_failures(&r, 20.0, 0.3, false);
+            for c in &rep.singles {
+                assert_eq!(c.class, HoverClass::NoHover);
+                assert_eq!(c.displayed_thrust_margin(), None, "{t_max}: {c:?}");
+            }
+        }
+        let weak = analyze_failures(&ring(4, std::f64::consts::FRAC_PI_4, 4.0), 20.0, 0.3, false);
+        assert!(weak.healthy.displayed_thrust_margin().unwrap() < 0.0);
     }
 
     #[test]
