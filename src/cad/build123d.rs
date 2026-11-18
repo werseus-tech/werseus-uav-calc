@@ -161,6 +161,16 @@ pub fn parse_py_launcher_list(stdout: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+fn interpreter_key(p: &Path) -> (PathBuf, PathBuf) {
+    let parent = p
+        .parent()
+        .and_then(|d| std::fs::canonicalize(d).ok())
+        .or_else(|| p.parent().map(Path::to_path_buf))
+        .unwrap_or_default();
+    let target = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    (parent, target)
+}
+
 /// Candidate interpreters, in order: configured path, PATH (python, python3), `py` launcher
 /// list. Duplicates are removed.
 pub fn python_candidates(
@@ -169,10 +179,10 @@ pub fn python_candidates(
 ) -> Vec<(PathBuf, Vec<String>)> {
     let mut out: Vec<(PathBuf, Vec<String>)> = Vec::new();
     let mut push = |p: PathBuf, a: Vec<String>| {
-        let key = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        let key = interpreter_key(&p);
         if !out
             .iter()
-            .any(|(q, b)| std::fs::canonicalize(q).unwrap_or_else(|_| q.clone()) == key && *b == a)
+            .any(|(q, b)| interpreter_key(q) == key && *b == a)
         {
             out.push((p, a));
         }
@@ -320,6 +330,7 @@ fn surface_spec(
     let mut bays = Vec::new();
     let mut knots: Vec<f64> = Vec::new();
     let mut mults: Vec<u32> = Vec::new();
+    let mut dxf = Vec::new();
     if let Some(terms) = &terms {
         let n_in = terms.len() + 1;
         knots = (0..n_in.saturating_sub(2)).map(|i| i as f64).collect();
@@ -339,23 +350,25 @@ fn surface_spec(
         for (za, zb) in st.bays_mm() {
             bays.push(json!({"a": section(za), "b": section(zb)}));
         }
+        let mut dxf_z = vec![st.root_rib_mm / 2.0];
+        dxf_z.extend(st.rib_stations_mm());
+        dxf_z.push(g.span - st.wall_mm / 2.0);
+        for z in dxf_z {
+            let mut p = plane([0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+            p["inner"] = section(z);
+            dxf.push(p);
+        }
+    } else {
+        dxf.push(plane(
+            [0.0, 0.0, g.span * 0.002],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ));
     }
     let spar = st.spar.map(|a| {
         let s0 = dot(sub(a.start, a.hole_start), a.dir);
         json!({"start": a.hole_start, "dir": a.dir, "len": s0 + a.length + 1.5, "r": a.od / 2.0})
     });
-    let mut dxf_z = Vec::new();
-    if bays.is_empty() {
-        dxf_z.push(g.span * 0.002);
-    } else {
-        dxf_z.push(st.root_rib_mm / 2.0);
-        dxf_z.extend(st.rib_stations_mm());
-        dxf_z.push(g.span - st.wall_mm / 2.0);
-    }
-    let dxf: Vec<Value> = dxf_z
-        .into_iter()
-        .map(|z| plane([0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]))
-        .collect();
     json!({
         "kind": "surface",
         "pts": g.profile.pts,
@@ -388,19 +401,26 @@ fn fuselage_spec(f: &super::freecad::FuselageCadParams) -> Value {
         v
     });
     let h = st.former_t_mm / 2.0;
-    let formers: Vec<[[f64; 2]; 4]> = st
+    let stations: Vec<f64> = st
         .former_stations_mm()
         .into_iter()
-        .map(|x| {
-            let r_hole = prof.r_at(x) - st.wall_mm - st.former_depth_mm;
+        .filter(|&x| prof.r_at(x) > st.wall_mm + 1e-3)
+        .collect();
+    let formers: Vec<[[f64; 2]; 4]> = stations
+        .iter()
+        .map(|&x| {
+            let r_hole = (prof.r_at(x) - st.wall_mm - st.former_depth_mm).max(1e-3);
             let big = 2.0 * r_max;
             [[x - h, r_hole], [x + h, r_hole], [x + h, big], [x - h, big]]
         })
         .collect();
-    let dxf: Vec<Value> = st
-        .former_stations_mm()
+    let dxf: Vec<Value> = stations
         .into_iter()
-        .map(|x| plane([x, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]))
+        .map(|x| {
+            let mut p = plane([x, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+            p["r"] = json!(prof.r_at(x) - st.wall_mm);
+            p
+        })
         .collect();
     json!({
         "kind": "fuselage",
@@ -770,6 +790,12 @@ fn run_once(
     }
     let end = run_process_controlled(cmd, total_left, &inner, |line| {
         if let Some(pl) = parse_part_line(line) {
+            if let Ok(mut s) = state.lock()
+                && let Watch::Part(i) = s.stage
+            {
+                s.stage = Watch::Part(i + 1);
+                s.since = Instant::now();
+            }
             on_part(pl);
         } else if let Some(st) = parse_stage_line(line) {
             let next = match st.id.as_str() {
@@ -974,6 +1000,7 @@ pub fn run_fast_outputs_controlled(
                             fcstd_file: String::new(),
                         });
                     } else {
+                        let _ = std::fs::remove_file(script_dir.join(format!("{}.brep", q.stem)));
                         let e = pl.error.clone().unwrap_or_default();
                         let first = e.lines().next().unwrap_or("").to_string();
                         sum.failed.push(format!("{}: {first}", q.id.key()));
@@ -1015,7 +1042,15 @@ pub fn run_fast_outputs_controlled(
                     return;
                 }
                 // With no part left in this run the stuck stage is the assembly.
-                RunOutcome::PartTimeout(_) if batch.is_empty() => {
+                RunOutcome::PartTimeout(i) if i >= batch.len() => {
+                    let asm_snap: Vec<_> = snap
+                        .iter()
+                        .filter(|(path, _)| {
+                            expected_fast_files(&out_dir, ASSEMBLY_NAME).contains(path)
+                        })
+                        .cloned()
+                        .collect();
+                    remove_new_or_changed(&asm_snap);
                     sum.failed.push(format!(
                         "assembly: {}",
                         crate::i18n::tf(
@@ -1027,8 +1062,10 @@ pub fn run_fast_outputs_controlled(
                     asm_done = true;
                 }
                 RunOutcome::PartTimeout(i) => {
-                    let i = i.min(batch.len().saturating_sub(1));
-                    if let Some(q) = batch.get(i) {
+                    if let Some(q) = batch.get(i)
+                        && !sum.parts.iter().any(|r| r.id == q.id)
+                        && !sum.failed.iter().any(|f| f.starts_with(q.id.key()))
+                    {
                         // Only the timed-out part's files can be partial.
                         let part_snap: Vec<_> = snap
                             .iter()
@@ -1038,6 +1075,7 @@ pub fn run_fast_outputs_controlled(
                             .cloned()
                             .collect();
                         remove_new_or_changed(&part_snap);
+                        let _ = std::fs::remove_file(script_dir.join(format!("{}.brep", q.stem)));
                         sum.failed.push(format!(
                             "{}: {}",
                             q.id.key(),
@@ -1253,11 +1291,12 @@ mod tests {
         let st = lay.wing.structure();
         assert!(st.is_hollow());
         assert_eq!(wing["bays"].as_array().unwrap().len(), st.rib_bays as usize);
-        // Root rib + intermediate ribs + tip cap as DXF sections.
-        assert_eq!(
-            wing["dxf"].as_array().unwrap().len(),
-            st.rib_stations_mm().len() + 2
-        );
+        // Root rib + intermediate ribs + tip cap as DXF sections, each bounded by the inner skin.
+        let wing_dxf = wing["dxf"].as_array().unwrap();
+        assert_eq!(wing_dxf.len(), st.rib_stations_mm().len() + 2);
+        for d in wing_dxf {
+            assert!(d["inner"]["poles"].is_array() && d["inner"]["pl"].is_array());
+        }
         assert!(wing["spar"].is_object());
         let poles = wing["bays"][0]["a"]["poles"].as_array().unwrap();
         let knots = wing["knots"].as_array().unwrap().len();
@@ -1272,16 +1311,36 @@ mod tests {
         assert_eq!(knots, poles.len() - 2);
         let fuse = part_spec(PartId::Fuselage, &p, &lay);
         let fst = lay.fuselage.structure();
+        let fprof = lay.fuselage.profile();
         assert!(fuse["inner"].is_array());
         assert_eq!(
             fuse["formers"].as_array().unwrap().len(),
             fst.former_fracs.len()
         );
+        for (d, x) in fuse["dxf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(fst.former_stations_mm())
+        {
+            assert!((d["r"].as_f64().unwrap() - (fprof.r_at(x) - fst.wall_mm)).abs() < 1e-9);
+        }
         assert_eq!(
             fuse["plugs"].as_array().unwrap().len(),
             lay.fuselage.plugs.len()
         );
-        // Solid (wall 0) surface: no bays, one DXF profile.
+        // Narrow fuselage: former inner radius is clamped positive and never crosses the X axis.
+        let mut narrow = lay.fuselage.clone();
+        narrow.max_diameter_mm = 12.0;
+        narrow.nose_r_mm = 2.0;
+        narrow.tail_r_mm = 2.0;
+        let nf = fuselage_spec(&narrow);
+        for loop_pts in nf["formers"].as_array().unwrap() {
+            for pt in loop_pts.as_array().unwrap() {
+                assert!(pt[1].as_f64().unwrap() >= 1e-3);
+            }
+        }
+        // Solid (wall 0) surface: no bays, one outer-mold DXF profile.
         let mut q = p.clone();
         q.t_wall = 0.0;
         let m2 = evaluate(&q, &Library::embedded());
@@ -1289,6 +1348,34 @@ mod tests {
         let w2 = part_spec(PartId::TailHorizontal, &q, &lay2);
         assert!(w2["bays"].as_array().unwrap().is_empty());
         assert_eq!(w2["dxf"].as_array().unwrap().len(), 1);
+        assert!(w2["dxf"][0].get("inner").is_none());
+    }
+
+    #[test]
+    fn plugs_and_arm_builders_respect_attitude_and_hole_geometry() {
+        let p = crate::project::load_example("vtol_quadplane.json").unwrap();
+        let m = evaluate(&p, &Library::embedded());
+        let mut lay = Layout::new(&p, &m);
+        lay.wing.dihedral_deg = 4.0;
+        lay.wing.twist_deg = -2.5;
+        let wg = lay.wing.geom();
+        let plug = PlugSpec::new(&wg, -10.0, 10.0, &super::super::geom::Frame::IDENTITY)
+            .with_attitude(lay.wing.dihedral_deg, lay.wing.twist_deg);
+        assert!(plug.is_finite());
+        assert_eq!((plug.dihedral, plug.twist), (4.0, -2.5));
+        lay.clamp.saddle = Some(plug);
+        let clamp = part_spec(PartId::BoomWingClamp, &p, &lay);
+        assert_eq!(clamp["saddle"]["dihedral"].as_f64(), Some(4.0));
+        assert_eq!(clamp["saddle"]["twist"].as_f64(), Some(-2.5));
+        assert!(PY_LIB.contains("sp.get(\"dihedral\", 0.0)"));
+        assert!(PY_LIB.contains("sp.get(\"twist\", 0.0)"));
+        assert!(PY_LIB.contains("[sp[\"z0\"], 0.0, sp[\"z1\"]] if sp[\"z0\"] < 0.0 < sp[\"z1\"]"));
+        assert!(PY_LIB.contains("sp[\"pattern\"] / (2.0 * math.sqrt(2.0))"));
+        assert!(PY_LIB.contains("span = (xm - sp[\"pattern\"] / 2.0) - x_ch"));
+        // .brep is written only after all part exports succeed.
+        let dxf_pos = PY_LIB.find("write_dxf(shape, spec[\"dxf\"]").unwrap();
+        let brep_pos = PY_LIB.find("export_brep(shape,").unwrap();
+        assert!(brep_pos > dxf_pos);
     }
 
     #[test]
@@ -1421,6 +1508,19 @@ mod tests {
             },
         );
         assert_eq!(order.first(), Some(&a));
+        // A venv link in a different parent directory is not deduplicated against the base binary.
+        let venv_dir = dir.join("venv").join("Scripts");
+        std::fs::create_dir_all(&venv_dir).unwrap();
+        let venv_py = venv_dir.join("a_python.exe");
+        if std::fs::hard_link(&a, &venv_py).is_err() {
+            std::fs::write(&venv_py, b"").unwrap();
+        }
+        let cands = python_candidates(Some(a.to_str().unwrap()), || {
+            vec![a.clone(), venv_py.clone()]
+        });
+        assert!(cands.iter().any(|(p, _)| p == &a));
+        assert!(cands.iter().any(|(p, _)| p == &venv_py));
+        assert_eq!(cands.iter().filter(|(p, _)| p == &a).count(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1521,6 +1621,24 @@ mod tests {
             |_| {},
         );
         assert!(matches!(out, RunOutcome::TotalTimeout));
+        // Hang right after PART_TAG (before the next stage line) advances the watchdog past the completed part.
+        let py_after = fake_python(
+            &dir,
+            &format!(
+                "@echo off\r\necho __WERSEUS_STAGE__:part:1/2\r\necho {PART_TAG}{{\"stem\":\"a\",\"ok\":true}}\r\nping -n 30 127.0.0.1 >nul\r\n"
+            ),
+        );
+        let out = run_once(
+            &py_after,
+            &script,
+            Duration::from_secs(60),
+            &limits,
+            &CancelFlag::new(),
+            |_| {},
+            |_| {},
+            |_| {},
+        );
+        assert!(matches!(out, RunOutcome::PartTimeout(1)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

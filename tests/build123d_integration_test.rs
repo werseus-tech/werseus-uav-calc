@@ -226,7 +226,11 @@ fn expected_volume(id: PartId, p: &Project, lay: &Layout) -> Option<(f64, f64)> 
             )
         }
         PartId::MotorMount | PartId::LiftMotorMount | PartId::MrMotorMount => {
-            let m = &lay.motor_mount;
+            let m = match id {
+                PartId::LiftMotorMount => &lay.lift_mount,
+                PartId::MrMotorMount => &lay.mr_mount,
+                _ => &lay.motor_mount,
+            };
             let t = m.thickness_mm;
             let v = m.plate_size_mm.powi(2) * t
                 - plate_holes(
@@ -257,9 +261,30 @@ fn expected_volume(id: PartId, p: &Project, lay: &Layout) -> Option<(f64, f64)> 
             let a = &lay.mr_arm;
             let (w, t, l) = (a.width_mm, a.thickness_mm, a.arm_length_mm);
             let mut v = (l - w / 2.0) * w * t + PI * w * w / 8.0 * t;
-            v -= plate_holes(t, &[(a.motor_shaft_dia_mm, 1), (a.motor_bolt_dia_mm, 4)]);
-            v -= 0.45 * l * 0.4 * w * t;
-            // Chassis holes may overlap the slot; small band.
+            v -= plate_holes(
+                t,
+                &[
+                    (a.motor_shaft_dia_mm, 1),
+                    (a.motor_bolt_dia_mm, 4),
+                    (
+                        a.chassis_bolt_dia_mm,
+                        if a.chassis_bolt_spacing_mm > 0.0 {
+                            2
+                        } else {
+                            1
+                        },
+                    ),
+                ],
+            );
+            let x_ch = a.chassis_hole_x0_mm + a.chassis_bolt_spacing_mm;
+            let span = (l - w / 2.0 - a.motor_mount_pattern_mm / 2.0) - x_ch;
+            if span
+                > 12.0_f64
+                    .max(4.0 * a.chassis_bolt_dia_mm)
+                    .max(4.0 * a.motor_bolt_dia_mm)
+            {
+                v -= 0.65 * span * 0.4 * w * t;
+            }
             (v, 0.03)
         }
         PartId::LandingGear => {
@@ -484,4 +509,17 @@ fn fast_e2e_vtail_variant() {
     assert!(s.interferences.is_empty(), "{:?}", s.interferences);
     assert!(s.floating.is_empty(), "{:?}", s.floating);
     let _ = fs::remove_dir_all(&out);
+}
+
+#[test]
+fn expected_volume_selects_distinct_motor_mounts() {
+    let p = load_example("vtol_quadplane.json").expect("example");
+    let m = evaluate(&p, &Library::embedded());
+    let mut lay = Layout::new(&p, &m);
+    lay.lift_mount.plate_size_mm = lay.motor_mount.plate_size_mm + 10.0;
+    lay.mr_mount.plate_size_mm = lay.motor_mount.plate_size_mm + 20.0;
+    let v_main = expected_volume(PartId::MotorMount, &p, &lay).unwrap().0;
+    let v_lift = expected_volume(PartId::LiftMotorMount, &p, &lay).unwrap().0;
+    let v_mr = expected_volume(PartId::MrMotorMount, &p, &lay).unwrap().0;
+    assert!(v_lift > v_main && v_mr > v_lift);
 }

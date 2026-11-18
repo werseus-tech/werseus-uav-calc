@@ -128,12 +128,23 @@ def cut_all(shape, tools):
 
 def surf_plug(sp):
     """The surface's exact slice [z0, z1] in the host part's frame (wing/tail slot, saddle)."""
+    span = max(float(sp["span"]), 1e-9)
+    tan_sw = math.tan(math.radians(sp["sweep"]))
+    tan_dh = math.tan(math.radians(sp.get("dihedral", 0.0)))
+    th = math.radians(sp.get("twist", 0.0))
+    ct, st = math.cos(th), math.sin(th)
     def sec(z):
-        s = abs(z)
-        c = sp["c_r"] + (sp["c_t"] - sp["c_r"]) * s / sp["span"]
-        x0 = s * math.tan(math.radians(sp["sweep"]))
-        return interp_wire([mat_apply(sp["m"], (x0 + q[0] * c, q[1] * c, z)) for q in sp["pts"]])
-    return Solid.make_loft([sec(sp["z0"]), sec(sp["z1"])], ruled=True)
+        sf = abs(z) / span
+        a = (1.0 - sf) * sp["c_r"]
+        b = sf * sp["c_t"]
+        c = math.sqrt(max(0.0, a * a + b * b + 2.0 * a * b * ct))
+        bx = abs(z) * tan_sw + sf * 0.25 * sp["c_t"] * (1.0 - ct)
+        by = abs(z) * tan_dh + sf * 0.25 * sp["c_t"] * st
+        yaw = -math.atan2(b * st, a + b * ct)
+        pts = placed((bx, by, yaw, z), [(q[0] * c, q[1] * c) for q in sp["pts"]])
+        return interp_wire([mat_apply(sp["m"], p) for p in pts])
+    zs = [sp["z0"], 0.0, sp["z1"]] if sp["z0"] < 0.0 < sp["z1"] else [sp["z0"], sp["z1"]]
+    return Solid.make_loft([sec(z) for z in zs], ruled=True)
 
 
 def rev_xz(loop):
@@ -210,11 +221,15 @@ def build_arm(sp):
     xm = L - w / 2
     shape = box_min(0, -w / 2, 0, xm, w, t).fuse(cyl(w / 2, t, (xm, 0, 0)))
     tools = [cyl(sp["shaft"] / 2, t + 2, (xm, 0, -1))]
+    d = sp["pattern"] / (2.0 * math.sqrt(2.0))
     for dx, dy in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
-        tools.append(cyl(sp["bolt"] / 2, t + 2, (xm + dx * sp["pattern"] / 2, dy * sp["pattern"] / 2, -1)))
+        tools.append(cyl(sp["bolt"] / 2, t + 2, (xm + dx * d, dy * d, -1)))
     for i in range(2):
         tools.append(cyl(sp["ch_bolt"] / 2, t + 2, (sp["ch_x0"] + i * sp["ch_spacing"], 0, -1)))
-    tools.append(box_min(40.0, -0.2 * w, -1, 0.45 * L, 0.4 * w, t + 2))
+    x_ch = sp["ch_x0"] + sp["ch_spacing"]
+    span = (xm - sp["pattern"] / 2.0) - x_ch
+    if span > max(12.0, 4.0 * sp["ch_bolt"], 4.0 * sp["bolt"]):
+        tools.append(box_min(x_ch + 0.2 * span, -0.2 * w, -1, 0.65 * span, 0.4 * w, t + 2))
     return cut_all(shape, tools)
 
 
@@ -247,7 +262,22 @@ BUILDERS = {
 }
 
 
-def write_dxf(shape, planes, path):
+def dxf_cutter(pl, plane, sp):
+    if sp and "inner" in pl:
+        s = pl["inner"]
+        return Face(bspline_wire(placed(s["pl"], s["poles"]), sp["knots"], sp["mults"]))
+    if "r" in pl:
+        c = cyl(pl["r"], 1.0, (pl["o"][0] - 0.5, 0, 0), (1, 0, 0))
+        pad = sp.get("pad") if sp else None
+        if pad:
+            w = sp["wall"]
+            big = 4.0 * sp["r_max"]
+            c = c.cut(box_min(pad["x0"] - w, -big, -big, pad["x1"] - pad["x0"] + 2 * w, 2 * big, big + pad["z"] + w))
+        return c.intersect(Face.make_rect(1e5, 1e5, plane))
+    return Face.make_rect(1e5, 1e5, plane)
+
+
+def write_dxf(shape, planes, path, sp=None):
     """Planar sections (ribs, formers, plates) laid out side by side along X."""
     exp = ExportDXF()
     x_off = 0.0
@@ -255,7 +285,7 @@ def write_dxf(shape, planes, path):
     for pl in planes:
         plane = Plane(origin=vec(pl["o"]), x_dir=vec(pl["x"]), z_dir=vec(pl["z"]))
         try:
-            sec = shape.intersect(Face.make_rect(1e5, 1e5, plane))
+            sec = shape.intersect(dxf_cutter(pl, plane, sp))
         except Exception:
             sec = None
         faces = list(sec.faces()) if sec is not None else []
@@ -386,8 +416,6 @@ def main(job):
             rec["ok"] = rec["valid"] and rec["solids"] == 1 and rec["volume_mm3"] > 0.0
             if not rec["ok"]:
                 raise RuntimeError("invalid solid (valid=%s, solids=%d)" % (rec["valid"], rec["solids"]))
-            export_brep(shape, os.path.join(scratch, stem + ".brep"))
-            built[stem] = shape
             if fm["step"]:
                 p = os.path.join(out_dir, stem + ".step")
                 export_step(shape, p)
@@ -398,8 +426,10 @@ def main(job):
                 rec["files"].append(p)
             if fm["dxf"] and spec.get("dxf"):
                 p = os.path.join(out_dir, stem + ".dxf")
-                if write_dxf(shape, spec["dxf"], p):
+                if write_dxf(shape, spec["dxf"], p, spec):
                     rec["files"].append(p)
+            export_brep(shape, os.path.join(scratch, stem + ".brep"))
+            built[stem] = shape
         except Exception as e:
             rec["ok"] = False
             rec["error"] = str(e) or type(e).__name__
