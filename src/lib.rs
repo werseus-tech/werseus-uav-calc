@@ -9,6 +9,7 @@ pub mod footprint;
 pub mod geom3d;
 pub mod i18n;
 pub mod project;
+pub mod reliability;
 pub mod report;
 pub mod support;
 pub mod teach;
