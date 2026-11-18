@@ -49,8 +49,21 @@ pub struct ThermalSpec {
     pub heat_capacity_j_per_k: f64,
 }
 
+/// Minimum clamped ambient/limit temperature, C.
+pub const MIN_TEMP_C: f64 = -100.0;
+/// Maximum clamped ambient/limit temperature, C.
+pub const MAX_TEMP_C: f64 = 500.0;
+
 fn pos(x: f64) -> f64 {
     if x.is_finite() && x > 0.0 { x } else { 0.0 }
+}
+
+fn clean_temp(t: f64, default: f64) -> f64 {
+    if t.is_finite() {
+        t.clamp(MIN_TEMP_C, MAX_TEMP_C)
+    } else {
+        default
+    }
 }
 
 /// Total thermal resistance `r_internal + 1/(h A)`, K/W (finite, positive).
@@ -97,12 +110,8 @@ pub fn evaluate_heat(
     limit_c: f64,
 ) -> HeatResult {
     let loss = pos(loss_w).min(1e9);
-    let amb = if ambient_c.is_finite() {
-        ambient_c
-    } else {
-        20.0
-    };
-    let lim = if limit_c.is_finite() { limit_c } else { 100.0 };
+    let amb = clean_temp(ambient_c, 20.0);
+    let lim = clean_temp(limit_c, 100.0);
     let r_th = thermal_resistance(spec, cooling);
     let tau = r_th * pos(spec.heat_capacity_j_per_k).min(1e9);
     let rise = loss * r_th;
@@ -111,11 +120,14 @@ pub fn evaluate_heat(
         Some(0.0)
     } else if rise <= 0.0 || steady <= lim {
         None
+    } else if tau <= 0.0 {
+        Some(0.0)
     } else {
-        Some(-tau * (1.0 - (lim - amb) / rise).ln())
+        let arg = ((steady - lim) / rise).clamp(f64::MIN_POSITIVE, 1.0);
+        Some(-tau * arg.ln())
     };
     let margin = lim - steady;
-    let status = if margin < 0.0 {
+    let status = if amb >= lim || margin <= 0.0 {
         HeatStatus::Fail
     } else if margin < 0.1 * (lim - amb) {
         HeatStatus::Warn
@@ -136,13 +148,19 @@ pub fn evaluate_heat(
 
 /// First-order warm-up from ambient at time `t_s`.
 pub fn temperature_at(result: &HeatResult, ambient_c: f64, t_s: f64) -> f64 {
+    let amb = clean_temp(ambient_c, 20.0);
+    let rise = if result.temp_rise_k.is_finite() {
+        result.temp_rise_k.clamp(0.0, 1e6)
+    } else {
+        0.0
+    };
     if !t_s.is_finite() || t_s <= 0.0 {
-        return ambient_c;
+        return amb;
     }
-    if result.tau_s <= 0.0 {
-        return ambient_c + result.temp_rise_k;
+    if !result.tau_s.is_finite() || result.tau_s <= 0.0 {
+        return amb + rise;
     }
-    ambient_c + result.temp_rise_k * (1.0 - (-t_s / result.tau_s).exp())
+    amb + rise * (1.0 - (-t_s / result.tau_s).exp())
 }
 
 /// ESC loss from efficiency: `V I (1 - eta)`, W.
@@ -152,18 +170,29 @@ pub fn esc_loss_efficiency(v_in: f64, i_a: f64, eta: f64) -> f64 {
     } else {
         1.0
     };
-    pos(v_in) * pos(i_a) * (1.0 - eta)
+    pos(v_in).min(1e6) * pos(i_a).min(1e9) * (1.0 - eta)
 }
 
-/// ESC loss from conduction and switching: `I^2 R_on + sw_frac V I`, W.
-pub fn esc_loss_rds_on(v_in: f64, i_a: f64, r_on_ohm: f64, sw_frac: f64) -> f64 {
-    let i = pos(i_a);
-    i * i * pos(r_on_ohm) + pos(sw_frac) * pos(v_in) * i
+/// ESC loss from conduction and switching: two MOSFETs in series (`2 R_ds_on`) carrying the
+/// PWM-scaled phase current `I_phase = I_dc / duty`, plus switching loss on `I_phase`, W.
+pub fn esc_loss_rds_on(v_in: f64, i_dc_a: f64, duty: f64, r_on_ohm: f64, sw_frac: f64) -> f64 {
+    let i_dc = pos(i_dc_a).min(1e9);
+    if i_dc == 0.0 {
+        return 0.0;
+    }
+    let d = if duty.is_finite() {
+        duty.clamp(0.05, 1.0)
+    } else {
+        1.0
+    };
+    let i_phase = i_dc / d;
+    i_phase * i_phase * (2.0 * pos(r_on_ohm).min(1e6))
+        + pos(sw_frac).min(1.0) * pos(v_in).min(1e6) * i_phase
 }
 
 /// Linear regulator loss `(Vin - Vout) I`, W.
 pub fn bec_loss_linear(v_in: f64, v_out: f64, i_load_a: f64) -> f64 {
-    pos(pos(v_in) - pos(v_out)) * pos(i_load_a)
+    pos(pos(v_in).min(1e6) - pos(v_out).min(1e6)) * pos(i_load_a).min(1e9)
 }
 
 /// Switching regulator loss `(1 - eta) P_in = P_out (1/eta - 1)`, W (eta clamped 0.3..1).
@@ -173,12 +202,12 @@ pub fn bec_loss_switching(v_out: f64, i_load_a: f64, eta: f64) -> f64 {
     } else {
         1.0
     };
-    pos(v_out) * pos(i_load_a) * (1.0 / eta - 1.0)
+    pos(v_out).min(1e6) * pos(i_load_a).min(1e9) * (1.0 / eta - 1.0)
 }
 
 /// Video transmitter heat: input power minus RF output, W.
 pub fn vtx_loss(p_in_w: f64, p_rf_w: f64) -> f64 {
-    pos(pos(p_in_w) - pos(p_rf_w))
+    pos(pos(p_in_w).min(1e9) - pos(p_rf_w).min(1e9))
 }
 
 #[cfg(test)]
@@ -249,9 +278,38 @@ mod tests {
     }
 
     #[test]
+    fn edge_cases_ambient_at_limit_zero_tau_and_negative_ambient() {
+        let at_limit = evaluate_heat(0.0, &SPEC, Cooling::OpenStill, 100.0, 100.0);
+        assert_eq!(at_limit.status, HeatStatus::Fail);
+        assert_eq!(at_limit.time_to_limit_s, Some(0.0));
+
+        let zero_tau_spec = ThermalSpec {
+            heat_capacity_j_per_k: 0.0,
+            ..SPEC
+        };
+        let instant = evaluate_heat(10.0, &zero_tau_spec, Cooling::OpenStill, 25.0, 100.0);
+        assert_eq!(instant.status, HeatStatus::Fail);
+        assert_eq!(instant.time_to_limit_s, Some(0.0));
+
+        let r_th = thermal_resistance(&SPEC, Cooling::OpenStill);
+        let amb = -40.0_f64;
+        let lim = 10.0_f64;
+        // Steady just above limit so (lim - amb) / rise is close to 1.0 under negative ambient.
+        let loss = ((lim - amb) + 1e-13) / r_th;
+        let near = evaluate_heat(loss, &SPEC, Cooling::OpenStill, amb, lim);
+        if let Some(t) = near.time_to_limit_s {
+            assert!(t.is_finite() && t >= 0.0, "time_to_limit_s={t}");
+        }
+        assert_eq!(near.status, HeatStatus::Fail);
+    }
+
+    #[test]
     fn loss_models() {
         assert!((esc_loss_efficiency(14.8, 20.0, 0.95) - 14.8).abs() < 1e-9);
-        assert!((esc_loss_rds_on(14.8, 30.0, 0.004, 0.005) - (3.6 + 2.22)).abs() < 1e-9);
+        assert!((esc_loss_rds_on(14.8, 30.0, 1.0, 0.004, 0.005) - (7.2 + 2.22)).abs() < 1e-9);
+        // At 50% duty cycle with 10 A DC bus current, phase current is 20 A through 2*R_on.
+        assert!((esc_loss_rds_on(14.8, 10.0, 0.5, 0.004, 0.005) - (3.2 + 1.48)).abs() < 1e-9);
+        assert_eq!(esc_loss_rds_on(14.8, 0.0, 0.5, 0.004, 0.005), 0.0);
         assert_eq!(bec_loss_linear(12.0, 5.0, 1.0), 7.0);
         assert_eq!(bec_loss_linear(4.0, 5.0, 1.0), 0.0);
         assert!((bec_loss_switching(5.0, 2.0, 0.9) - 10.0 * (1.0 / 0.9 - 1.0)).abs() < 1e-9);
@@ -261,7 +319,14 @@ mod tests {
 
     #[test]
     fn no_nan() {
-        let bad = [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -5.0, 1e12];
+        let bad = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -5.0,
+            1e12,
+            1e308,
+        ];
         for &x in &bad {
             let spec = ThermalSpec {
                 area_m2: x,
@@ -279,11 +344,14 @@ mod tests {
                 ] {
                     assert!(v.is_finite());
                 }
-                assert!(temperature_at(&r, 20.0, x).is_finite());
+                if let Some(t) = r.time_to_limit_s {
+                    assert!(t.is_finite());
+                }
+                assert!(temperature_at(&r, x, x).is_finite());
             }
             for v in [
                 esc_loss_efficiency(x, x, x),
-                esc_loss_rds_on(x, x, x, x),
+                esc_loss_rds_on(x, x, x, x, x),
                 bec_loss_linear(x, x, x),
                 bec_loss_switching(x, x, x),
                 vtx_loss(x, x),

@@ -173,13 +173,23 @@ fn electronics_results(ui: &mut Ui, a: &Analysis, src: &PowerSource) {
                 ui.strong(h);
             }
             ui.end_row();
-            component_row(
-                ui,
-                t("thermalpower.esc"),
-                a.esc.count,
-                &a.esc.low,
-                &a.esc.full,
-            );
+            let vtol = a.esc_lift.is_some() && a.esc_forward.is_some();
+            if let Some(lift) = &a.esc_lift {
+                let label = if vtol {
+                    t("thermalpower.esc.lift")
+                } else {
+                    t("thermalpower.esc")
+                };
+                component_row(ui, label, lift.count, &lift.low, &lift.full);
+            }
+            if let Some(fwd) = &a.esc_forward {
+                let label = if vtol {
+                    t("thermalpower.esc.forward")
+                } else {
+                    t("thermalpower.esc")
+                };
+                component_row(ui, label, fwd.count, &fwd.low, &fwd.full);
+            }
             component_row(
                 ui,
                 t("thermalpower.bec"),
@@ -195,6 +205,55 @@ fn electronics_results(ui: &mut Ui, a: &Analysis, src: &PowerSource) {
                 &a.vtx.full,
             );
         });
+}
+
+/// Computes `(scale_px_per_m, nose_x_m)` from the combined bounding box of airframe and motors.
+fn heat_map_layout(rect: Rect, p: &Project, m: &Model) -> (f32, f64) {
+    let multirotor = p.drone_type == DroneType::Multirotor;
+    if multirotor {
+        let ext =
+            m.mr.motor_coords
+                .iter()
+                .fold(0.1_f64, |e, &(x, y)| e.max(x.abs()).max(y.abs()))
+                + 0.08;
+        let scale = (rect.height().min(rect.width()) * 0.5 - 14.0) / ext as f32;
+        return (scale, 0.0);
+    }
+    let l = if p.l_fuse.is_finite() && p.l_fuse > 0.05 {
+        p.l_fuse
+    } else {
+        0.8
+    };
+    let b = if p.b.is_finite() && p.b > 0.05 {
+        p.b
+    } else {
+        1.5
+    };
+    let chord = if p.s.is_finite() && p.s > 0.0 {
+        (p.s / b).clamp(0.03, l)
+    } else {
+        0.2
+    };
+    let wing_x = if p.drone_type == DroneType::FlyingWing {
+        0.0
+    } else {
+        l * 0.05
+    };
+    let mut half_x = (l * 0.5)
+        .max(wing_x + chord * 0.5)
+        .max((wing_x - chord * 0.5).abs());
+    let mut half_y = b * 0.5;
+    if p.drone_type == DroneType::VtolQuadplane {
+        for &(x, y) in &m.mr.motor_coords {
+            if x.is_finite() && y.is_finite() {
+                half_x = half_x.max(x.abs() + 0.08);
+                half_y = half_y.max(y.abs() + 0.08);
+            }
+        }
+    }
+    let scale = ((rect.width() - 24.0) as f64 / (2.0 * half_y))
+        .min((rect.height() - 24.0) as f64 / (2.0 * half_x)) as f32;
+    (scale, l / 2.0)
 }
 
 /// Schematic top view with the components coloured by their steady temperature at full throttle.
@@ -214,29 +273,19 @@ fn heat_map(ui: &mut Ui, p: &Project, m: &Model, a: &Analysis, cfg: &Config) {
     let multirotor = p.drone_type == DroneType::Multirotor;
     let body = Stroke::new(1.5, tk.border_strong);
     // World metres -> screen: x forward (up), y right.
-    let (scale, nose_x): (f32, f64);
+    let (scale, nose_x) = heat_map_layout(rect, p, m);
+    let to = |x: f64, y: f64| Pos2::new(c.x + y as f32 * scale, c.y - x as f32 * scale);
     let mut motors: Vec<(f64, f64)> = Vec::new();
     if multirotor || p.drone_type == DroneType::VtolQuadplane {
         motors = m.mr.motor_coords.clone();
     }
     if multirotor {
-        let ext = motors
-            .iter()
-            .fold(0.1_f64, |e, &(x, y)| e.max(x.abs()).max(y.abs()))
-            + 0.08;
-        scale = (rect.height().min(rect.width()) * 0.5 - 14.0) / ext as f32;
-        nose_x = 0.0;
         for &(x, y) in &motors {
-            let q = Pos2::new(c.x + y as f32 * scale, c.y - x as f32 * scale);
-            painter.line_segment([c, q], body);
+            painter.line_segment([c, to(x, y)], body);
         }
         painter.circle_stroke(c, 14.0, body);
     } else {
-        let l = if p.l_fuse.is_finite() && p.l_fuse > 0.05 {
-            p.l_fuse
-        } else {
-            0.8
-        };
+        let l = nose_x * 2.0;
         let b = if p.b.is_finite() && p.b > 0.05 {
             p.b
         } else {
@@ -247,9 +296,6 @@ fn heat_map(ui: &mut Ui, p: &Project, m: &Model, a: &Analysis, cfg: &Config) {
         } else {
             0.2
         };
-        scale = ((rect.width() - 24.0) as f64 / b).min((rect.height() - 24.0) as f64 / l) as f32;
-        nose_x = l / 2.0;
-        let to = |x: f64, y: f64| Pos2::new(c.x + y as f32 * scale, c.y - x as f32 * scale);
         let d = if p.d_fuse.is_finite() && p.d_fuse > 0.01 {
             p.d_fuse
         } else {
@@ -295,22 +341,15 @@ fn heat_map(ui: &mut Ui, p: &Project, m: &Model, a: &Analysis, cfg: &Config) {
         );
     };
     let esc_label = t("thermalpower.esc");
-    if multirotor || p.drone_type == DroneType::VtolQuadplane {
-        let ext = motors
-            .iter()
-            .fold(0.1_f64, |e, &(x, y)| e.max(x.abs()).max(y.abs()))
-            + 0.08;
-        let s = if multirotor {
-            scale
-        } else {
-            (rect.height().min(rect.width()) * 0.5 - 14.0) / ext as f32 * 0.55
-        };
+    if (multirotor || p.drone_type == DroneType::VtolQuadplane)
+        && let Some(lift_rep) = &a.esc_lift
+    {
         for &(x, y) in &motors {
-            let q = Pos2::new(c.x + y as f32 * s, c.y - x as f32 * s);
+            let q = to(x, y);
             if !multirotor {
                 painter.circle_stroke(q, 5.0, body);
             }
-            blob(q, esc_label, &a.esc.full, cfg.esc.limit_c);
+            blob(q, esc_label, &lift_rep.full, cfg.esc.limit_c);
         }
     }
     if multirotor {
@@ -327,14 +366,13 @@ fn heat_map(ui: &mut Ui, p: &Project, m: &Model, a: &Analysis, cfg: &Config) {
             cfg.vtx.limit_c,
         );
     } else {
-        let to = |x: f64, y: f64| Pos2::new(c.x + y as f32 * scale, c.y - x as f32 * scale);
         let l = nose_x * 2.0;
-        if p.drone_type != DroneType::Multirotor {
+        if let Some(fwd_rep) = &a.esc_forward {
             // Forward motor ESC near the nose (also for VTOL's pusher).
             blob(
                 to(nose_x - 0.12 * l, 0.0),
                 esc_label,
-                &a.esc.full,
+                &fwd_rep.full,
                 cfg.esc.limit_c,
             );
         }
@@ -374,11 +412,15 @@ fn heat_map(ui: &mut Ui, p: &Project, m: &Model, a: &Analysis, cfg: &Config) {
     );
 }
 
-fn run_name(k: RunKind) -> &'static str {
+fn run_name(k: RunKind, is_vtol: bool) -> &'static str {
     match k {
         RunKind::Battery => t("thermalpower.run.battery"),
+        RunKind::EscPower if is_vtol => t("thermalpower.run.lift_esc"),
         RunKind::EscPower => t("thermalpower.run.esc"),
+        RunKind::Phase if is_vtol => t("thermalpower.run.lift_phase"),
         RunKind::Phase => t("thermalpower.run.phase"),
+        RunKind::FwdEscPower => t("thermalpower.run.fwd_esc"),
+        RunKind::FwdPhase => t("thermalpower.run.fwd_phase"),
     }
 }
 
@@ -464,11 +506,11 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut TpState) {
         "thermalpower.source_line",
         &[
             p.drone_type.label(),
-            &src.n_esc.to_string(),
+            &src.total_esc_count().to_string(),
             &fmt(src.v_pack, 1),
             &fmt(src.i_low_total, 1),
             &fmt(src.i_full_total, 1),
-            &fmt(src.i_full_esc, 1),
+            &fmt(src.max_full_esc_current(), 1),
         ],
     ));
     ui.label(
@@ -571,13 +613,21 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut TpState) {
                     t("thermalpower.bec.switching"),
                 );
             });
+            let v_out_max = if b.kind == BecKind::Linear && src.v_pack > 1.0 {
+                src.v_pack.clamp(1.0, 24.0)
+            } else {
+                24.0
+            };
             number_row(
                 ui,
                 NumberInput::new(t("thermalpower.in.v_out"), &mut b.v_out)
                     .unit("V")
-                    .range(1.0, 24.0)
+                    .range(1.0, v_out_max)
                     .decimals(1),
             );
+            if b.kind == BecKind::Linear && b.v_out > src.v_pack {
+                ui.colored_label(tk.danger, t("thermalpower.bec.linear_invalid"));
+            }
             number_row(
                 ui,
                 NumberInput::new(t("thermalpower.in.i_load"), &mut b.i_load_a)
@@ -611,9 +661,12 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut TpState) {
                 ui,
                 NumberInput::new(t("thermalpower.in.p_rf"), &mut v.p_rf_w)
                     .unit("W")
-                    .range(0.0, 30.0)
+                    .range(0.0, v.p_in_w.clamp(0.0, 30.0))
                     .decimals(2),
             );
+            if v.p_rf_w > v.p_in_w {
+                ui.colored_label(tk.danger, t("thermalpower.vtx.invalid"));
+            }
             limit_cooling(ui, "tp_vtx_cool", &mut v.limit_c, &mut v.cooling);
             spec_inputs(ui, &mut v.spec);
         });
@@ -621,20 +674,23 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut TpState) {
     let a = analyze(&src, &st.cfg);
     ui.add_space(space::XS);
     electronics_results(ui, &a, &src);
+    if a.bec_invalid {
+        ui.colored_label(tk.danger, t("thermalpower.bec.linear_invalid"));
+    }
+    if a.vtx_invalid {
+        ui.colored_label(tk.danger, t("thermalpower.vtx.invalid"));
+    }
     ui.add_space(space::XS);
     ui.label(egui::RichText::new(t("thermalpower.heatmap_note")).color(tk.text_weak));
     heat_map(ui, p, m, &a, &st.cfg);
 
     ui.add_space(space::S);
     section_header(ui, t("thermalpower.sec.cables"));
-    for (i, kind) in [RunKind::Battery, RunKind::EscPower, RunKind::Phase]
-        .into_iter()
-        .enumerate()
-    {
-        let r = a.runs[i];
+    let is_vtol = a.esc_lift.is_some() && a.esc_forward.is_some();
+    for (i, &r) in a.runs.iter().enumerate() {
         let status = if r.ok { Status::Ok } else { Status::Err };
         ui.horizontal(|ui| {
-            ui.strong(format!("{} ×{}", run_name(kind), r.count));
+            ui.strong(format!("{} ×{}", run_name(r.kind, is_vtol), r.count));
             components::badge(
                 ui,
                 status,
@@ -645,10 +701,12 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut TpState) {
                 },
             );
         });
-        let cfg_run = match kind {
+        let cfg_run = match r.kind {
             RunKind::Battery => &mut st.cfg.battery_lead,
             RunKind::EscPower => &mut st.cfg.esc_leads,
             RunKind::Phase => &mut st.cfg.phase_leads,
+            RunKind::FwdEscPower => &mut st.cfg.fwd_esc_lead,
+            RunKind::FwdPhase => &mut st.cfg.fwd_phase_lead,
         };
         ui.horizontal(|ui| {
             ui.label(t("thermalpower.in.awg"));
@@ -740,7 +798,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut TpState) {
 
 /// Voltage lost relative to nominal, in percent (0 when nominal is not positive).
 fn pct_of(v_nominal: f64, v: f64) -> f64 {
-    if v_nominal > 0.0 {
+    if v_nominal.is_finite() && v.is_finite() && v_nominal > 0.0 {
         100.0 * (v_nominal - v) / v_nominal
     } else {
         0.0
@@ -812,5 +870,26 @@ mod tests {
         assert!(fmt_time(Some(30.0)).ends_with(" s"));
         assert!(fmt_time(Some(600.0)).ends_with(" min"));
         assert_eq!(fmt_time(Some(f64::NAN)), t("thermalpower.never"));
+    }
+
+    #[test]
+    fn vtol_heat_map_layout_fits_airframe_and_motors_at_same_scale() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::VtolQuadplane);
+        p.mr_frame_size = 2.5;
+        let m = evaluate(&p, &Library::embedded());
+        let rect = Rect::from_min_size(Pos2::ZERO, egui::vec2(500.0, 250.0));
+        let (scale, nose_x) = heat_map_layout(rect, &p, &m);
+        let c = rect.center();
+        assert!(scale > 0.0 && scale.is_finite());
+        assert!(nose_x > 0.0);
+        for &(x, y) in &m.mr.motor_coords {
+            let pos = Pos2::new(c.x + y as f32 * scale, c.y - x as f32 * scale);
+            assert!(
+                rect.contains(pos),
+                "motor ({x},{y}) -> {pos:?} outside {rect:?}"
+            );
+        }
+        assert_eq!(pct_of(f64::INFINITY, f64::INFINITY), 0.0);
     }
 }

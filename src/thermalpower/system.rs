@@ -10,17 +10,33 @@
 //!   with thrust^1.5, so `i_full = i_hover * (T/W)^1.5` (thrust-to-weight clamped to 1..6).
 //! - fixed wing / flying wing / V-tail: one propulsion system; the "low" state is the cruise
 //!   electrical power over the pack voltage, full throttle is the peak current `prop.i_peak`.
-//! - VTOL: the lift motors as a multirotor plus one forward motor; the full-throttle total is the
-//!   larger of the lift and forward cases (they do not run at full power together).
+//! - VTOL: the lift motors as a multirotor plus one forward motor modeled separately; the
+//!   worst-case pack current is the larger of vertical full throttle and transition (hover lift +
+//!   peak forward).
 
-use super::cable::{self, AWG_MAX, AWG_MIN, RunInput, RunResult};
-use super::heat::{self, Cooling, HeatResult, ThermalSpec};
+use super::cable::{self, RunInput, RunResult};
+use super::heat::{self, Cooling, HeatResult, HeatStatus, ThermalSpec};
 use crate::calc::Model;
 use crate::project::{DroneType, Project};
 
 /// Per-conductor RMS current of a 120-degree commutated three-phase lead relative to the DC bus
 /// current: `sqrt(2/3)`.
 pub const PHASE_RMS_FACTOR: f64 = 0.816_496_580_927_726;
+
+/// Operating points of one identical motor / ESC group.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MotorGroup {
+    /// Number of identical motors / ESCs in this group.
+    pub count: u32,
+    /// Per-ESC DC bus current in the low state, A.
+    pub i_low_esc: f64,
+    /// Per-ESC DC bus current at full throttle, A.
+    pub i_full_esc: f64,
+    /// Estimated PWM duty cycle in the low state (`0.05..=1.0`).
+    pub duty_low: f64,
+    /// Estimated PWM duty cycle at full throttle (`0.05..=1.0`).
+    pub duty_full: f64,
+}
 
 /// Electrical operating points read from the project model.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -29,21 +45,33 @@ pub struct PowerSource {
     pub v_pack: f64,
     /// Estimated pack internal resistance, ohm.
     pub r_pack_ohm: f64,
-    /// Number of ESCs (equal to the number of motors).
-    pub n_esc: u32,
     /// True when the low state is hover (multirotor and VTOL), false for cruise.
     pub low_is_hover: bool,
     /// Total pack current in the low state (hover or cruise), A.
     pub i_low_total: f64,
-    /// Total pack current at full throttle, A.
+    /// Total pack current in the worst-case high-power state (full throttle or VTOL transition), A.
     pub i_full_total: f64,
-    /// Current of the most loaded ESC in the low state, A.
-    pub i_low_esc: f64,
-    /// Current of the most loaded ESC at full throttle, A.
-    pub i_full_esc: f64,
+    /// Lift motor group (multirotor and VTOL), if present.
+    pub lift: Option<MotorGroup>,
+    /// Forward / cruise motor group (fixed wing and VTOL), if present.
+    pub forward: Option<MotorGroup>,
     /// Number of cells in series and parallel (derived from the pack).
     pub n_series: u32,
     pub n_parallel: u32,
+}
+
+impl PowerSource {
+    /// Total number of ESCs across lift and forward groups.
+    pub fn total_esc_count(&self) -> u32 {
+        self.lift.map_or(0, |g| g.count) + self.forward.map_or(0, |g| g.count)
+    }
+
+    /// Highest per-ESC current at full throttle across all groups, A.
+    pub fn max_full_esc_current(&self) -> f64 {
+        let a = self.lift.map_or(0.0, |g| clean(g.i_full_esc));
+        let b = self.forward.map_or(0.0, |g| clean(g.i_full_esc));
+        a.max(b)
+    }
 }
 
 fn clean(x: f64) -> f64 {
@@ -56,7 +84,7 @@ fn k_mohm_ah(chemistry: &str) -> f64 {
     let c = chemistry.to_lowercase();
     if c.contains("fe") {
         50.0
-    } else if c.contains("po") {
+    } else if c.contains("po") || c.contains("hv") {
         9.0
     } else if c.contains("ion") {
         90.0
@@ -103,42 +131,83 @@ pub fn power_source(p: &Project, m: &Model) -> PowerSource {
     let n_lift = m.mr.n_motors.max(1);
     let lift_low = clean(m.mr.i_hover);
     let lift_full = lift_low * tw.powf(1.5);
+    let hover_duty = if m.mr.hover_throttle.is_finite() && m.mr.hover_throttle > 0.0 {
+        m.mr.hover_throttle.clamp(0.05, 1.0)
+    } else {
+        (1.0 / tw.sqrt()).clamp(0.05, 1.0)
+    };
     let fw_peak = clean(m.prop.i_peak);
     let fw_cruise = if v_pack > 0.0 {
         clean(m.perf_cr.p_prop_elec) / v_pack
     } else {
         0.0
     };
+    let fw_duty = if fw_peak > 0.0 && fw_cruise > 0.0 {
+        (fw_cruise / fw_peak)
+            .clamp(0.05, 1.0)
+            .cbrt()
+            .clamp(0.05, 1.0)
+    } else {
+        1.0
+    };
 
-    let (n_esc, low_is_hover, i_low_total, i_full_total, i_low_esc, i_full_esc) = match p.drone_type
-    {
+    let (low_is_hover, i_low_total, i_full_total, lift, forward) = match p.drone_type {
         DroneType::Multirotor => (
-            n_lift,
             true,
             lift_low,
             lift_full,
-            lift_low / n_lift as f64,
-            lift_full / n_lift as f64,
+            Some(MotorGroup {
+                count: n_lift,
+                i_low_esc: lift_low / n_lift as f64,
+                i_full_esc: lift_full / n_lift as f64,
+                duty_low: hover_duty,
+                duty_full: 1.0,
+            }),
+            None,
         ),
         DroneType::VtolQuadplane => (
-            n_lift + 1,
             true,
             lift_low,
-            lift_full.max(fw_peak),
-            lift_low / n_lift as f64,
-            (lift_full / n_lift as f64).max(fw_peak),
+            // Worst-case pack draw is either full vertical climb or transition (hover lift + peak
+            // forward thrust).
+            lift_full.max(lift_low + fw_peak),
+            Some(MotorGroup {
+                count: n_lift,
+                i_low_esc: lift_low / n_lift as f64,
+                i_full_esc: lift_full / n_lift as f64,
+                duty_low: hover_duty,
+                duty_full: 1.0,
+            }),
+            Some(MotorGroup {
+                count: 1,
+                i_low_esc: 0.0,
+                i_full_esc: fw_peak,
+                duty_low: 1.0,
+                duty_full: 1.0,
+            }),
         ),
-        _ => (1, false, fw_cruise, fw_peak, fw_cruise, fw_peak),
+        _ => (
+            false,
+            fw_cruise,
+            fw_peak,
+            None,
+            Some(MotorGroup {
+                count: 1,
+                i_low_esc: fw_cruise,
+                i_full_esc: fw_peak,
+                duty_low: fw_duty,
+                duty_full: 1.0,
+            }),
+        ),
     };
     PowerSource {
         v_pack,
         r_pack_ohm,
-        n_esc,
         low_is_hover,
         i_low_total,
         i_full_total,
-        i_low_esc,
-        i_full_esc,
+        lift,
+        forward,
         n_series,
         n_parallel,
     }
@@ -223,6 +292,8 @@ pub struct Config {
     pub battery_lead: RunCfg,
     pub esc_leads: RunCfg,
     pub phase_leads: RunCfg,
+    pub fwd_esc_lead: RunCfg,
+    pub fwd_phase_lead: RunCfg,
     pub max_drop_pct: f64,
     pub max_rise_k: f64,
 }
@@ -281,6 +352,14 @@ impl Default for Config {
                 awg: 16,
                 length_m: 0.10,
             },
+            fwd_esc_lead: RunCfg {
+                awg: 14,
+                length_m: 0.15,
+            },
+            fwd_phase_lead: RunCfg {
+                awg: 16,
+                length_m: 0.10,
+            },
             max_drop_pct: 2.0,
             max_rise_k: 30.0,
         }
@@ -318,6 +397,14 @@ pub enum RunKind {
     /// Motor phase leads: three conductors per motor, per-conductor RMS current
     /// `sqrt(2/3) * I_dc`.
     Phase,
+    /// Forward/pusher ESC power lead (VTOL only).
+    FwdEscPower,
+    /// Forward/pusher motor phase leads (VTOL only).
+    FwdPhase,
+}
+
+fn is_phase_run(kind: RunKind) -> bool {
+    matches!(kind, RunKind::Phase | RunKind::FwdPhase)
 }
 
 /// Evaluation of one cable run (one unit) and its totals.
@@ -350,7 +437,7 @@ pub struct SagReport {
     pub r_pack_ohm: f64,
     pub sag_low_v: f64,
     pub sag_full_v: f64,
-    /// Sum of the series cable drops on the path pack -> motor (battery lead + ESC lead).
+    /// Sum of the series cable drops on the path pack -> motor (battery + ESC + phase leads).
     pub cable_drop_low_v: f64,
     pub cable_drop_full_v: f64,
     pub v_motor_low: f64,
@@ -359,66 +446,82 @@ pub struct SagReport {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Analysis {
-    pub esc: ComponentReport,
+    pub esc_lift: Option<ComponentReport>,
+    pub esc_forward: Option<ComponentReport>,
     pub bec: ComponentReport,
     pub vtx: ComponentReport,
-    pub runs: [RunReport; 3],
+    pub bec_invalid: bool,
+    pub vtx_invalid: bool,
+    pub runs: Vec<RunReport>,
     pub sag: SagReport,
+}
+
+fn clean_duty(d: f64) -> f64 {
+    if d.is_finite() {
+        d.clamp(0.05, 1.0)
+    } else {
+        1.0
+    }
 }
 
 fn evaluate_one(
     kind: RunKind,
     cfg: RunCfg,
     count: u32,
-    i_low: f64,
-    i_full: f64,
+    i_low_dc: f64,
+    i_full_dc: f64,
     c: &Config,
     v_pack: f64,
 ) -> RunReport {
-    let run = |awg: u32, i: f64| {
-        let dc = cable::evaluate_run(&RunInput {
-            awg,
+    let i_low_dc = clean(i_low_dc).min(1e9);
+    let i_full_dc = clean(i_full_dc).min(1e9);
+    let v_pack = clean(v_pack).min(1e6);
+    let max_drop_pct = clean(c.max_drop_pct).min(100.0);
+    let max_rise_k = clean(c.max_rise_k).min(1e6);
+    let phase = is_phase_run(kind);
+    let factor = if phase { PHASE_RMS_FACTOR } else { 1.0 };
+
+    let run = |i_dc: f64| {
+        let res = cable::evaluate_run(&RunInput {
+            awg: cfg.awg,
             length_m: cfg.length_m,
-            current_a: i,
+            current_a: i_dc * factor,
             ambient_c: c.ambient_c,
             air_speed_ms: c.air_speed_ms,
         });
-        match kind {
-            // Drop and loss follow the DC-equivalent path (two phases in series); the conductor
-            // temperature follows the lower per-conductor RMS current.
-            RunKind::Phase => {
-                let rms = cable::evaluate_run(&RunInput {
-                    awg,
-                    length_m: cfg.length_m,
-                    current_a: i * PHASE_RMS_FACTOR,
-                    ambient_c: c.ambient_c,
-                    air_speed_ms: c.air_speed_ms,
-                });
-                RunResult {
-                    temp_rise_k: rms.temp_rise_k,
-                    wire_temp_c: rms.wire_temp_c,
-                    mass_kg: dc.mass_kg * 1.5,
-                    ..dc
-                }
+        if phase {
+            // Two phases conduct in series at any instant (DC-equivalent drop = I_dc * R_loop(T_rms));
+            // three conductors dissipate 3 * I_rms^2 * R_single(T_rms) = 1.5 * res.power_loss_w.
+            RunResult {
+                voltage_drop_v: i_dc * res.resistance_ohm,
+                power_loss_w: 1.5 * res.power_loss_w,
+                mass_kg: 1.5 * res.mass_kg,
+                ..res
             }
-            _ => dc,
+        } else {
+            res
         }
     };
-    let low = run(cfg.awg, i_low);
-    let full = run(cfg.awg, i_full);
-    let drop_limit = v_pack * c.max_drop_pct / 100.0;
-    let ok = full.voltage_drop_v <= drop_limit && full.temp_rise_k <= c.max_rise_k;
-    let recommended_awg = (AWG_MIN..=AWG_MAX).rev().find(|&a| {
-        let r = run(a, i_full);
-        r.voltage_drop_v <= drop_limit && r.temp_rise_k <= c.max_rise_k
-    });
+    let low = run(i_low_dc);
+    let full = run(i_full_dc);
+    let drop_limit = v_pack * max_drop_pct / 100.0;
+    let ok = full.voltage_drop_v <= drop_limit && full.temp_rise_k <= max_rise_k;
+    let recommended_awg = cable::recommend_awg(
+        cfg.length_m,
+        i_full_dc * factor,
+        c.ambient_c,
+        c.air_speed_ms,
+        v_pack * factor,
+        max_drop_pct,
+        max_rise_k,
+    );
     let n = count as f64;
     RunReport {
         kind,
         count,
         cfg,
-        current_low_a: i_low,
-        current_full_a: i_full,
+        current_low_a: i_low_dc * factor,
+        current_full_a: i_full_dc * factor,
         low,
         full,
         drop_full_pct: if v_pack > 0.0 {
@@ -436,10 +539,16 @@ fn evaluate_one(
 
 /// Runs the whole analysis for the given operating points and inputs.
 pub fn analyze(src: &PowerSource, c: &Config) -> Analysis {
-    let v = src.v_pack;
-    let esc_loss = |i: f64| match c.esc.model {
+    let v = clean(src.v_pack).min(1e6);
+    let r_pack = clean(src.r_pack_ohm).min(1e6);
+    let i_low_tot = clean(src.i_low_total).min(1e9);
+    let i_full_tot = clean(src.i_full_total).min(1e9);
+    let r_on_ohm = clean(c.esc.r_on_mohm).min(1e6) * 1e-3;
+    let sw_frac = clean(c.esc.sw_frac).min(1.0);
+
+    let esc_loss = |i: f64, duty: f64| match c.esc.model {
         EscModel::Efficiency => heat::esc_loss_efficiency(v, i, c.esc.eta),
-        EscModel::RdsOn => heat::esc_loss_rds_on(v, i, c.esc.r_on_mohm * 1e-3, c.esc.sw_frac),
+        EscModel::RdsOn => heat::esc_loss_rds_on(v, i, duty, r_on_ohm, sw_frac),
     };
     let bec_loss = match c.bec.kind {
         BecKind::Linear => heat::bec_loss_linear(v, c.bec.v_out, c.bec.i_load_a),
@@ -455,61 +564,123 @@ pub fn analyze(src: &PowerSource, c: &Config) -> Analysis {
             limit,
         )
     };
-    let esc = ComponentReport {
-        count: src.n_esc,
-        low: ev(
-            esc_loss(src.i_low_esc),
-            &c.esc.spec,
-            c.esc.cooling,
-            c.esc.limit_c,
-        ),
-        full: ev(
-            esc_loss(src.i_full_esc),
-            &c.esc.spec,
-            c.esc.cooling,
-            c.esc.limit_c,
-        ),
+    let eval_group = |g: MotorGroup| -> (u32, f64, f64, ComponentReport) {
+        let i_low = clean(g.i_low_esc).min(1e9);
+        let i_full = clean(g.i_full_esc).min(1e9);
+        let d_low = clean_duty(g.duty_low);
+        let d_full = clean_duty(g.duty_full);
+        let rep = ComponentReport {
+            count: g.count,
+            low: ev(
+                esc_loss(i_low, d_low),
+                &c.esc.spec,
+                c.esc.cooling,
+                c.esc.limit_c,
+            ),
+            full: ev(
+                esc_loss(i_full, d_full),
+                &c.esc.spec,
+                c.esc.cooling,
+                c.esc.limit_c,
+            ),
+        };
+        (g.count, i_low, i_full, rep)
     };
-    let bec_r = ev(bec_loss, &c.bec.spec, c.bec.cooling, c.bec.limit_c);
-    let vtx_r = ev(vtx_loss, &c.vtx.spec, c.vtx.cooling, c.vtx.limit_c);
 
-    let n = src.n_esc;
-    let runs = [
-        evaluate_one(
-            RunKind::Battery,
-            c.battery_lead,
-            1,
-            src.i_low_total,
-            src.i_full_total,
-            c,
-            v,
-        ),
-        evaluate_one(
+    let lift_eval = src.lift.map(eval_group);
+    let fwd_eval = src.forward.map(eval_group);
+    let esc_lift = lift_eval.as_ref().map(|x| x.3);
+    let esc_forward = fwd_eval.as_ref().map(|x| x.3);
+
+    let bec_invalid = c.bec.kind == BecKind::Linear && clean(c.bec.v_out) > v;
+    let vtx_invalid = clean(c.vtx.p_rf_w) > clean(c.vtx.p_in_w);
+    let mut bec_r = ev(bec_loss, &c.bec.spec, c.bec.cooling, c.bec.limit_c);
+    if bec_invalid {
+        bec_r.status = HeatStatus::Fail;
+    }
+    let mut vtx_r = ev(vtx_loss, &c.vtx.spec, c.vtx.cooling, c.vtx.limit_c);
+    if vtx_invalid {
+        vtx_r.status = HeatStatus::Fail;
+    }
+
+    let mut runs = vec![evaluate_one(
+        RunKind::Battery,
+        c.battery_lead,
+        1,
+        i_low_tot,
+        i_full_tot,
+        c,
+        v,
+    )];
+    if let Some((cnt, i_low, i_full, _)) = lift_eval {
+        runs.push(evaluate_one(
             RunKind::EscPower,
             c.esc_leads,
-            n,
-            src.i_low_esc,
-            src.i_full_esc,
+            cnt,
+            i_low,
+            i_full,
             c,
             v,
-        ),
-        evaluate_one(
+        ));
+        runs.push(evaluate_one(
             RunKind::Phase,
             c.phase_leads,
-            n,
-            src.i_low_esc,
-            src.i_full_esc,
+            cnt,
+            i_low,
+            i_full,
             c,
             v,
-        ),
-    ];
-    let sag_low = src.i_low_total * src.r_pack_ohm;
-    let sag_full = src.i_full_total * src.r_pack_ohm;
-    let cd_low = runs[0].low.voltage_drop_v + runs[1].low.voltage_drop_v;
-    let cd_full = runs[0].full.voltage_drop_v + runs[1].full.voltage_drop_v;
+        ));
+    }
+    if let Some((cnt, i_low, i_full, _)) = fwd_eval {
+        let (esc_kind, phase_kind, esc_cfg, phase_cfg) = if lift_eval.is_some() {
+            (
+                RunKind::FwdEscPower,
+                RunKind::FwdPhase,
+                c.fwd_esc_lead,
+                c.fwd_phase_lead,
+            )
+        } else {
+            (
+                RunKind::EscPower,
+                RunKind::Phase,
+                c.esc_leads,
+                c.phase_leads,
+            )
+        };
+        runs.push(evaluate_one(esc_kind, esc_cfg, cnt, i_low, i_full, c, v));
+        runs.push(evaluate_one(
+            phase_kind, phase_cfg, cnt, i_low, i_full, c, v,
+        ));
+    }
+
+    let sag_low = i_low_tot * r_pack;
+    let sag_full = i_full_tot * r_pack;
+    let bat_low = runs[0].low.voltage_drop_v;
+    let bat_full = runs[0].full.voltage_drop_v;
+    let branch_drop = |low: bool, fwd: bool| -> f64 {
+        runs.iter()
+            .filter(|r| {
+                if fwd {
+                    matches!(r.kind, RunKind::FwdEscPower | RunKind::FwdPhase)
+                } else {
+                    matches!(r.kind, RunKind::EscPower | RunKind::Phase)
+                }
+            })
+            .map(|r| {
+                if low {
+                    r.low.voltage_drop_v
+                } else {
+                    r.full.voltage_drop_v
+                }
+            })
+            .sum()
+    };
+    let cd_low = bat_low + branch_drop(true, false).max(branch_drop(true, true));
+    let cd_full = bat_full + branch_drop(false, false).max(branch_drop(false, true));
     let sag = SagReport {
         v_nominal: v,
-        r_pack_ohm: src.r_pack_ohm,
+        r_pack_ohm: r_pack,
         sag_low_v: sag_low,
         sag_full_v: sag_full,
         cable_drop_low_v: cd_low,
@@ -518,7 +689,8 @@ pub fn analyze(src: &PowerSource, c: &Config) -> Analysis {
         v_motor_full: (v - sag_full - cd_full).max(0.0),
     };
     Analysis {
-        esc,
+        esc_lift,
+        esc_forward,
         bec: ComponentReport {
             count: 1,
             low: bec_r,
@@ -529,6 +701,8 @@ pub fn analyze(src: &PowerSource, c: &Config) -> Analysis {
             low: vtx_r,
             full: vtx_r,
         },
+        bec_invalid,
+        vtx_invalid,
         runs,
         sag,
     }
@@ -541,6 +715,7 @@ pub fn analyze_model(p: &Project, m: &Model, c: &Config) -> Analysis {
 
 #[cfg(test)]
 mod tests {
+    use super::cable::{AWG_MAX, AWG_MIN};
     use super::*;
     use crate::calc::{Library, evaluate};
 
@@ -552,6 +727,66 @@ mod tests {
         (p, s)
     }
 
+    fn assert_analysis_finite(a: &Analysis, ctx: &str) {
+        for r in [&a.bec, &a.vtx]
+            .into_iter()
+            .chain(a.esc_lift.iter())
+            .chain(a.esc_forward.iter())
+        {
+            for h in [r.low, r.full] {
+                for v in [
+                    h.loss_w,
+                    h.r_th_k_per_w,
+                    h.tau_s,
+                    h.temp_rise_k,
+                    h.temp_steady_c,
+                    h.margin_k,
+                ] {
+                    assert!(v.is_finite(), "{ctx}: {v}");
+                }
+                if let Some(t) = h.time_to_limit_s {
+                    assert!(t.is_finite(), "{ctx}: time={t}");
+                }
+            }
+        }
+        for r in &a.runs {
+            for v in [
+                r.current_low_a,
+                r.current_full_a,
+                r.low.resistance_ohm,
+                r.low.voltage_drop_v,
+                r.low.power_loss_w,
+                r.low.temp_rise_k,
+                r.low.wire_temp_c,
+                r.low.mass_kg,
+                r.full.resistance_ohm,
+                r.full.voltage_drop_v,
+                r.full.power_loss_w,
+                r.full.temp_rise_k,
+                r.full.wire_temp_c,
+                r.full.mass_kg,
+                r.drop_full_pct,
+                r.total_loss_low_w,
+                r.total_loss_full_w,
+                r.total_mass_kg,
+            ] {
+                assert!(v.is_finite(), "{ctx} {:?}: {v}", r.kind);
+            }
+        }
+        for v in [
+            a.sag.v_nominal,
+            a.sag.r_pack_ohm,
+            a.sag.sag_low_v,
+            a.sag.sag_full_v,
+            a.sag.cable_drop_low_v,
+            a.sag.cable_drop_full_v,
+            a.sag.v_motor_low,
+            a.sag.v_motor_full,
+        ] {
+            assert!(v.is_finite(), "{ctx} sag: {v}");
+        }
+    }
+
     #[test]
     fn power_source_is_finite_for_every_type() {
         for dt in DroneType::ALL {
@@ -561,25 +796,71 @@ mod tests {
                 s.r_pack_ohm,
                 s.i_low_total,
                 s.i_full_total,
-                s.i_low_esc,
-                s.i_full_esc,
+                s.max_full_esc_current(),
             ] {
                 assert!(x.is_finite() && x >= 0.0, "{dt:?}: {x}");
             }
-            assert!(s.n_esc >= 1);
+            for g in s.lift.into_iter().chain(s.forward) {
+                assert!(g.count >= 1);
+                for v in [g.i_low_esc, g.i_full_esc, g.duty_low, g.duty_full] {
+                    assert!(v.is_finite() && v >= 0.0, "{dt:?}: {v}");
+                }
+            }
+            assert!(s.total_esc_count() >= 1);
             assert!(s.v_pack > 0.0, "{dt:?}");
-            assert!(s.i_full_total >= s.i_low_total * 0.99 || !s.low_is_hover);
+            assert!(
+                s.i_full_total >= s.i_low_total * 0.99,
+                "{dt:?}: full={} low={}",
+                s.i_full_total,
+                s.i_low_total
+            );
         }
     }
 
     #[test]
     fn motor_counts_follow_the_vehicle() {
         let (_, fw) = src_for(DroneType::FixedWingConventional);
-        assert_eq!(fw.n_esc, 1);
+        assert_eq!(fw.total_esc_count(), 1);
+        assert!(fw.lift.is_none() && fw.forward.is_some());
         let (p, mr) = src_for(DroneType::Multirotor);
-        assert_eq!(mr.n_esc, p.mr_arm_count * if p.mr_coaxial { 2 } else { 1 });
+        assert_eq!(
+            mr.total_esc_count(),
+            p.mr_arm_count * if p.mr_coaxial { 2 } else { 1 }
+        );
+        assert!(mr.lift.is_some() && mr.forward.is_none());
         let (_, vt) = src_for(DroneType::VtolQuadplane);
-        assert!(vt.n_esc >= 2);
+        assert!(vt.total_esc_count() >= 2);
+        assert!(vt.lift.is_some() && vt.forward.is_some());
+    }
+
+    #[test]
+    fn vtol_separates_lift_and_forward_groups_and_models_transition() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::VtolQuadplane);
+        let m = evaluate(&p, &Library::embedded());
+        let s = power_source(&p, &m);
+        let lift = s.lift.expect("VTOL lift group");
+        let fwd = s.forward.expect("VTOL forward group");
+        assert_eq!(fwd.count, 1);
+        assert_eq!(fwd.i_low_esc, 0.0);
+        // Transition draws hover lift + forward peak simultaneously.
+        assert!(s.i_full_total >= s.i_low_total + fwd.i_full_esc - 1e-9);
+
+        let a = analyze(&s, &Config::default());
+        let esc_l = a.esc_lift.expect("lift ESC report");
+        let esc_f = a.esc_forward.expect("forward ESC report");
+        assert_eq!(esc_l.count, lift.count);
+        assert_eq!(esc_f.count, 1);
+        // Idle forward ESC in hover has zero loss.
+        assert_eq!(esc_f.low.loss_w, 0.0);
+        assert_eq!(a.runs.len(), 5);
+        let fwd_esc_run = a
+            .runs
+            .iter()
+            .find(|r| r.kind == RunKind::FwdEscPower)
+            .unwrap();
+        assert_eq!(fwd_esc_run.count, 1);
+        assert_eq!(fwd_esc_run.low.power_loss_w, 0.0);
     }
 
     #[test]
@@ -587,18 +868,7 @@ mod tests {
         for dt in DroneType::ALL {
             let (_, s) = src_for(dt);
             let a = analyze(&s, &Config::default());
-            for r in a.runs {
-                for x in [
-                    r.low.voltage_drop_v,
-                    r.full.power_loss_w,
-                    r.total_mass_kg,
-                    r.drop_full_pct,
-                ] {
-                    assert!(x.is_finite());
-                }
-            }
-            assert!(a.esc.full.temp_steady_c.is_finite());
-            assert!(a.sag.v_motor_full.is_finite());
+            assert_analysis_finite(&a, &format!("{dt:?}"));
         }
     }
 
@@ -607,8 +877,10 @@ mod tests {
         let mut s = src_for(DroneType::Multirotor).1;
         s.i_low_total = 0.0;
         s.i_full_total = 0.0;
-        s.i_low_esc = 0.0;
-        s.i_full_esc = 0.0;
+        if let Some(ref mut g) = s.lift {
+            g.i_low_esc = 0.0;
+            g.i_full_esc = 0.0;
+        }
         let c = Config {
             bec: BecCfg {
                 i_load_a: 0.0,
@@ -622,7 +894,7 @@ mod tests {
             ..Config::default()
         };
         let a = analyze(&s, &c);
-        assert_eq!(a.esc.full.temp_steady_c, c.ambient_c);
+        assert_eq!(a.esc_lift.unwrap().full.temp_steady_c, c.ambient_c);
         assert_eq!(a.bec.full.temp_steady_c, c.ambient_c);
         assert_eq!(a.vtx.full.temp_steady_c, c.ambient_c);
         assert_eq!(a.runs[0].full.voltage_drop_v, 0.0);
@@ -634,21 +906,20 @@ mod tests {
         for dt in DroneType::ALL {
             let (_, s) = src_for(dt);
             let a = analyze(&s, &Config::default());
-            for r in a.runs {
+            for r in &a.runs {
                 if let Some(awg) = r.recommended_awg {
-                    let c = Config {
-                        battery_lead: RunCfg { awg, ..r.cfg },
-                        esc_leads: RunCfg { awg, ..r.cfg },
-                        phase_leads: RunCfg { awg, ..r.cfg },
-                        ..Config::default()
-                    };
+                    let mut c = Config::default();
+                    let run_cfg = RunCfg { awg, ..r.cfg };
+                    match r.kind {
+                        RunKind::Battery => c.battery_lead = run_cfg,
+                        RunKind::EscPower => c.esc_leads = run_cfg,
+                        RunKind::Phase => c.phase_leads = run_cfg,
+                        RunKind::FwdEscPower => c.fwd_esc_lead = run_cfg,
+                        RunKind::FwdPhase => c.fwd_phase_lead = run_cfg,
+                    }
                     let b = analyze(&s, &c);
-                    let idx = match r.kind {
-                        RunKind::Battery => 0,
-                        RunKind::EscPower => 1,
-                        RunKind::Phase => 2,
-                    };
-                    assert!(b.runs[idx].ok, "{dt:?} {:?} awg {awg}", r.kind);
+                    let matched = b.runs.iter().find(|x| x.kind == r.kind).unwrap();
+                    assert!(matched.ok, "{dt:?} {:?} awg {awg}", r.kind);
                 }
             }
         }
@@ -681,6 +952,49 @@ mod tests {
     }
 
     #[test]
+    fn phase_run_uses_rms_current_temperature_and_three_phase_loss() {
+        let (_, s) = src_for(DroneType::Multirotor);
+        let a = analyze(&s, &Config::default());
+        let i_dc = s.lift.unwrap().i_full_esc;
+        let phase = a.runs.iter().find(|r| r.kind == RunKind::Phase).unwrap();
+        assert!((phase.current_full_a - i_dc * PHASE_RMS_FACTOR).abs() < 1e-12);
+        let expected_r_loop = 2.0
+            * phase.cfg.length_m
+            * cable::resistance_per_m(phase.cfg.awg, phase.full.wire_temp_c);
+        assert!((phase.full.resistance_ohm - expected_r_loop).abs() < 1e-12);
+        let expected_3ph_loss = 3.0 * phase.current_full_a.powi(2) * (expected_r_loop * 0.5);
+        assert!((phase.full.power_loss_w - expected_3ph_loss).abs() < 1e-9);
+        assert!((phase.full.voltage_drop_v - i_dc * expected_r_loop).abs() < 1e-12);
+        // Sag includes battery + ESC + phase lead drops.
+        let bat = &a.runs[0];
+        let esc = a.runs.iter().find(|r| r.kind == RunKind::EscPower).unwrap();
+        let expected_cd =
+            bat.full.voltage_drop_v + esc.full.voltage_drop_v + phase.full.voltage_drop_v;
+        assert!((a.sag.cable_drop_full_v - expected_cd).abs() < 1e-12);
+    }
+
+    #[test]
+    fn invalid_linear_bec_and_vtx_surface_fail_status() {
+        let (_, mut s) = src_for(DroneType::Multirotor);
+        s.v_pack = 7.4;
+        let mut c = Config::default();
+        c.bec.kind = BecKind::Linear;
+        c.bec.v_out = 12.0;
+        c.vtx.p_in_w = 1.0;
+        c.vtx.p_rf_w = 2.0;
+        let a = analyze(&s, &c);
+        assert!(a.bec_invalid);
+        assert!(a.vtx_invalid);
+        assert_eq!(a.bec.full.status, HeatStatus::Fail);
+        assert_eq!(a.vtx.full.status, HeatStatus::Fail);
+    }
+
+    #[test]
+    fn lihv_uses_lipo_resistance_constant() {
+        assert_eq!(k_mohm_ah("LiHV"), k_mohm_ah("LiPo"));
+    }
+
+    #[test]
     fn hostile_inputs_do_not_produce_nan() {
         let (_, s) = src_for(DroneType::VtolQuadplane);
         for bad in [f64::NAN, -5.0, 0.0, 1e12, f64::INFINITY] {
@@ -688,6 +1002,8 @@ mod tests {
             c.ambient_c = bad;
             c.air_speed_ms = bad;
             c.esc.eta = bad;
+            c.esc.r_on_mohm = bad;
+            c.esc.sw_frac = bad;
             c.bec.i_load_a = bad;
             c.vtx.p_in_w = bad;
             c.battery_lead.length_m = bad;
@@ -696,17 +1012,22 @@ mod tests {
             c.max_drop_pct = bad;
             c.max_rise_k = bad;
             let a = analyze(&s, &c);
-            assert!(a.esc.full.temp_steady_c.is_finite(), "{bad}");
-            assert!(a.bec.full.temp_rise_k.is_finite(), "{bad}");
-            assert!(a.vtx.full.loss_w.is_finite(), "{bad}");
-            for r in a.runs {
-                assert!(r.full.power_loss_w.is_finite(), "{bad}");
-                assert!(r.total_mass_kg.is_finite(), "{bad}");
-            }
+            assert_analysis_finite(&a, &format!("config bad={bad}"));
         }
         let mut s2 = s;
+        s2.i_low_total = f64::NEG_INFINITY;
         s2.i_full_total = f64::NAN;
         s2.v_pack = f64::INFINITY;
-        let _ = analyze(&s2, &Config::default());
+        s2.r_pack_ohm = f64::INFINITY;
+        if let Some(ref mut g) = s2.lift {
+            g.i_low_esc = f64::NAN;
+            g.duty_low = 0.0;
+        }
+        if let Some(ref mut g) = s2.forward {
+            g.i_full_esc = f64::INFINITY;
+            g.duty_full = f64::NAN;
+        }
+        let a2 = analyze(&s2, &Config::default());
+        assert_analysis_finite(&a2, "hostile PowerSource");
     }
 }
