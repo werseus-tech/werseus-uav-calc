@@ -37,7 +37,7 @@ impl Default for Settings {
             hover_alt_band: 1.5,
             cruise_min_speed: 3.0,
             cruise_speed_band: 0.2,
-            max_climb_rate: 1.0,
+            max_climb_rate: 0.3,
             min_duration: 5.0,
             min_power_w: 1.0,
             min_throttle_pct: 5.0,
@@ -204,7 +204,9 @@ pub fn overall(log: &Log) -> Overall {
 struct Bin {
     t0: f64,
     t1: f64,
-    speed: f64,
+    tc: f64,
+    gs: f64,
+    asp: f64,
     alt: f64,
     vz: f64,
     active: bool,
@@ -212,23 +214,38 @@ struct Bin {
 
 /// Log'u ~`step` saniyelik kutulara böler ve her kutu için ortalama hız/irtifa/dikey hız çıkarır.
 fn make_bins(log: &Log, step: f64, s: &Settings) -> Vec<Bin> {
-    let mut bins = Vec::new();
+    let mut bins: Vec<Bin> = Vec::new();
     if log.is_empty() {
         return bins;
     }
     let start = log.t[0];
     let end = *log.t.last().unwrap();
-    let mut t = start;
+    let mut idx = 0usize;
     let mut prev_alt = f64::NAN;
     let mut prev_t = f64::NAN;
-    while t < end + 1e-9 {
-        let r = range_of(log, t, t + step - 1e-9);
+    loop {
+        let t0 = start + idx as f64 * step;
+        if t0 >= end + 1e-9 {
+            break;
+        }
+        let t1 = start + (idx + 1) as f64 * step;
+        idx += 1;
+        let r = range_of(log, t0, t1 - 1e-9);
         if !r.is_empty() {
-            let speed = mean_finite(r.clone().map(|k| log.gs_at(k)));
+            let gs = mean_finite(r.clone().map(|k| log.gs_at(k)));
+            let asp = mean_finite(r.clone().map(|k| log.asp_at(k)));
             let alt = mean_finite(r.clone().map(|k| log.alt_at(k)));
             let tc = 0.5 * (log.t[r.start] + log.t[r.end - 1]);
             let vz = if alt.is_finite() && prev_alt.is_finite() && tc > prev_t {
                 (alt - prev_alt) / (tc - prev_t)
+            } else if r.len() >= 2 {
+                let (a0, a1) = (log.alt_at(r.start), log.alt_at(r.end - 1));
+                let dt = log.t[r.end - 1] - log.t[r.start];
+                if a0.is_finite() && a1.is_finite() && dt > 0.0 {
+                    (a1 - a0) / dt
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             };
@@ -242,9 +259,11 @@ fn make_bins(log: &Log, step: f64, s: &Settings) -> Vec<Bin> {
                 true
             };
             bins.push(Bin {
-                t0: t,
-                t1: t + step,
-                speed,
+                t0,
+                t1,
+                tc,
+                gs,
+                asp,
                 alt,
                 vz,
                 active,
@@ -252,7 +271,13 @@ fn make_bins(log: &Log, step: f64, s: &Settings) -> Vec<Bin> {
             prev_alt = alt;
             prev_t = tc;
         }
-        t += step;
+    }
+    if bins.len() >= 2
+        && bins[0].alt.is_finite()
+        && bins[1].alt.is_finite()
+        && bins[1].tc > bins[0].tc
+    {
+        bins[0].vz = (bins[1].alt - bins[0].alt) / (bins[1].tc - bins[0].tc);
     }
     bins
 }
@@ -278,6 +303,7 @@ fn finish(log: &Log, kind: SegKind, t0: f64, t1: f64) -> Segment {
 
 /// Askı ve seyir kesimlerini bulur. Hız sinyali yoksa boş döner.
 pub fn detect_segments(log: &Log, s: &Settings) -> Vec<Segment> {
+    const CRUISE_ALT_BAND: f64 = 5.0;
     if !log.has_speed() || log.len() < 2 {
         return Vec::new();
     }
@@ -288,60 +314,108 @@ pub fn detect_segments(log: &Log, s: &Settings) -> Vec<Segment> {
     let mut out = Vec::new();
     // Aday sınıfı: Some(kind) ya da None.
     let class = |b: &Bin| -> Option<SegKind> {
-        if !b.active || !b.speed.is_finite() || b.vz.abs() > s.max_climb_rate {
+        if !b.active || b.vz.abs() > s.max_climb_rate {
             return None;
         }
-        if b.speed < s.hover_max_speed {
-            Some(SegKind::Hover)
-        } else if b.speed >= s.cruise_min_speed {
+        if b.asp.is_finite() && b.asp >= s.cruise_min_speed {
             Some(SegKind::Cruise)
+        } else if b.gs.is_finite() && b.gs < s.hover_max_speed {
+            Some(SegKind::Hover)
         } else {
             None
         }
     };
-    let mut cur: Option<(SegKind, f64, f64, f64, usize)> = None; // (tür, t0, t1, toplam, n)
-    let close = |cur: &mut Option<(SegKind, f64, f64, f64, usize)>, out: &mut Vec<Segment>| {
-        if let Some((kind, t0, t1, _, _)) = cur.take() {
-            if t1 - t0 + 1e-9 >= s.min_duration {
-                out.push(finish(log, kind, t0, t1));
+    struct CurSeg {
+        kind: SegKind,
+        t0: f64,
+        t1: f64,
+        speed_sum: f64,
+        n: usize,
+        alt_min: f64,
+        alt_max: f64,
+    }
+    let mut cur: Option<CurSeg> = None;
+    let close = |cur: &mut Option<CurSeg>, out: &mut Vec<Segment>| {
+        if let Some(c) = cur.take() {
+            if c.t1 - c.t0 + 1e-9 >= s.min_duration {
+                out.push(finish(log, c.kind, c.t0, c.t1));
             }
         }
     };
+    let last_t = *log.t.last().unwrap();
     for b in &bins {
+        // Boşluk/telemetri kesintisi üstünden kesim birleştirme.
+        if cur
+            .as_ref()
+            .is_some_and(|c| (b.t0 - c.t1).abs() > 1e-6 * step.max(1.0))
+        {
+            close(&mut cur, &mut out);
+        }
         match class(b) {
             None => close(&mut cur, &mut out),
             Some(kind) => {
+                let b_speed = match kind {
+                    SegKind::Cruise => b.asp,
+                    SegKind::Hover => b.gs,
+                };
                 let fits = match &cur {
-                    Some((k, _, _, sum, n)) if *k == kind => {
-                        let mean = sum / *n as f64;
+                    Some(c) if c.kind == kind => {
+                        let mean = c.speed_sum / c.n as f64;
                         match kind {
-                            SegKind::Cruise => (b.speed - mean).abs() <= s.cruise_speed_band * mean,
-                            SegKind::Hover => {
-                                // Hava durumu: irtifa kesim ortalamasından sapmasın (irtifa yoksa geçerli).
-                                true
-                            }
+                            SegKind::Cruise => (b_speed - mean).abs() <= s.cruise_speed_band * mean,
+                            SegKind::Hover => true,
                         }
                     }
                     _ => false,
                 };
-                let alt_ok = match (&cur, kind) {
-                    (Some((_, t0, _, _, _)), SegKind::Hover) => {
-                        let m = mean_finite(range_of(log, *t0, b.t0).map(|k| log.alt_at(k)));
-                        !(m.is_finite()
-                            && b.alt.is_finite()
-                            && (b.alt - m).abs() > s.hover_alt_band)
+                let alt_ok = match &cur {
+                    Some(c) if c.kind == kind => {
+                        let band = match kind {
+                            SegKind::Hover => s.hover_alt_band,
+                            SegKind::Cruise => CRUISE_ALT_BAND,
+                        };
+                        if b.alt.is_finite() && c.alt_min.is_finite() {
+                            (c.alt_max.max(b.alt) - c.alt_min.min(b.alt)) <= band
+                        } else {
+                            true
+                        }
                     }
                     _ => true,
                 };
                 if fits && alt_ok {
                     if let Some(c) = cur.as_mut() {
-                        c.2 = b.t1.min(*log.t.last().unwrap());
-                        c.3 += b.speed;
-                        c.4 += 1;
+                        c.t1 = b.t1.min(last_t);
+                        c.speed_sum += b_speed;
+                        c.n += 1;
+                        if b.alt.is_finite() {
+                            c.alt_min = if c.alt_min.is_finite() {
+                                c.alt_min.min(b.alt)
+                            } else {
+                                b.alt
+                            };
+                            c.alt_max = if c.alt_max.is_finite() {
+                                c.alt_max.max(b.alt)
+                            } else {
+                                b.alt
+                            };
+                        }
                     }
                 } else {
                     close(&mut cur, &mut out);
-                    cur = Some((kind, b.t0, b.t1.min(*log.t.last().unwrap()), b.speed, 1));
+                    let (alt_min, alt_max) = if b.alt.is_finite() {
+                        (b.alt, b.alt)
+                    } else {
+                        (f64::NAN, f64::NAN)
+                    };
+                    cur = Some(CurSeg {
+                        kind,
+                        t0: b.t0,
+                        t1: b.t1.min(last_t),
+                        speed_sum: b_speed,
+                        n: 1,
+                        alt_min,
+                        alt_max,
+                    });
                 }
             }
         }
@@ -453,11 +527,27 @@ pub fn fit_resistance(log: &Log) -> Option<ResistanceFit> {
     if span < 2.0 || span < 0.2 * imean.abs() {
         return None;
     }
-    let from3 = lsq(&rows3).map(|(b, r2)| (b[0], -b[1], r2));
-    let pick = match from3 {
-        Some((v0, r, r2)) if r > 0.0 => Some((v0, r, r2)),
-        _ => lsq(&rows2).map(|(b, r2)| (b[0], -b[1], r2)),
-    };
+    let from3 = lsq(&rows3).and_then(|(b, _)| {
+        let (v0, r, k) = (b[0], -b[1], -b[2]);
+        if !(r > 0.0 && k >= 0.0 && v0.is_finite() && r.is_finite() && k.is_finite()) {
+            return None;
+        }
+        let v_corr: Vec<f64> = rows3.iter().map(|(x, v)| v + k * x[2]).collect();
+        let v_mean = v_corr.iter().sum::<f64>() / v_corr.len() as f64;
+        let (mut ss_res, mut ss_tot) = (0.0, 0.0);
+        for ((x, _), &vc) in rows3.iter().zip(&v_corr) {
+            let vc_hat = v0 - r * x[1];
+            ss_res += (vc - vc_hat).powi(2);
+            ss_tot += (vc - v_mean).powi(2);
+        }
+        let r2 = if ss_tot > 0.0 {
+            1.0 - ss_res / ss_tot
+        } else {
+            0.0
+        };
+        Some((v0, r, r2))
+    });
+    let pick = from3.or_else(|| lsq(&rows2).map(|(b, r2)| (b[0], -b[1], r2)));
     let (v0, r, r2) = pick?;
     if !(r.is_finite() && r > 0.0) {
         return None;
@@ -590,6 +680,78 @@ pub(crate) mod tests {
         let a = analyze(&l);
         assert!(a.segments.is_empty());
         assert!(a.resistance.is_none());
+    }
+
+    #[test]
+    fn dropout_gap_is_not_bridged() {
+        // 0–10 s ve 25–35 s arası askı, arada 15 s telemetri kopukluğu.
+        let mut l = Log::default();
+        for &offset in &[0.0, 25.0] {
+            for k in 0..=100 {
+                let t = offset + k as f64 * 0.1;
+                l.t.push(t);
+                l.volt.push(12.0);
+                l.cur.push(20.0);
+                l.gs.push(0.1);
+                l.alt.push(15.0);
+            }
+        }
+        let segs = detect_segments(&l, &Settings::default());
+        assert_eq!(segs.len(), 2, "{segs:?}");
+        assert!(segs[0].duration() < 12.0);
+        assert!(segs[1].duration() < 12.0);
+    }
+
+    #[test]
+    fn cruise_uses_airspeed_even_with_wind() {
+        // Sabit 15 m/s hava hızı; rüzgâr yüzünden yer hızı 1 m/s'den 22 m/s'ye değişir.
+        let mut l = synth(30.0, |t| {
+            let gs = if t < 15.0 { 1.0 } else { 22.0 };
+            (12.0, 15.0, gs, 30.0)
+        });
+        l.asp = vec![15.0; l.len()];
+        let segs = detect_segments(&l, &Settings::default());
+        assert_eq!(segs.len(), 1, "{segs:?}");
+        assert_eq!(segs[0].kind, SegKind::Cruise);
+        assert!((segs[0].mean_speed - 15.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn climbing_flight_is_not_cruise() {
+        // İlk kutudan itibaren 0.8 m/s tırmanış seyir sayılmamalı.
+        let l = synth(20.0, |t| (12.0, 20.0, 15.0, 10.0 + 0.8 * t));
+        let segs = detect_segments(&l, &Settings::default());
+        assert!(segs.is_empty(), "{segs:?}");
+
+        // Yavaş ama uzun süreli tırmanış (>5 m irtifa kazanımı) tek bir uzun seyir kesimi oluşturmamalı.
+        let l2 = synth(40.0, |t| (12.0, 20.0, 15.0, 10.0 + 0.25 * t));
+        let segs2 = detect_segments(&l2, &Settings::default());
+        for s in &segs2 {
+            assert!(s.duration() <= 25.0, "climb merged into cruise: {s:?}");
+        }
+    }
+
+    #[test]
+    fn resistance_partial_r2_and_physical_k() {
+        // Gerilim esasen SoC düşüşüyle iniyor; akım gürültülü ve gerçek R çok küçük/sıfıra yakın.
+        let mut l = Log::default();
+        let mut q_mah = 0.0;
+        for k in 0..1000 {
+            let t = k as f64 * 0.1;
+            let i = 15.0 + 8.0 * (t * 1.1).sin();
+            if k > 0 {
+                q_mah += i * 0.1 / 3.6;
+            }
+            // R = 0.0001 Ω (neredeyse yok), büyük ölçüm gürültüsü + büyük SoC düşüşü.
+            let noise = 0.2 * (t * 7.3).cos();
+            l.t.push(t);
+            l.cur.push(i);
+            l.volt.push(25.0 - 0.0001 * i - 0.02 * q_mah + noise);
+        }
+        if let Some(f) = fit_resistance(&l) {
+            // SoC düşüşü yüzünden kısmi R² sahte biçimde >0.9 çıkmamalı.
+            assert!(f.r2 < 0.5, "partial R² should be low, got {}", f.r2);
+        }
     }
 }
 

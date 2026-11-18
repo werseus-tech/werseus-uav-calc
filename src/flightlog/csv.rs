@@ -68,6 +68,14 @@ pub enum AltUnit {
     Centimeter,
     Millimeter,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThrottleUnit {
+    Auto,
+    Fraction,
+    Percent,
+    Pwm,
+    DShot,
+}
 
 /// Sütun eşlemesi (başlık sırası indeksleri) ve birimler.
 #[derive(Clone, Debug, PartialEq)]
@@ -83,7 +91,9 @@ pub struct Mapping {
     pub time_unit: TimeUnit,
     pub volt_unit: VoltUnit,
     pub cur_unit: CurUnit,
-    pub speed_unit: SpeedUnit,
+    pub thr_unit: ThrottleUnit,
+    pub gs_unit: SpeedUnit,
+    pub asp_unit: SpeedUnit,
     pub alt_unit: AltUnit,
 }
 
@@ -101,7 +111,9 @@ impl Default for Mapping {
             time_unit: TimeUnit::Auto,
             volt_unit: VoltUnit::Auto,
             cur_unit: CurUnit::Auto,
-            speed_unit: SpeedUnit::Auto,
+            thr_unit: ThrottleUnit::Auto,
+            gs_unit: SpeedUnit::Auto,
+            asp_unit: SpeedUnit::Auto,
             alt_unit: AltUnit::Auto,
         }
     }
@@ -440,7 +452,6 @@ fn candidates(f: Field) -> (&'static [&'static str], &'static [&'static str]) {
             &[
                 "rpm.rpm",
                 "esc.rpm",
-                "erpm[0]",
                 "rpm",
                 "motor_rpm",
                 "esc_rpm",
@@ -474,10 +485,91 @@ fn pick(headers: &[String], f: Field, used: &[usize]) -> Option<usize> {
             if f == Field::Altitude && normed[i].contains("alt_") {
                 continue;
             }
+            // Elektrik devir sayısı (eRPM) kutup çifti bilinmeden mekanik RPM sayılmaz.
+            if f == Field::Rpm && normed[i].contains("erpm") {
+                continue;
+            }
             return Some(i);
         }
     }
     None
+}
+
+pub fn infer_time_unit(header: &str) -> TimeUnit {
+    let tn = norm(header);
+    let tag = unit_tag(&tn).unwrap_or_default();
+    if tag == "us" || tag == "µs" || tn.ends_with("us") || tn == "timestamp" {
+        TimeUnit::Micro
+    } else if tag == "ms" || tn.ends_with("ms") {
+        TimeUnit::Milli
+    } else if tag == "s" || tag == "sec" || tn.ends_with("_s") {
+        TimeUnit::Sec
+    } else {
+        TimeUnit::Auto
+    }
+}
+
+pub fn infer_volt_unit(header: &str) -> VoltUnit {
+    let vn = norm(header);
+    let tag = unit_tag(&vn).unwrap_or_default();
+    match tag.as_str() {
+        "v" => VoltUnit::Volt,
+        "mv" => VoltUnit::MilliVolt,
+        "cv" => VoltUnit::CentiVolt,
+        _ if vn.ends_with("_v") || vn.starts_with("bat.volt") => VoltUnit::Volt,
+        _ => VoltUnit::Auto,
+    }
+}
+
+pub fn infer_cur_unit(header: &str) -> CurUnit {
+    let cn = norm(header);
+    let tag = unit_tag(&cn).unwrap_or_default();
+    match tag.as_str() {
+        "a" => CurUnit::Amp,
+        "ma" => CurUnit::MilliAmp,
+        "ca" => CurUnit::CentiAmp,
+        _ if cn.ends_with("_a") || cn.starts_with("bat.curr") => CurUnit::Amp,
+        _ => CurUnit::Auto,
+    }
+}
+
+pub fn infer_thr_unit(header: &str) -> ThrottleUnit {
+    let tn = norm(header);
+    let tag = unit_tag(&tn).unwrap_or_default();
+    match tag.as_str() {
+        "%" | "pct" => ThrottleUnit::Percent,
+        _ if tn.contains("rccommand") || tn.contains("rcin") || tn.contains("rc.c") => {
+            ThrottleUnit::Pwm
+        }
+        _ => ThrottleUnit::Auto,
+    }
+}
+
+pub fn infer_speed_unit(header: &str) -> SpeedUnit {
+    let sn = norm(header);
+    let tag = unit_tag(&sn).unwrap_or_default();
+    match tag.as_str() {
+        "m/s" => SpeedUnit::MetersPerSec,
+        "km/h" | "kmh" | "kph" => SpeedUnit::KmPerHour,
+        "cm/s" => SpeedUnit::CmPerSec,
+        _ if sn.ends_with("_m_s") || sn.starts_with("gps.spd") || sn.starts_with("arsp.") => {
+            SpeedUnit::MetersPerSec
+        }
+        _ => SpeedUnit::Auto,
+    }
+}
+
+pub fn infer_alt_unit(header: &str) -> AltUnit {
+    let an = norm(header);
+    let tag = unit_tag(&an).unwrap_or_default();
+    match tag.as_str() {
+        "m" => AltUnit::Meter,
+        "cm" => AltUnit::Centimeter,
+        "mm" => AltUnit::Millimeter,
+        _ if an.starts_with("ctun.") || an.ends_with("_meter") => AltUnit::Meter,
+        _ if an.contains("baroalt") => AltUnit::Centimeter,
+        _ => AltUnit::Auto,
+    }
 }
 
 /// Başlıklardan eşleme tahmini ve ad ipuçlarına göre birim seçimi.
@@ -490,66 +582,14 @@ pub fn guess_mapping(headers: &[String]) -> Mapping {
             m.set(f, Some(i));
         }
     }
-    let name = |i: Option<usize>| i.map(|i| norm(&headers[i])).unwrap_or_default();
-    // Zaman
-    let tn = name(m.time);
-    let tag = unit_tag(&tn).unwrap_or_default();
-    m.time_unit = if tag == "us" || tag == "µs" || tn.ends_with("us") || tn == "timestamp" {
-        TimeUnit::Micro
-    } else if tag == "ms" || tn.ends_with("ms") {
-        TimeUnit::Milli
-    } else if tag == "s" || tag == "sec" || tn.ends_with("_s") {
-        TimeUnit::Sec
-    } else {
-        TimeUnit::Auto
-    };
-    // Gerilim
-    let vn = name(m.voltage);
-    let tag = unit_tag(&vn).unwrap_or_default();
-    m.volt_unit = match tag.as_str() {
-        "v" => VoltUnit::Volt,
-        "mv" => VoltUnit::MilliVolt,
-        "cv" => VoltUnit::CentiVolt,
-        _ if vn.ends_with("_v") || vn.starts_with("bat.volt") => VoltUnit::Volt,
-        _ => VoltUnit::Auto,
-    };
-    // Akım
-    let cn = name(m.current);
-    let tag = unit_tag(&cn).unwrap_or_default();
-    m.cur_unit = match tag.as_str() {
-        "a" => CurUnit::Amp,
-        "ma" => CurUnit::MilliAmp,
-        "ca" => CurUnit::CentiAmp,
-        _ if cn.ends_with("_a") || cn.starts_with("bat.curr") => CurUnit::Amp,
-        _ => CurUnit::Auto,
-    };
-    // Hız (yer hızı ya da hava hızı adı)
-    let sn = if m.ground_speed.is_some() {
-        name(m.ground_speed)
-    } else {
-        name(m.air_speed)
-    };
-    let tag = unit_tag(&sn).unwrap_or_default();
-    m.speed_unit = match tag.as_str() {
-        "m/s" => SpeedUnit::MetersPerSec,
-        "km/h" | "kmh" | "kph" => SpeedUnit::KmPerHour,
-        "cm/s" => SpeedUnit::CmPerSec,
-        _ if sn.ends_with("_m_s") || sn.starts_with("gps.spd") || sn.starts_with("arsp.") => {
-            SpeedUnit::MetersPerSec
-        }
-        _ => SpeedUnit::Auto,
-    };
-    // İrtifa
-    let an = name(m.altitude);
-    let tag = unit_tag(&an).unwrap_or_default();
-    m.alt_unit = match tag.as_str() {
-        "m" => AltUnit::Meter,
-        "cm" => AltUnit::Centimeter,
-        "mm" => AltUnit::Millimeter,
-        _ if an.starts_with("ctun.") || an.ends_with("_meter") => AltUnit::Meter,
-        _ if an.contains("baroalt") => AltUnit::Centimeter,
-        _ => AltUnit::Auto,
-    };
+    let header_of = |i: Option<usize>| i.map(|i| headers[i].as_str()).unwrap_or("");
+    m.time_unit = infer_time_unit(header_of(m.time));
+    m.volt_unit = infer_volt_unit(header_of(m.voltage));
+    m.cur_unit = infer_cur_unit(header_of(m.current));
+    m.thr_unit = infer_thr_unit(header_of(m.throttle));
+    m.gs_unit = infer_speed_unit(header_of(m.ground_speed));
+    m.asp_unit = infer_speed_unit(header_of(m.air_speed));
+    m.alt_unit = infer_alt_unit(header_of(m.altitude));
     m
 }
 
@@ -563,6 +603,28 @@ fn finite_minmax(v: &[f64]) -> Option<(f64, f64)> {
     Some(it.fold((first, first), |(lo, hi), x| (lo.min(x), hi.max(x))))
 }
 
+fn median_pos_dt(raw: &[f64]) -> Option<f64> {
+    let mut dts = Vec::with_capacity(raw.len().min(4096));
+    let mut prev: Option<f64> = None;
+    for &x in raw.iter().take(4097) {
+        if !x.is_finite() {
+            continue;
+        }
+        if let Some(p) = prev {
+            let dt = x - p;
+            if dt > 0.0 && dt.is_finite() {
+                dts.push(dt);
+            }
+        }
+        prev = Some(x);
+    }
+    if dts.is_empty() {
+        return None;
+    }
+    dts.sort_by(|a, b| a.total_cmp(b));
+    Some(dts[dts.len() / 2])
+}
+
 /// Zaman → saniye çarpanı.
 pub fn time_scale(u: TimeUnit, raw: &[f64]) -> f64 {
     match u {
@@ -571,10 +633,25 @@ pub fn time_scale(u: TimeUnit, raw: &[f64]) -> f64 {
         TimeUnit::Sec => 1.0,
         TimeUnit::Auto => {
             let span = finite_minmax(raw).map(|(a, b)| b - a).unwrap_or(0.0);
-            if span > 1e8 {
+            let Some(med_dt) = median_pos_dt(raw) else {
+                return if span > 1e8 {
+                    1e-6
+                } else if span > 1e5 {
+                    1e-3
+                } else {
+                    1.0
+                };
+            };
+            if span > 1e8 || med_dt >= 5_000.0 {
                 1e-6
-            } else if span > 1e5 {
-                1e-3
+            } else if med_dt >= 500.0 {
+                if span > 1e6 { 1e-6 } else { 1e-3 }
+            } else if med_dt >= 100.0 {
+                if span > 5e7 { 1e-6 } else { 1e-3 }
+            } else if med_dt >= 10.0 {
+                if span >= 500.0 { 1e-3 } else { 1.0 }
+            } else if med_dt >= 1.0 {
+                if span >= 2_000.0 { 1e-3 } else { 1.0 }
             } else {
                 1.0
             }
@@ -582,7 +659,7 @@ pub fn time_scale(u: TimeUnit, raw: &[f64]) -> f64 {
     }
 }
 
-pub fn volt_scale(u: VoltUnit, raw: &[f64]) -> f64 {
+pub fn volt_scale(u: VoltUnit, raw: &[f64], name: &str) -> f64 {
     match u {
         VoltUnit::Volt => 1.0,
         VoltUnit::MilliVolt => 1e-3,
@@ -591,7 +668,7 @@ pub fn volt_scale(u: VoltUnit, raw: &[f64]) -> f64 {
             let mx = finite_minmax(raw).map(|x| x.1).unwrap_or(0.0);
             if mx <= 200.0 {
                 1.0
-            } else if mx < 8000.0 {
+            } else if name.to_lowercase().contains("vbat") && mx < 3000.0 {
                 1e-2
             } else {
                 1e-3
@@ -609,10 +686,10 @@ pub fn cur_scale(u: CurUnit, raw: &[f64], name: &str) -> f64 {
             let mx = finite_minmax(raw)
                 .map(|x| x.1.max(x.0.abs()))
                 .unwrap_or(0.0);
-            if mx <= 300.0 {
-                1.0
-            } else if name.to_lowercase().contains("amperage") {
+            if name.to_lowercase().contains("amperage") && mx > 20.0 {
                 1e-2
+            } else if mx <= 300.0 {
+                1.0
             } else {
                 1e-3
             }
@@ -620,42 +697,84 @@ pub fn cur_scale(u: CurUnit, raw: &[f64], name: &str) -> f64 {
     }
 }
 
-pub fn speed_scale(u: SpeedUnit) -> f64 {
-    match u {
+pub fn speed_scale(u: SpeedUnit, name: &str) -> f64 {
+    let eff = match u {
+        SpeedUnit::Auto => infer_speed_unit(name),
+        other => other,
+    };
+    match eff {
         SpeedUnit::Auto | SpeedUnit::MetersPerSec => 1.0,
         SpeedUnit::KmPerHour => 1.0 / 3.6,
         SpeedUnit::CmPerSec => 0.01,
     }
 }
 
-pub fn alt_scale(u: AltUnit) -> f64 {
-    match u {
+pub fn alt_scale(u: AltUnit, name: &str) -> f64 {
+    let eff = match u {
+        AltUnit::Auto => infer_alt_unit(name),
+        other => other,
+    };
+    match eff {
         AltUnit::Auto | AltUnit::Meter => 1.0,
         AltUnit::Centimeter => 0.01,
         AltUnit::Millimeter => 0.001,
     }
 }
 
-/// Gaz sütununu yüzdeye çevirir: ≤1 → ×100; ≤100 → olduğu gibi; 1000–2000 µs PWM → (x−1000)/10;
-/// aksi (DShot ham, 0–2047) → x/20.47.
-pub fn throttle_to_percent(raw: &mut [f64]) {
+/// Gaz sütununu yüzdeye çevirir: açık birim seçimi ya da otomatik algılama
+/// (≤1 → ×100; ≤100 → olduğu gibi; PWM µs → (x−1000)/10; DShot 48–2047 → (x−48)/19.99).
+pub fn throttle_to_percent_with(u: ThrottleUnit, raw: &mut [f64], name: &str) {
     let Some((lo, hi)) = finite_minmax(raw) else {
         return;
     };
-    let f: Box<dyn Fn(f64) -> f64> = if hi <= 1.0 + 1e-9 && lo >= -1e-9 {
-        Box::new(|x| x * 100.0)
-    } else if hi <= 100.0 + 1e-9 {
-        Box::new(|x| x)
-    } else if lo >= 900.0 && hi <= 2100.0 {
-        Box::new(|x| (x - 1000.0) / 10.0)
-    } else {
-        Box::new(|x| x / 20.47)
+    let eff = match u {
+        ThrottleUnit::Auto => {
+            let hinted = infer_thr_unit(name);
+            if hinted != ThrottleUnit::Auto {
+                hinted
+            } else if hi <= 1.0 + 1e-9 && lo >= -1e-9 {
+                ThrottleUnit::Fraction
+            } else if hi <= 100.0 + 1e-9 {
+                ThrottleUnit::Percent
+            } else {
+                let nl = norm(name);
+                if nl.contains("dshot") {
+                    ThrottleUnit::DShot
+                } else if lo >= 900.0 && hi <= 2100.0 {
+                    ThrottleUnit::Pwm
+                } else {
+                    let has_dshot_band = raw
+                        .iter()
+                        .any(|&x| x.is_finite() && (10.0..850.0).contains(&x));
+                    if !has_dshot_band
+                        && hi <= 2020.0
+                        && raw.iter().any(|&x| x.is_finite() && x >= 850.0)
+                    {
+                        ThrottleUnit::Pwm
+                    } else {
+                        ThrottleUnit::DShot
+                    }
+                }
+            }
+        }
+        other => other,
+    };
+    let f: fn(f64) -> f64 = match eff {
+        ThrottleUnit::Fraction => |x| x * 100.0,
+        ThrottleUnit::Percent | ThrottleUnit::Auto => |x| x,
+        ThrottleUnit::Pwm => |x| (x - 1000.0) / 10.0,
+        ThrottleUnit::DShot => |x| (x - 48.0) / 19.99,
     };
     for x in raw.iter_mut() {
         if x.is_finite() {
             *x = f(*x).clamp(0.0, 100.0);
         }
     }
+}
+
+/// Gaz sütununu otomatik birimle yüzdeye çevirir.
+pub fn throttle_to_percent(raw: &mut [f64]) {
+    throttle_to_percent_with(ThrottleUnit::Auto, raw, "");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -771,14 +890,20 @@ pub fn read_log<R: BufRead>(mut r: R, map: &Mapping, max_rows: usize) -> Result<
     let mut gs = take(5);
     let mut asp = take(6);
     let rpm = take(7);
-    let vs = volt_scale(map.volt_unit, &volt);
+    let vs = volt_scale(map.volt_unit, &volt, &name_of(Field::Voltage));
     scaled(&mut volt, vs);
     let cs = cur_scale(map.cur_unit, &cur, &name_of(Field::Current));
     scaled(&mut cur, cs);
-    throttle_to_percent(&mut thr);
-    scaled(&mut alt, alt_scale(map.alt_unit));
-    scaled(&mut gs, speed_scale(map.speed_unit));
-    scaled(&mut asp, speed_scale(map.speed_unit));
+    throttle_to_percent_with(map.thr_unit, &mut thr, &name_of(Field::Throttle));
+    scaled(&mut alt, alt_scale(map.alt_unit, &name_of(Field::Altitude)));
+    scaled(
+        &mut gs,
+        speed_scale(map.gs_unit, &name_of(Field::GroundSpeed)),
+    );
+    scaled(
+        &mut asp,
+        speed_scale(map.asp_unit, &name_of(Field::AirSpeed)),
+    );
     log.volt = volt;
     log.cur = cur;
     log.thr = thr;
@@ -823,12 +948,13 @@ mod tests {
         assert_eq!(m.throttle, Some(3));
         assert_eq!(m.ground_speed, Some(7));
         assert_eq!(m.altitude, Some(8));
-        assert_eq!(m.rpm, Some(9));
+        assert_eq!(m.rpm, None);
         assert_eq!(m.time_unit, TimeUnit::Micro);
         assert_eq!(m.volt_unit, VoltUnit::Volt);
         assert_eq!(m.cur_unit, CurUnit::Amp);
+        assert_eq!(m.thr_unit, ThrottleUnit::Pwm);
         assert_eq!(m.alt_unit, AltUnit::Centimeter);
-        assert_eq!(m.speed_unit, SpeedUnit::MetersPerSec);
+        assert_eq!(m.gs_unit, SpeedUnit::MetersPerSec);
     }
 
     #[test]
@@ -912,7 +1038,44 @@ mod tests {
         let log = read_log_str(csv, &m).unwrap();
         assert!((log.volt[0] - 12.6).abs() < 1e-9, "{}", log.volt[0]);
         assert!((log.cur[1] - 20.0).abs() < 1e-9, "{}", log.cur[1]);
-        assert!(log.t[2] > 0.0);
+        assert!((log.t[2] - 2.0).abs() < 1e-9, "t[2]={}", log.t[2]);
+
+        // Kısa ms log (≤100 s) saniye olarak değil milisaniye olarak çözülür.
+        let raw_ms: Vec<f64> = (0..100).map(|k| k as f64 * 20.0).collect(); // 50 Hz, 2 s
+        assert!((time_scale(TimeUnit::Auto, &raw_ms) - 1e-3).abs() < 1e-12);
+        // 1 Hz saniye logu saniye kalır.
+        let raw_s: Vec<f64> = (0..60).map(|k| k as f64).collect();
+        assert!((time_scale(TimeUnit::Auto, &raw_s) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn auto_volt_and_cur_edge_cases() {
+        // 1S / 2S mV logları cV sanılıp 10× büyütülmemeli.
+        assert!((volt_scale(VoltUnit::Auto, &[4200.0, 3800.0], "voltage") - 1e-3).abs() < 1e-12);
+        assert!((volt_scale(VoltUnit::Auto, &[7400.0, 6800.0], "bat.volt") - 1e-3).abs() < 1e-12);
+        // Düşük akımlı cA Betaflight amperageLatest (250 cA = 2.5 A).
+        assert!((cur_scale(CurUnit::Auto, &[120.0, 250.0], "amperageLatest") - 1e-2).abs() < 1e-12);
+    }
+
+    #[test]
+    fn speed_and_alt_auto_inspect_headers_separately() {
+        let csv =
+            "time (s),GPS_speed (km/h),airspeed (m/s),BaroAlt (cm)\n0,36,15,100\n1,72,20,200\n";
+        let mut m = guess_mapping(&hs(&[
+            "time (s)",
+            "GPS_speed (km/h)",
+            "airspeed (m/s)",
+            "BaroAlt (cm)",
+        ]));
+        assert_eq!(m.gs_unit, SpeedUnit::KmPerHour);
+        assert_eq!(m.asp_unit, SpeedUnit::MetersPerSec);
+        m.gs_unit = SpeedUnit::Auto;
+        m.asp_unit = SpeedUnit::Auto;
+        m.alt_unit = AltUnit::Auto;
+        let log = read_log_str(csv, &m).unwrap();
+        assert!((log.gs[0] - 10.0).abs() < 1e-9);
+        assert!((log.asp[0] - 15.0).abs() < 1e-9);
+        assert!((log.alt[1] - 2.0).abs() < 1e-9);
     }
 
     #[test]
@@ -985,8 +1148,22 @@ mod tests {
         let mut b = vec![1000.0, 1500.0, 2000.0];
         throttle_to_percent(&mut b);
         assert!((b[1] - 50.0).abs() < 1e-9);
-        let mut c = vec![48.0, 1023.5, 2047.0];
+        let mut c = vec![48.0, 1047.5, 2047.0];
         throttle_to_percent(&mut c);
-        assert!((c[2] - 100.0).abs() < 1e-6);
+        assert!((c[0] - 0.0).abs() < 1e-6, "c[0]={}", c[0]);
+        assert!((c[1] - 50.0).abs() < 1e-6, "c[1]={}", c[1]);
+        assert!((c[2] - 100.0).abs() < 1e-6, "c[2]={}", c[2]);
+
+        // Açık DShot seçimi ≥900 aralığında bile PWM sanılmaz.
+        let mut dshot_high = vec![1047.5, 1547.25];
+        throttle_to_percent_with(ThrottleUnit::DShot, &mut dshot_high, "motor[0]");
+        assert!((dshot_high[0] - 50.0).abs() < 1e-6);
+
+        // Failsafe/disarmed <900 içeren PWM logu DShot sanılmaz.
+        let mut pwm_fs = vec![0.0, 880.0, 1000.0, 1500.0, 2000.0];
+        throttle_to_percent_with(ThrottleUnit::Auto, &mut pwm_fs, "thr_raw");
+        assert!((pwm_fs[2] - 0.0).abs() < 1e-6);
+        assert!((pwm_fs[3] - 50.0).abs() < 1e-6);
+        assert!((pwm_fs[4] - 100.0).abs() < 1e-6);
     }
 }

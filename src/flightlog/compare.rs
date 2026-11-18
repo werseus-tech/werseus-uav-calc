@@ -138,17 +138,15 @@ pub fn compare(a: &Analysis, d: &DesignPrediction) -> Vec<Row> {
     // Uçuş süresi: tasarımın kullanılabilir enerjisi / ölçülen ortalama güç.
     let hover_t: f64 = hov.iter().map(|s| s.duration()).sum();
     let cruise_t: f64 = cru.iter().map(|s| s.duration()).sum();
-    let p_mean = if hover_t >= cruise_t && hp.is_finite() {
-        hp
+    let (p_mean, predicted_min) = if hover_t >= cruise_t && hp.is_finite() {
+        (hp, d.hover_endurance_min)
     } else if cp.is_finite() {
-        cp
+        (cp, d.cruise_endurance_min)
     } else {
-        a.overall.active_mean_p
-    };
-    let predicted_min = if hover_t >= cruise_t && hp.is_finite() {
-        d.hover_endurance_min
-    } else {
-        d.cruise_endurance_min
+        (
+            a.overall.active_mean_p,
+            d.hover_endurance_min.or(d.cruise_endurance_min),
+        )
     };
     if p_mean.is_finite() && p_mean > 0.0 && d.usable_wh > 0.0 {
         push(
@@ -233,6 +231,43 @@ mod tests {
         assert!((ft.measured - 20.0 / 118.0 * 60.0).abs() < 1e-9);
         assert!((ft.diff_pct - (ft.measured - 10.0) / 10.0 * 100.0).abs() < 1e-9);
         assert!((measured_cruise_speed(&a).unwrap() - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn no_segments_falls_back_to_hover_endurance_first() {
+        let a = Analysis {
+            overall: Overall {
+                active_mean_p: 120.0,
+                ..Default::default()
+            },
+            segments: Vec::new(),
+            resistance: None,
+        };
+        let mr = DesignPrediction {
+            hover_endurance_min: Some(10.0),
+            cruise_endurance_min: Some(15.0),
+            usable_wh: 20.0,
+            ..Default::default()
+        };
+        let rows = compare(&a, &mr);
+        let ft = rows
+            .iter()
+            .find(|x| x.metric == Metric::FlightTime)
+            .unwrap();
+        assert!((ft.predicted - 10.0).abs() < 1e-9);
+
+        let fw = DesignPrediction {
+            hover_endurance_min: None,
+            cruise_endurance_min: Some(15.0),
+            usable_wh: 20.0,
+            ..Default::default()
+        };
+        let rows_fw = compare(&a, &fw);
+        let ft_fw = rows_fw
+            .iter()
+            .find(|x| x.metric == Metric::FlightTime)
+            .unwrap();
+        assert!((ft_fw.predicted - 15.0).abs() < 1e-9);
     }
 
     #[test]

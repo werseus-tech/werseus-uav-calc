@@ -7,7 +7,7 @@ use super::widgets::{fmt, section};
 use crate::calc::{Library, Model};
 use crate::flightlog::compare::{self, DesignPrediction, Metric};
 use crate::flightlog::csv::{
-    self, AltUnit, CurUnit, Field, Log, Mapping, SpeedUnit, TimeUnit, VoltUnit,
+    self, AltUnit, CurUnit, Field, Log, Mapping, SpeedUnit, ThrottleUnit, TimeUnit, VoltUnit,
 };
 use crate::flightlog::segments::{self, Analysis, SegKind};
 use crate::i18n::{t, tf};
@@ -52,8 +52,8 @@ struct State {
     loaded: Option<Arc<Loaded>>,
     error: Option<String>,
     pending: Option<Pending>,
-    /// (ölçülen seyir hızı anahtarı, proje parmak izi) → tahmin.
-    pred: Option<([i64; 3], DesignPrediction)>,
+    /// (ölçülen seyir hızı + tasarım parmak izi) → tahmin.
+    pred: Option<(u64, DesignPrediction)>,
 }
 
 fn state_id() -> egui::Id {
@@ -62,7 +62,7 @@ fn state_id() -> egui::Id {
 
 fn decimate(t: &[f64], y: impl Fn(usize) -> f64) -> Vec<[f64; 2]> {
     let n = t.len();
-    let stride = (n / PLOT_POINTS).max(1);
+    let stride = n.div_ceil(PLOT_POINTS).max(1);
     (0..n)
         .step_by(stride)
         .filter_map(|k| {
@@ -116,6 +116,7 @@ fn start_load(st: &mut State, ctx: &egui::Context) {
     let slot: Pending = Arc::new(Mutex::new(None));
     st.pending = Some(slot.clone());
     st.error = None;
+    st.pred = None;
     let ctx = ctx.clone();
     let spawned = std::thread::Builder::new().name("flightlog".into()).spawn({
         let slot = slot.clone();
@@ -151,6 +152,7 @@ fn poll(st: &mut State) {
         Some(Ok(l)) => {
             st.loaded = Some(Arc::new(l));
             st.pending = None;
+            st.pred = None;
         }
         Some(Err(e)) => {
             st.loaded = None;
@@ -298,6 +300,19 @@ fn unit_combo<T: Copy + PartialEq>(
     changed
 }
 
+fn apply_inferred_unit(map: &mut Mapping, f: Field, header: &str) {
+    match f {
+        Field::Time => map.time_unit = csv::infer_time_unit(header),
+        Field::Voltage => map.volt_unit = csv::infer_volt_unit(header),
+        Field::Current => map.cur_unit = csv::infer_cur_unit(header),
+        Field::Throttle => map.thr_unit = csv::infer_thr_unit(header),
+        Field::Altitude => map.alt_unit = csv::infer_alt_unit(header),
+        Field::GroundSpeed => map.gs_unit = csv::infer_speed_unit(header),
+        Field::AirSpeed => map.asp_unit = csv::infer_speed_unit(header),
+        Field::Rpm => {}
+    }
+}
+
 fn mapping_ui(ui: &mut Ui, st: &mut State) {
     let auto = t("flightlog.auto");
     egui::CollapsingHeader::new(t("flightlog.mapping_title"))
@@ -305,7 +320,6 @@ fn mapping_ui(ui: &mut Ui, st: &mut State) {
         .show(ui, |ui| {
             ui.label(egui::RichText::new(t("flightlog.map_hint")).weak());
             let headers = st.headers.clone();
-            let mut changed = false;
             egui::Grid::new("flightlog_map")
                 .num_columns(3)
                 .spacing([12.0, 4.0])
@@ -326,12 +340,12 @@ fn mapping_ui(ui: &mut Ui, st: &mut State) {
                                     .clicked()
                                 {
                                     st.map.set(f, None);
-                                    changed = true;
+                                    apply_inferred_unit(&mut st.map, f, "");
                                 }
                                 for (i, h) in headers.iter().enumerate() {
                                     if ui.selectable_label(cur == Some(i), h).clicked() {
                                         st.map.set(f, Some(i));
-                                        changed = true;
+                                        apply_inferred_unit(&mut st.map, f, h);
                                     }
                                 }
                             });
@@ -375,6 +389,20 @@ fn mapping_ui(ui: &mut Ui, st: &mut State) {
                                     ],
                                 );
                             }
+                            Field::Throttle => {
+                                unit_combo(
+                                    ui,
+                                    "fl_u_thr",
+                                    &mut st.map.thr_unit,
+                                    &[
+                                        (ThrottleUnit::Auto, auto),
+                                        (ThrottleUnit::Fraction, "0–1"),
+                                        (ThrottleUnit::Percent, "%"),
+                                        (ThrottleUnit::Pwm, "PWM µs"),
+                                        (ThrottleUnit::DShot, "DShot"),
+                                    ],
+                                );
+                            }
                             Field::Altitude => {
                                 unit_combo(
                                     ui,
@@ -388,11 +416,11 @@ fn mapping_ui(ui: &mut Ui, st: &mut State) {
                                     ],
                                 );
                             }
-                            Field::GroundSpeed | Field::AirSpeed => {
+                            Field::GroundSpeed => {
                                 unit_combo(
                                     ui,
-                                    "fl_u_speed",
-                                    &mut st.map.speed_unit,
+                                    "fl_u_gs",
+                                    &mut st.map.gs_unit,
                                     &[
                                         (SpeedUnit::Auto, auto),
                                         (SpeedUnit::MetersPerSec, "m/s"),
@@ -401,14 +429,26 @@ fn mapping_ui(ui: &mut Ui, st: &mut State) {
                                     ],
                                 );
                             }
-                            _ => {
+                            Field::AirSpeed => {
+                                unit_combo(
+                                    ui,
+                                    "fl_u_asp",
+                                    &mut st.map.asp_unit,
+                                    &[
+                                        (SpeedUnit::Auto, auto),
+                                        (SpeedUnit::MetersPerSec, "m/s"),
+                                        (SpeedUnit::KmPerHour, "km/h"),
+                                        (SpeedUnit::CmPerSec, "cm/s"),
+                                    ],
+                                );
+                            }
+                            Field::Rpm => {
                                 ui.label("");
                             }
                         }
                         ui.end_row();
                     }
                 });
-            let _ = changed;
             if ui.button(t("flightlog.reload")).clicked() {
                 let c = ui.ctx().clone();
                 start_load(st, &c);
@@ -591,15 +631,50 @@ fn interpretation(m: Metric, diff: f64) -> String {
     tf(key, &[fmt(diff.abs(), 0)])
 }
 
+fn pred_cache_key(p: &Project, m: &Model, v_meas: Option<f64>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    v_meas.map(f64::to_bits).hash(&mut h);
+    std::mem::discriminant(&p.drone_type).hash(&mut h);
+    for x in [
+        p.mr_v_cruise,
+        p.mr_flat_plate_area,
+        p.mr_coax_kappa,
+        p.mr_h_lx,
+        p.mr_h_wy,
+        p.p_hotel,
+        m.mr.p_total_hover,
+        m.mr.p_total_cruise,
+        m.mr.i_hover,
+        m.mr.e_usable_wh,
+        m.mr.hover_endurance_min,
+        m.mr.cruise_endurance_min,
+        m.weight.pack_wh,
+        m.weight.pack_voltage,
+        m.perf_cr.v,
+        m.perf_cr.p_total,
+        m.perf_in.e_pack_wh,
+        m.perf_in.dod,
+        m.perf_in.eta_esc,
+        m.perf_in.eta_mot,
+        m.perf_in.eta_prop,
+        m.perf_in.p_hotel,
+        m.perf_in.cd0,
+        m.perf_in.k,
+        m.perf_in.rho,
+        m.perf_in.ws,
+        m.perf_in.w,
+    ] {
+        x.to_bits().hash(&mut h);
+    }
+    h.finish()
+}
+
 fn comparison_ui(ui: &mut Ui, p: &Project, m: &Model, lib: &Library, l: &Loaded, st: &mut State) {
     section(ui, t("flightlog.compare"));
     let v_meas = compare::measured_cruise_speed(&l.analysis);
-    // Tahmin önbelleği: ölçülen hız ve tasarımın ana çıktıları değişince yenilenir.
-    let key = [
-        v_meas.map(|v| (v * 10.0).round() as i64).unwrap_or(-1),
-        (m.mr.p_total_hover * 10.0).round() as i64 ^ (m.perf_cr.p_total * 10.0).round() as i64,
-        (m.weight.pack_wh * 10.0).round() as i64,
-    ];
+    let key = pred_cache_key(p, m, v_meas);
     let pred = match st.pred {
         Some((k, d)) if k == key => d,
         _ => {
@@ -790,6 +865,32 @@ mod tests {
     fn decimate_caps_points() {
         let t: Vec<f64> = (0..100_000).map(|k| k as f64).collect();
         let d = decimate(&t, |k| k as f64);
-        assert!(d.len() <= PLOT_POINTS + 100);
+        assert!(d.len() <= PLOT_POINTS, "len={}", d.len());
+        let edge: Vec<f64> = (0..(2 * PLOT_POINTS - 1)).map(|k| k as f64).collect();
+        let d_edge = decimate(&edge, |k| k as f64);
+        assert!(d_edge.len() <= PLOT_POINTS, "edge len={}", d_edge.len());
+    }
+
+    #[test]
+    fn pred_cache_key_tracks_cell_config_and_drone_type() {
+        let lib = Library::embedded();
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        let mut m = evaluate(&p, &lib);
+        let k0 = pred_cache_key(&p, &m, Some(10.0));
+        // Aynı pack_wh ile S/P değişimi (pack_voltage, i_hover) anahtarı değiştirmeli.
+        m.weight.pack_voltage *= 2.0;
+        m.mr.i_hover *= 0.5;
+        assert_ne!(k0, pred_cache_key(&p, &m, Some(10.0)));
+        // Seyir gücü veya uçak türü değişimi anahtarı değiştirmeli.
+        let m_base = evaluate(&p, &lib);
+        let mut m2 = m_base.clone();
+        m2.mr.p_total_cruise += 25.0;
+        assert_ne!(
+            pred_cache_key(&p, &m_base, None),
+            pred_cache_key(&p, &m2, None)
+        );
+        p.set_drone_type(DroneType::FixedWingConventional);
+        assert_ne!(pred_cache_key(&p, &m_base, Some(10.0)), k0);
     }
 }

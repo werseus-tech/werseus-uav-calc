@@ -2809,7 +2809,7 @@
   "flightlog.cmp.hover_power": "Hover power",
   "flightlog.cmp.hover_current": "Hover current",
   "flightlog.cmp.cruise_power": "Cruise power (at measured {0} m/s)",
-  "flightlog.cmp.flight_time": "Estimated flight time (design battery)",
+  "flightlog.cmp.flight_time": "Estimated endurance (at measured power)",
   "flightlog.cmp.note": "Flight time = the design's usable battery energy divided by the measured mean power of the dominant segment. Differences within ±10 % count as agreement.",
   "flightlog.interp.hover_power.high": "Real hover power is {0} % higher than predicted: check the real weight, propeller efficiency (size, pitch, damage), motor and ESC efficiency, and whether the figure of merit in the design is too optimistic.",
   "flightlog.interp.hover_power.low": "Real hover power is {0} % lower than predicted: the aircraft may be lighter than designed, or the model is conservative (figure of merit, efficiencies). Check the weight entered in the project.",
