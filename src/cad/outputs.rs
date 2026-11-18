@@ -686,7 +686,7 @@ pub fn build_bom(p: &Project, results: &[PartResult]) -> Vec<BomRow> {
         .collect()
 }
 
-fn csv_cell(s: &str) -> String {
+pub(crate) fn csv_cell(s: &str) -> String {
     // Formül enjeksiyonuna karşı: baştaki boşluk/sekme/satır sonu atlanınca tehlikeli karakterle
     // başlıyorsa başına ' eklenir (Excel/LibreOffice baştaki boşlukları yutabilir).
     let lead = s.trim_start_matches([' ', '\t', '\r', '\n']);

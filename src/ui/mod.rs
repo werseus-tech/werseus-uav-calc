@@ -3,6 +3,7 @@
 pub mod aero;
 pub mod aero_simple;
 pub mod ai;
+pub mod bom;
 pub mod components;
 pub mod design_point;
 pub mod endurance;
@@ -61,6 +62,7 @@ pub enum Tab {
     Structure,
     Schematic,
     WindTunnel,
+    Bom,
 }
 
 impl Tab {
@@ -79,6 +81,7 @@ impl Tab {
             Tab::Structure => t("tab_structure"),
             Tab::Schematic => t("tab_schematic"),
             Tab::WindTunnel => t("tab_windtunnel"),
+            Tab::Bom => t("bom.tab"),
         }
     }
 
@@ -93,6 +96,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::Bom,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -108,6 +112,7 @@ impl Tab {
                 Tab::Structure,
                 Tab::Multirotor,
                 Tab::Schematic,
+                Tab::Bom,
             ],
             _ => vec![
                 Tab::Summary,
@@ -122,6 +127,7 @@ impl Tab {
                 Tab::Stability,
                 Tab::Structure,
                 Tab::Schematic,
+                Tab::Bom,
             ],
         }
     }
@@ -162,6 +168,7 @@ pub struct App {
         Option<std::sync::mpsc::Receiver<Option<crate::cad::FreeCadInstallation>>>,
     pub freecad_detecting: bool,
     pub wt_state: windtunnel::WtState,
+    pub bom_state: bom::BomUiState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -256,6 +263,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            bom_state: bom::BomUiState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -326,6 +334,7 @@ impl App {
             freecad_detection_rx: None,
             freecad_detecting: false,
             wt_state: windtunnel::WtState::default(),
+            bom_state: bom::BomUiState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
