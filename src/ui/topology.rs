@@ -306,6 +306,10 @@ fn set_part(st: &mut TopoState, part: Part) {
     st.result = None;
     st.history.clear();
     st.error = None;
+    // Çalışan iş varsa iptal et ve eski sonuçları bırak.
+    st.cancel.store(true, Ordering::Relaxed);
+    st.rx = None;
+    st.live_density.clear();
 }
 
 fn inputs(ui: &mut Ui, p: &Project, m: &Model, st: &mut TopoState) {
@@ -521,14 +525,15 @@ fn results(ui: &mut Ui, st: &mut TopoState, prob: &Problem, r: &SimpResult, par:
                 t("topology.load_used"),
                 format!("n = {}", fmt(st.load_factor_used, 2)),
             );
-            row(
-                t("topology.stress_est"),
-                format!("{} MPa", fmt(r.vm_p99 / 1e6, 1)),
-            );
-            row(
-                t("topology.stress_peak"),
-                format!("{} MPa", fmt(r.vm_max / 1e6, 1)),
-            );
+            let mpa = |v: f64| {
+                if v.is_finite() {
+                    format!("{} MPa", fmt(v / 1e6, 1))
+                } else {
+                    "-".to_string()
+                }
+            };
+            row(t("topology.stress_est"), mpa(r.vm_p99));
+            row(t("topology.stress_peak"), mpa(r.vm_max));
             row(
                 t("topology.stress_allow"),
                 format!("{} MPa", fmt(par.mat.sigma_allow / 1e6, 0)),
@@ -547,6 +552,12 @@ fn results(ui: &mut Ui, st: &mut TopoState, prob: &Problem, r: &SimpResult, par:
             status,
             &tf("topology.sf_line", &[fmt(r.safety_factor, 2)]),
         );
+    }
+    if !r.load_path_ok {
+        components::banner(ui, Status::Warn, t("topology.load_path_broken"));
+    }
+    if matches!(st.settings.part, Part::Arm | Part::Plate) {
+        ui.label(egui::RichText::new(t("topology.inplane_note")).weak());
     }
     ui.label(egui::RichText::new(t("topology.stress_note")).weak());
     let _ = tk;
@@ -632,6 +643,12 @@ mod tests {
         st.settings.max_iter = 300;
         let ctx = egui::Context::default();
         start(&mut st, &p, &m, &ctx);
+        // En az bir yineleme gelsin; iptal döngünün ortasında denensin.
+        let t0 = Instant::now();
+        while st.history.is_empty() && st.running() && t0.elapsed().as_secs() < 60 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            poll(&mut st);
+        }
         st.cancel.store(true, Ordering::Relaxed);
         let t0 = Instant::now();
         while st.running() && t0.elapsed().as_secs() < 60 {

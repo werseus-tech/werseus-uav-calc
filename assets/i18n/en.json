@@ -4276,6 +4276,8 @@
   "topology.stress_allow": "Allowable stress",
   "topology.sf_line": "Approximate safety factor: {0}",
   "topology.stress_note": "Approximate: von Mises at element centres on the thresholded layout; the 99th percentile is used as the max to exclude point-load singularities. Not a substitute for detailed FEA.",
+  "topology.inplane_note": "Arm and plate loads are applied as an in-plane equivalent. Real motor thrust bends a flat arm out of its plane, so the stress and safety factor here are optimistic. Use the result for the cut-out shape, not as a strength check.",
+  "topology.load_path_broken": "Thresholding cut the load path, so the safety factor is withheld. Raise the volume fraction or the resolution.",
   "topology.export_dxf": "Export cut-outs (DXF)",
   "topology.dxf_hint": "DXF R12, mm, closed polylines on layer CUT (outline and holes) for laser/CNC cutting.",
   "topology.dxf_saved": "Saved: {0}",

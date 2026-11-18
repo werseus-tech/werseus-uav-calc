@@ -390,10 +390,14 @@ fn finite_pos(v: f64, what: &str) -> Result<f64, String> {
 /// Parça ve proje değerlerinden problem kurar.
 ///
 /// Yük modelleri (düzlem içi eşdeğer, ön tasarım):
-/// - Kol: uç motor merkezinde itki × yük çarpanı yanal kuvvet (en elverişsiz yönelim varsayımı)
-///   ve itkiyle orantılı motor reaksiyon torku (Q ≈ 0.06·D_pervane·T) düzlem içi moment olarak.
+/// - Kol: uç motor merkezinde itki × yük çarpanı kuvvet ve itkiyle orantılı motor reaksiyon
+///   torku (Q ≈ 0.06·D_pervane·T), ikisi de düzlem içi eşdeğer yük olarak uygulanır. Gerçekte
+///   itki kolu düzleme dik eğer; bu model düz bir kolun eğilme gerilmesini olduğundan düşük,
+///   rijitliğini yüksek gösterir (bkz. `topology.inplane_note`). Sonuç yalnızca kesim şekli
+///   için yol göstericidir, dayanım onayı değildir.
 /// - Plaka: her kol için kol momenti (T·n·L), iki kol cıvatası arasında kuvvet çifti olarak
-///   (tek cıvata varsa itki kuvveti), ayrıca dış cıvatada dönüşümlü işaretli tork kuvveti;
+///   (tek cıvata varsa itki kuvveti), motor reaksiyon torku iki cıvata arasında teğetsel kuvvet
+///   çifti olarak (dönüşümlü işaretli);
 ///   FC/yığın cıvata halkalarından sabit.
 /// - Kaburga: n · W/S basıncı × kaburga aralığı, üst yüzey düğümlerine yukarı doğru; kiriş
 ///   deliği çevresinden sabit; dış kenarda yapışma bandı katı.
@@ -431,11 +435,21 @@ pub fn build_problem(
             let rb = (a.motor_mount_pattern_mm / 2.0)
                 .min(w / 2.0 - a.motor_bolt_dia_mm)
                 .max(a.motor_shaft_dia_mm / 2.0 + a.motor_bolt_dia_mm);
-            cv.paint_disc(mc, a.motor_shaft_dia_mm / 2.0, Cell::Hole, false);
+            cv.paint_disc(
+                mc,
+                (a.motor_shaft_dia_mm / 2.0).max(0.5 * cv.h),
+                Cell::Hole,
+                false,
+            );
             for k in 0..4 {
                 let ang = (45.0 + 90.0 * k as f64).to_radians();
                 let c = [mc[0] + rb * ang.cos(), mc[1] + rb * ang.sin()];
-                cv.paint_disc(c, a.motor_bolt_dia_mm / 2.0, Cell::Hole, false);
+                cv.paint_disc(
+                    c,
+                    (a.motor_bolt_dia_mm / 2.0).max(0.5 * cv.h),
+                    Cell::Hole,
+                    false,
+                );
             }
             // Gövde cıvata delikleri.
             let n_bolt = if a.chassis_bolt_spacing_mm > 0.0 {
@@ -443,12 +457,24 @@ pub fn build_problem(
             } else {
                 1
             };
+            let mut bolt_nodes = Vec::new();
             for i in 0..n_bolt {
                 let x = a.chassis_hole_x0_mm + i as f64 * a.chassis_bolt_spacing_mm;
                 cv.hole([x, 0.0], a.chassis_bolt_dia_mm, ring);
+                if x > ring {
+                    bolt_nodes.extend(
+                        cv.nodes_in([x, 0.0], a.chassis_bolt_dia_mm / 2.0 + ring.max(cv.h)),
+                    );
+                }
             }
-            // Gövde ucunda ankastre.
-            let root: Vec<usize> = (0..=cv.grid.ny).map(|iy| cv.grid.node(0, iy)).collect();
+            // Gövde cıvatalarından sabit; delikler kök kenarına değiyorsa kök kenarı ankastre.
+            let root: Vec<usize> = if bolt_nodes.is_empty() {
+                (0..=cv.grid.ny).map(|iy| cv.grid.node(0, iy)).collect()
+            } else {
+                bolt_nodes.sort_unstable();
+                bolt_nodes.dedup();
+                bolt_nodes
+            };
             let root = cv.live_nodes(root);
             cv.fix(&root);
             // Uç yükü: motor tablasındaki düğümlere.
@@ -495,17 +521,24 @@ pub fn build_problem(
                 }
                 let rad = ring + pl.chassis_bolt_dia_mm / 2.0;
                 let sign = if k % 2 == 0 { 1.0 } else { -1.0 };
-                let tq = sign * kq * t_max * n / (r_out * 1e-3);
+                let q_yaw = sign * kq * t_max * n; // N.m
                 let ni = cv.nodes_in(at(r_in), rad);
                 let no = cv.nodes_in(at(r_out), rad);
                 if two {
                     let fm = t_max * n * l_arm / (r_out - r_in);
-                    arm_loads.push((ni, [-fm * ca, -fm * sa]));
+                    arm_loads.push((ni.clone(), [-fm * ca, -fm * sa]));
                     arm_loads.push((no.clone(), [fm * ca, fm * sa]));
+                    // Reaksiyon torku: iki cıvata arasında eşit ve zıt teğetsel kuvvet çifti.
+                    let ft = q_yaw / ((r_out - r_in) * 1e-3);
+                    arm_loads.push((ni, [ft * sa, -ft * ca]));
+                    arm_loads.push((no, [-ft * sa, ft * ca]));
                 } else {
-                    arm_loads.push((no.clone(), [t_max * n * ca, t_max * n * sa]));
+                    // Tek cıvata: kuvvet ve tork aynı cıvatada; kol sıfıra yakınsa sıfıra bölünmez.
+                    let r_eff = r_out.max(rad).max(1.0);
+                    let tq = q_yaw / (r_eff * 1e-3);
+                    arm_loads.push((ni.clone(), [t_max * n * ca, t_max * n * sa]));
+                    arm_loads.push((ni, [-tq * sa, tq * ca]));
                 }
-                arm_loads.push((no, [-tq * sa, tq * ca]));
             }
             fc_nodes.sort_unstable();
             fc_nodes.dedup();
@@ -537,8 +570,11 @@ pub fn build_problem(
                 y1 = y1.max(q[1]);
             }
             let x1 = poly.iter().fold(0.0f64, |a, q| a.max(q[0]));
+            finite_pos(y1 - y0, "airfoil thickness")?;
+            finite_pos(x1, "airfoil chord")?;
             let mut cv = Canvas::new([0.0, y0, x1, y1], s.resolution);
-            let rim = 2.0f64.max(1.2 * cv.h);
+            // İnce kesitte tasarım çekirdeği kalsın: kenar bandı kalınlığın %20'sini aşmaz.
+            let rim = 2.0f64.max(1.2 * cv.h).min(0.2 * (y1 - y0));
             cv.for_cells(|c, _| {
                 if !in_poly(&poly, c[0], c[1]) {
                     Cell::Outside
@@ -554,7 +590,7 @@ pub fn build_problem(
             let thick = g.profile.thickness(frac) * c_root;
             let d_hole = layout.wing.spar_od_mm.min(0.6 * thick).max(2.0);
             let hc = [frac * c_root, mid];
-            cv.hole(hc, d_hole, 3.0);
+            cv.hole(hc, d_hole, 3.0f64.min(0.15 * thick).max(cv.h));
             let sup = cv.live_nodes(cv.nodes_in(hc, d_hole / 2.0 + 0.8 * cv.h));
             cv.fix(&sup);
             // Basınç yükü: üst yüzeydeki her sütunun en üst elemanının üst düğümleri.
@@ -655,6 +691,11 @@ mod tests {
                     s.resolution = 110;
                     s.max_iter = 6;
                 }
+                if part == Part::Arm {
+                    // Gövde cıvata halkaları küçük: kaba ızgarada yük yolu kopar.
+                    s.resolution = 80;
+                    s.max_iter = 40;
+                }
                 let prob = build_problem(&p, &m, &layout, &s).unwrap_or_else(|e| {
                     panic!("{dt:?} {part:?}: {e}");
                 });
@@ -669,7 +710,13 @@ mod tests {
                 assert!(r.history.iter().all(|v| v.is_finite() && *v > 0.0));
                 assert!(r.mass_before_kg.is_finite() && r.mass_before_kg > 0.0);
                 assert!(r.mass_after_kg <= r.mass_before_kg);
-                assert!(r.vm_p99.is_finite() && r.safety_factor.is_finite());
+                assert!(
+                    r.vm_p99.is_finite() && r.safety_factor.is_finite(),
+                    "{dt:?} {part:?} ok={} c={} h={:?}",
+                    r.load_path_ok,
+                    r.compliance_final,
+                    r.history.last()
+                );
                 // Pasif bölgeler.
                 for (e, c) in prob.cells.iter().enumerate() {
                     match c {
@@ -680,6 +727,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn rib_keeps_design_core_at_minimum_resolution() {
+        let (p, m) = fixture(DroneType::FixedWingConventional);
+        let layout = Layout::new(&p, &m);
+        let mut s = quick(Part::Rib);
+        s.resolution = 30;
+        let prob = build_problem(&p, &m, &layout, &s).expect("rib at min resolution");
+        assert!(prob.cells.contains(&Cell::Design));
+    }
+
+    #[test]
+    fn plate_single_bolt_at_hub_has_finite_loads() {
+        let (p, m) = fixture(DroneType::Multirotor);
+        let mut layout = Layout::new(&p, &m);
+        layout.mr_plate.arm_hole_r_mm = [0.0, 0.0];
+        let s = quick(Part::Plate);
+        let prob = build_problem(&p, &m, &layout, &s).expect("single bolt plate");
+        assert!(prob.loads.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn plate_arm_loads_have_no_net_force_per_arm_pair() {
+        // İki cıvatalı kolda kuvvet çiftleri birbirini götürür: toplam yük sıfıra yakın.
+        let (p, m) = fixture(DroneType::Multirotor);
+        let layout = Layout::new(&p, &m);
+        assert!(layout.mr_plate.arm_hole_r_mm[1] - layout.mr_plate.arm_hole_r_mm[0] > 1e-6);
+        let prob = build_problem(&p, &m, &layout, &quick(Part::Plate)).unwrap();
+        let (mut fx, mut fy, mut mag) = (0.0, 0.0, 0.0);
+        for n in 0..prob.loads.len() / 2 {
+            fx += prob.loads[2 * n];
+            fy += prob.loads[2 * n + 1];
+            mag += prob.loads[2 * n].abs() + prob.loads[2 * n + 1].abs();
+        }
+        assert!(
+            fx.abs() < 1e-6 * mag && fy.abs() < 1e-6 * mag,
+            "{fx} {fy} {mag}"
+        );
+    }
+
+    #[test]
+    fn arm_is_fixed_at_chassis_bolts_when_offset_from_root() {
+        let (p, m) = fixture(DroneType::Multirotor);
+        let layout = Layout::new(&p, &m);
+        assert!(layout.mr_arm.chassis_hole_x0_mm > 0.0);
+        let prob = build_problem(&p, &m, &layout, &quick(Part::Arm)).unwrap();
+        // Kök kenarındaki (ix = 0) düğümler artık sabit değil.
+        let g = prob.grid;
+        assert!((0..=g.ny).all(|iy| !prob.fixed[2 * g.node(0, iy)]));
+        assert!(prob.fixed.iter().any(|v| *v));
     }
 
     #[test]

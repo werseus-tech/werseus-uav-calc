@@ -4276,6 +4276,8 @@
   "topology.stress_allow": "İzin verilen gerilme",
   "topology.sf_line": "Yaklaşık emniyet katsayısı: {0}",
   "topology.stress_note": "Yaklaşık: eşiklenmiş yerleşimde eleman merkezlerinde von Mises; nokta yükü tekilliklerini dışlamak için en büyük değer olarak %99'luk dilim kullanılır. Ayrıntılı sonlu eleman analizinin yerini tutmaz.",
+  "topology.inplane_note": "Kol ve plaka yükleri düzlem içi eşdeğer olarak uygulanır. Gerçekte motor itkisi düz kolu düzlemine dik eğer; bu yüzden buradaki gerilim ve güvenlik katsayısı iyimserdir. Sonucu kesim şekli için kullanın, dayanım kontrolü saymayın.",
+  "topology.load_path_broken": "Eşikleme yük yolunu kesti, bu yüzden güvenlik katsayısı gösterilmiyor. Hacim oranını veya çözünürlüğü artırın.",
   "topology.export_dxf": "Kesim konturunu dışa aktar (DXF)",
   "topology.dxf_hint": "DXF R12, mm, CUT katmanında kapalı çokgen çizgiler (dış hat ve delikler); lazer/CNC kesim için.",
   "topology.dxf_saved": "Kaydedildi: {0}",

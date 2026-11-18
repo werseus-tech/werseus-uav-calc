@@ -103,6 +103,8 @@ pub struct SimpResult {
     pub vm_p99: f64,
     /// İzin verilen gerilme / %99'luk von Mises.
     pub safety_factor: f64,
+    /// Eşiklenmiş yerleşimde yük yolu sağlam mı (uyum, eşiklemeden önceki uyumun birkaç katını aşmadı).
+    pub load_path_ok: bool,
 }
 
 /// Yoğunluk süzgeci: her tasarım elemanı için (komşu, ağırlık) listesi (CSR).
@@ -340,6 +342,9 @@ pub fn optimize(
     ))
 }
 
+/// Eşiklenmiş uyum / eşiklenmemiş uyum bu oranı aşarsa yük yolu kopmuş sayılır.
+const LOAD_PATH_RATIO: f64 = 100.0;
+
 #[allow(clippy::too_many_arguments)]
 fn finalize(
     prob: &Problem,
@@ -376,6 +381,7 @@ fn finalize(
         vm_max: f64::NAN,
         vm_p99: f64::NAN,
         safety_factor: f64::NAN,
+        load_path_ok: true,
     };
     let e_el: Vec<f64> = bin.iter().map(|b| if *b { e0 } else { emin }).collect();
     if let Ok(u) = solver.solve(ke, &e_el, &prob.loads) {
@@ -393,7 +399,13 @@ fn finalize(
             }
         }
         res.compliance_final = c;
-        if !vms.is_empty() {
+        // Eşikleme yük yolunu kopardıysa katı adalar neredeyse hiç gerilmez; güvenlik katsayısı yanıltır.
+        if let Some(c0) = res.history.last() {
+            if *c0 > 0.0 && c > LOAD_PATH_RATIO * *c0 {
+                res.load_path_ok = false;
+            }
+        }
+        if res.load_path_ok && !vms.is_empty() {
             vms.sort_by(f64::total_cmp);
             res.vm_max = vms[vms.len() - 1];
             let k = ((vms.len() as f64) * 0.99).ceil() as usize;
@@ -479,6 +491,25 @@ mod tests {
         }
         assert!(r.mass_after_kg < r.mass_before_kg);
         assert!(r.vm_p99.is_finite() && r.safety_factor > 0.0);
+    }
+
+    #[test]
+    fn severed_load_path_withholds_safety_factor() {
+        // Tek yineleme + düşük hacim oranı: yoğunluklar 0.5 altında kalır, eşikleme her şeyi boşaltır.
+        let (prob, mut par) = cantilever(30, 15);
+        par.vol_frac = 0.25;
+        par.max_iter = 1;
+        let r = optimize(&prob, &par, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(
+            !r.load_path_ok,
+            "c={} h={:?}",
+            r.compliance_final, r.history
+        );
+        assert!(r.safety_factor.is_nan());
+        // Normal koşuda yük yolu sağlam.
+        let (prob, par) = cantilever(30, 15);
+        let r = optimize(&prob, &par, &AtomicBool::new(false), &mut |_| {}).unwrap();
+        assert!(r.load_path_ok && r.safety_factor.is_finite());
     }
 
     #[test]
