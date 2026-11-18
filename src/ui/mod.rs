@@ -49,6 +49,7 @@ pub mod viewport3d;
 pub mod weight;
 pub mod widgets;
 pub mod windtunnel;
+pub mod wiring;
 pub mod wizard;
 
 pub mod acoustics;
@@ -98,6 +99,7 @@ pub enum Tab {
     FlightLog,
     SensorFov,
     Downwash,
+    Wiring,
 }
 
 impl Tab {
@@ -133,6 +135,7 @@ impl Tab {
             Tab::FlightLog => t("tab_flightlog"),
             Tab::SensorFov => t("tab_sensorfov"),
             Tab::Downwash => t("tab_downwash"),
+            Tab::Wiring => t("tab_wiring"),
         }
     }
 
@@ -164,6 +167,7 @@ impl Tab {
                 Tab::FlightLog,
                 Tab::SensorFov,
                 Tab::Downwash,
+                Tab::Wiring,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -196,6 +200,7 @@ impl Tab {
                 Tab::FlightLog,
                 Tab::SensorFov,
                 Tab::Downwash,
+                Tab::Wiring,
             ],
             _ => vec![
                 Tab::Summary,
@@ -227,6 +232,7 @@ impl Tab {
                 Tab::FlightLog,
                 Tab::SensorFov,
                 Tab::Downwash,
+                Tab::Wiring,
             ],
         }
     }

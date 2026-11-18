@@ -902,6 +902,9 @@ impl App {
             Some(super::steps::CenterSlot::Downwash) => {
                 super::downwash::show(ui, &self.project, model, &mut self.dw_state);
             }
+            Some(super::steps::CenterSlot::Wiring) => {
+                super::wiring::show(ui, &self.project, model);
+            }
             None => {}
         }
     }

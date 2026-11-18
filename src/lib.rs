@@ -30,6 +30,7 @@ pub mod teach;
 pub mod thermalpower;
 pub mod ui;
 pub mod windtunnel;
+pub mod wiring;
 
 pub mod acoustics;
 
