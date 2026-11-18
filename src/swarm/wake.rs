@@ -335,7 +335,7 @@ pub fn hover_induced_velocity(thrust: f64, rho: f64, area: f64) -> f64 {
 /// Induced velocity with forward speed `v_fwd` and axial (climb / descending-air) speed `v_c`:
 /// solves `v = v_h² / √(v_fwd² + (v_c + v)²)` (Glauert / momentum theory, `v_c ≥ 0`).
 pub fn induced_velocity(v_h: f64, v_fwd: f64, v_c: f64) -> f64 {
-    if v_h <= 0.0 {
+    if !(v_h.is_finite() && v_h > 0.0 && v_fwd.is_finite() && v_c.is_finite()) {
         return 0.0;
     }
     let vc = v_c.max(0.0);
@@ -416,7 +416,9 @@ pub fn wake_centerline(veh: &RotorVehicle, s_max: f64) -> Vec<[f64; 3]> {
 /// Downward wake velocity [m/s] of a vehicle at the origin at a point `dx` aft, `dy` to the side
 /// and `depth` below it. Zero above the disk plane.
 pub fn wake_velocity(veh: &RotorVehicle, line: &[[f64; 3]], dx: f64, dy: f64, depth: f64) -> f64 {
-    if depth <= 0.0 || line.is_empty() {
+    // Disk düzleminin üstünde iz yok. Aynı seviyede (depth = 0) yalnızca ileri uçuşta ve
+    // liderin arkasında iz vardır: iz geriye süpürülür.
+    if depth < 0.0 || line.is_empty() || (depth == 0.0 && (veh.v <= 0.0 || dx <= 0.0)) {
         return 0.0;
     }
     let mut best = (f64::INFINITY, 0.0);
@@ -475,6 +477,9 @@ pub fn rotor_interactions(veh: &RotorVehicle, pos: &[V3]) -> Vec<RotorEffect> {
     let s_max = (400.0 * r).max(10.0);
     let line = wake_centerline(veh, s_max);
     let v_ref = veh.v_i();
+    // Sabit gazda itki kaybı, pala elemanı denkleminde hover indüklenen hızına (v_h) göre
+    // boyutsuzlaştırılır; ileri uçuş hızı azalmış v_i ile değil.
+    let v_h = veh.v_h();
     let k = veh.elec_per_ideal();
     (0..pos.len())
         .map(|j| {
@@ -490,7 +495,7 @@ pub fn rotor_interactions(veh: &RotorVehicle, pos: &[V3]) -> Vec<RotorEffect> {
             let ratio = power_ratio(veh, w);
             RotorEffect {
                 w,
-                thrust_loss: 1.0 - thrust_ratio_fixed_throttle(v_ref, w),
+                thrust_loss: 1.0 - thrust_ratio_fixed_throttle(v_h, w),
                 d_power: k * veh.thrust * v_ref * (ratio - 1.0),
             }
         })
@@ -659,6 +664,34 @@ mod tests {
         let (zv, dh) = safe_separation(&q);
         assert!(zv > dh && dh > q.r_eq(), "{zv} {dh}");
         assert!(loss(0.0, zv * 1.01) <= SAFE_THRUST_LOSS + 1e-3);
+    }
+
+    #[test]
+    fn cruise_thrust_loss_uses_hover_induced_velocity() {
+        let q = RotorVehicle { v: 15.0, ..quad() };
+        let e = rotor_interactions(&q, &[[0.0, 0.0, 0.0], [3.0, 0.0, -0.8]])[1];
+        assert!(e.w > 0.0);
+        let want = 1.0 - thrust_ratio_fixed_throttle(q.v_h(), e.w);
+        assert!((e.thrust_loss - want).abs() < 1e-12);
+        // v_i küçük olsaydı kayıp şişerdi.
+        assert!(e.thrust_loss < 1.0 - thrust_ratio_fixed_throttle(q.v_i(), e.w) + 1e-12);
+    }
+
+    #[test]
+    fn coplanar_follower_in_cruise_sees_wake_but_hover_and_leader_do_not() {
+        let q = RotorVehicle { v: 8.0, ..quad() };
+        let e = rotor_interactions(&q, &[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]);
+        assert!(e[1].w > 0.0 && e[1].d_power > 0.0, "{:?}", e[1]);
+        assert_eq!(e[0].w, 0.0);
+        let h = rotor_interactions(&quad(), &[[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]]);
+        assert_eq!(h[1].w, 0.0);
+    }
+
+    #[test]
+    fn induced_velocity_rejects_non_finite() {
+        assert_eq!(induced_velocity(f64::NAN, 0.0, 0.0), 0.0);
+        assert_eq!(induced_velocity(3.0, f64::NAN, 0.0), 0.0);
+        assert_eq!(induced_velocity(3.0, 0.0, f64::NAN), 0.0);
     }
 
     #[test]

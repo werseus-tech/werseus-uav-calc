@@ -220,7 +220,11 @@ pub fn analyse(nodes: &[[f64; 3]], r: &Radio) -> MeshResult {
         Vec::new()
     };
     let connected = hops.iter().all(|h| h.is_some());
-    let articulation = articulation_points(&adj);
+    // Yalnızca yer istasyonuna ulaşabilen araçlar; yer istasyonunun kendisi hariç.
+    let articulation: Vec<usize> = articulation_points(&adj)
+        .into_iter()
+        .filter(|&i| i + 1 != n && hops[i].is_some())
+        .collect();
     let throughput = hops
         .iter()
         .map(|h| match h {
@@ -272,6 +276,8 @@ mod tests {
         assert_eq!(bfs_hops(&path, 3), vec![Some(3), Some(2), Some(1), Some(0)]);
         let split = graph(4, &[(0, 1), (2, 3)]);
         assert_eq!(bfs_hops(&split, 3), vec![None, None, Some(1), Some(0)]);
+        let star = graph(4, &[(3, 0), (3, 1), (3, 2)]);
+        assert_eq!(bfs_hops(&star, 3), vec![Some(1), Some(1), Some(1), Some(0)]);
     }
 
     #[test]
@@ -323,5 +329,15 @@ mod tests {
         let m = analyse(&far, &r);
         assert!(!m.connected);
         assert_eq!(m.throughput[0], 0.0);
+        // Yer istasyonuna ulaşamayan kümedeki kesme noktaları ve yer istasyonu raporlanmaz.
+        let split = [
+            [-20.0 * step, 0.0, 0.0],
+            [-20.0 * step + 0.8 * step, 0.0, 0.0],
+            [-20.0 * step + 1.6 * step, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let m2 = analyse(&split, &r);
+        assert!(!m2.connected);
+        assert!(m2.articulation.is_empty(), "{:?}", m2.articulation);
     }
 }

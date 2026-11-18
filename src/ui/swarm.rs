@@ -1059,14 +1059,18 @@ mod tests {
         let tr = crate::i18n::tr_table();
         let en = crate::i18n::en_table();
         let mut n = 0;
-        for pat in ["t(\"", "tf(\""] {
+        for pat in ["t(", "tf("] {
             for (pos, _) in src.match_indices(pat) {
                 // `fmt(`, `pct(` vb. ile karışmasın: önceki karakter tanımlayıcı olmamalı.
                 let prev = src[..pos].chars().last().unwrap_or(' ');
                 if prev.is_alphanumeric() || prev == '_' {
                     continue;
                 }
-                let rest = &src[pos + pat.len()..];
+                // Çok satırlı çağrılar: `tf(\n    "anahtar"`; `(` ile `"` arasında boşluk olabilir.
+                let rest = src[pos + pat.len()..].trim_start();
+                let Some(rest) = rest.strip_prefix('"') else {
+                    continue;
+                };
                 let key = &rest[..rest.find('"').unwrap()];
                 if key.is_empty() || key.contains(' ') || key == "…" {
                     continue;

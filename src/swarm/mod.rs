@@ -209,7 +209,10 @@ pub fn analyse(inp: &SwarmInputs, p: &Project, m: &Model) -> SwarmResult {
         if mode.is_rotor() {
             let rv = rotor_vehicle(p, m, mode == Mode::RotorCruise);
             let fx = wake::rotor_interactions(&rv, &positions);
-            let pe = fx.iter().map(|e| fin(rv.p_alone + e.d_power)).collect();
+            let pe = fx
+                .iter()
+                .map(|e| fin(rv.p_alone + e.d_power).max(0.0))
+                .collect();
             (
                 Vec::new(),
                 fx,
@@ -224,7 +227,11 @@ pub fn analyse(inp: &SwarmInputs, p: &Project, m: &Model) -> SwarmResult {
         } else {
             let wv = wing_vehicle(p, m);
             let fx = wake::wing_interactions(&wv, &positions);
-            let pe = fx.iter().map(|e| fin(wv.p_alone + e.d_power)).collect();
+            // Tek aracın gücü sıfırın altına inmez (pil geri beslemesi yok).
+            let pe = fx
+                .iter()
+                .map(|e| fin(wv.p_alone + e.d_power).max(0.0))
+                .collect();
             let dx = if fp.step_x > 0.0 {
                 fp.step_x
             } else {
@@ -249,7 +256,12 @@ pub fn analyse(inp: &SwarmInputs, p: &Project, m: &Model) -> SwarmResult {
 
     // Network: formation scaled to the requested spread, lifted to the altitude.
     let c = formation::centroid(&positions);
-    let ext = formation::extent(&positions);
+    // Yayılım yalnızca yatay düzlemde ölçeklenir; düşey kademe (step_h) gerçek metre kalır.
+    let ext = 2.0
+        * positions
+            .iter()
+            .map(|q| ((q[0] - c[0]).powi(2) + (q[1] - c[1]).powi(2)).sqrt())
+            .fold(0.0, f64::max);
     let k = if ext > 1e-9 {
         fin(inp.spread).max(0.0) / ext
     } else {
@@ -261,7 +273,7 @@ pub fn analyse(inp: &SwarmInputs, p: &Project, m: &Model) -> SwarmResult {
             [
                 (q[0] - c[0]) * k,
                 (q[1] - c[1]) * k,
-                (q[2] - c[2]) * k + fin(inp.altitude),
+                ((q[2] - c[2]) + fin(inp.altitude)).max(0.0),
             ]
         })
         .collect();
