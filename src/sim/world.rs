@@ -6,7 +6,8 @@ use super::aero::{self, AeroOut, Surfaces};
 use super::control::{Actuators, Autopilot, ControlMode, CtrlContext, PilotInput, VtolPhase};
 use super::env::{Wind, WindConfig};
 use super::math::{Inertia, Quat, V3};
-use super::vehicle::{ContactKind, VehicleParams};
+use super::terrain::EnvironmentKind;
+use super::vehicle::{ContactKind, TakeoffMode, VehicleParams};
 use crate::calc::atmosphere::{G, isa};
 
 /// Fixed physics step [s] (400 Hz).
@@ -24,6 +25,8 @@ pub enum CrashReason {
     PropStrike,
     Overturned,
     Overload,
+    Terrain,
+    Building,
     Numerical,
 }
 
@@ -161,8 +164,11 @@ pub struct Sim {
     pub input: PilotInput,
     pub trim_elevator: f64,
     pub trim_throttle: f64,
-    autopilot: Autopilot,
+    pub autopilot: Autopilot,
     pub wind: Wind,
+    pub env: EnvironmentKind,
+    /// Optional wheel brake command in [0, 1].
+    pub brakes: f64,
     pub energy_used_wh: f64,
     pub status: FlightStatus,
     pub failsafe: bool,
@@ -201,6 +207,8 @@ impl Sim {
             trim_throttle: 0.0,
             autopilot: Autopilot::default(),
             wind: Wind::new(WindConfig::default(), cfg.seed),
+            env: EnvironmentKind::default(),
+            brakes: 0.0,
             energy_used_wh: 0.0,
             status: FlightStatus::OnGround,
             failsafe: false,
@@ -239,9 +247,15 @@ impl Sim {
         self.trim_elevator = 0.0;
         self.trim_throttle = 0.0;
         self.input = PilotInput::default();
+        self.brakes = 0.0;
         self.telemetry = Telemetry::default();
         let has_wing = self.params.wing.is_some();
-        self.phase = VtolPhase::Hover;
+        self.phase = if has_wing && self.params.takeoff == TakeoffMode::Runway {
+            VtolPhase::Cruise
+        } else {
+            VtolPhase::Hover
+        };
+        let (sx, sy, sh) = self.env.spawn_position();
         match start {
             StartPosition::Ground => {
                 let lowest = self
@@ -251,7 +265,7 @@ impl Sim {
                     .map(|c| c.pos.z)
                     .fold(0.0_f64, f64::max);
                 self.state = RigidState {
-                    pos: V3::new(0.0, 0.0, -(lowest - GEAR_DEFLECTION * 0.5)),
+                    pos: V3::new(sx, sy, -(sh + lowest - GEAR_DEFLECTION * 0.5)),
                     ..Default::default()
                 };
                 self.status = FlightStatus::OnGround;
@@ -280,7 +294,7 @@ impl Sim {
             StartPosition::Air => {
                 let alt = if has_wing { 60.0 } else { 15.0 };
                 self.state = RigidState {
-                    pos: V3::new(0.0, 0.0, -alt),
+                    pos: V3::new(sx, sy, -(sh + alt)),
                     ..Default::default()
                 };
                 self.status = FlightStatus::Airborne;
@@ -314,6 +328,45 @@ impl Sim {
 
     pub fn set_wind(&mut self, cfg: WindConfig) {
         self.wind.cfg = cfg;
+    }
+
+    pub fn set_environment(&mut self, env: EnvironmentKind) {
+        self.env = env;
+        if self.status == FlightStatus::OnGround && self.t == 0.0 {
+            self.reset(self.start);
+        } else {
+            self.update_telemetry();
+        }
+    }
+
+    /// Hand or catapult launch from the ground for fixed-wing aircraft without wheels.
+    pub fn hand_launch(&mut self) {
+        if self.is_crashed()
+            || self.params.wing.is_none()
+            || self.params.takeoff != TakeoffMode::HandLaunch
+            || self.status != FlightStatus::OnGround
+        {
+            return;
+        }
+        let h_g = self.env.ground_height(self.state.pos.x, self.state.pos.y);
+        let gamma = self.params.gamma_launch_deg.to_radians().clamp(0.05, 0.45);
+        let v = self
+            .params
+            .v_launch
+            .max(1.15 * self.params.v_stall.max(8.0));
+        self.state.pos.z = -(h_g + 1.6);
+        self.state.vel = V3::new(v * gamma.cos(), 0.0, -v * gamma.sin());
+        self.state.q = Quat::from_euler(0.0, gamma, 0.0);
+        self.state.w = V3::ZERO;
+        self.phase = VtolPhase::Cruise;
+        self.status = FlightStatus::Airborne;
+        self.input.throttle = 1.0;
+        for (k, r) in self.params.rotors.iter().enumerate() {
+            if !r.lift && !self.motor_failed[k] {
+                self.motor_n[k] = 1.0;
+            }
+        }
+        self.update_telemetry();
     }
 
     pub fn trigger_gust(&mut self) {
@@ -628,8 +681,9 @@ impl Sim {
     fn forces(&self, s: &RigidState) -> Forces {
         let p = &self.params;
         let q = s.q;
-        let agl = -s.pos.z;
-        let rho = isa(p.field_elevation + agl.max(0.0)).rho;
+        let h_ground = self.env.ground_height(s.pos.x, s.pos.y);
+        let agl = -s.pos.z - h_ground;
+        let rho = isa(p.field_elevation + (-s.pos.z).max(0.0)).rho;
         let wind = self.wind.velocity(agl);
         let v_air_b = q.rotate_inv(s.vel - wind);
         let mut f_b = V3::ZERO;
@@ -704,26 +758,34 @@ impl Sim {
             for c in &p.contacts {
                 let r_b = c.pos - self.cg_offset;
                 let r_w = q.rotate(r_b);
-                let pz = s.pos.z + r_w.z;
+                let pt_w = s.pos + r_w;
+                let h_g = self.env.ground_height(pt_w.x, pt_w.y);
+                let pz = pt_w.z + h_g;
                 if pz <= 0.0 {
                     continue;
                 }
+                let n_up = self.env.ground_normal_ned(pt_w.x, pt_w.y);
+                let pen_n = pz * (-n_up.z).max(0.2);
                 let v_pt = s.vel + q.rotate(s.w.cross(r_b));
-                let normal = (kc * pz + cc * v_pt.z).max(0.0);
-                let vt = V3::new(v_pt.x, v_pt.y, 0.0);
+                let v_into = -v_pt.dot(n_up);
+                let normal = (kc * pen_n + cc * v_into).max(0.0);
+                let vt = v_pt - n_up * v_pt.dot(n_up);
                 let fric = match c.kind {
                     ContactKind::Wheel { steer } => {
-                        let st = if steer {
-                            self.surfaces.rudder * 0.35
+                        let yaw_cmd = if p.wing.as_ref().is_some_and(|w| w.cn_dr > 1e-4) {
+                            self.surfaces.rudder
                         } else {
-                            0.0
+                            self.input.yaw.clamp(-1.0, 1.0)
                         };
-                        let fw = q.rotate(fwd_b(st));
-                        let fw = V3::new(fw.x, fw.y, 0.0).normalized_or(V3::new(1.0, 0.0, 0.0));
-                        let lat = V3::new(-fw.y, fw.x, 0.0);
+                        let st = if steer { yaw_cmd * 0.35 } else { 0.0 };
+                        let fw3 = q.rotate(fwd_b(st));
+                        let fw = (fw3 - n_up * fw3.dot(n_up)).normalized_or(V3::new(1.0, 0.0, 0.0));
+                        let lat = n_up.cross(fw).normalized_or(V3::new(0.0, 1.0, 0.0));
                         let (vl, vs) = (vt.dot(fw), vt.dot(lat));
-                        fw * (-0.04 * normal * (vl / 0.2).tanh())
-                            + lat * (-0.7 * normal * (vs / 0.15).tanh())
+                        let mu_roll = self.env.rolling_mu(pt_w.x, pt_w.y)
+                            + self.brakes.clamp(0.0, 1.0) * 0.45;
+                        fw * (-mu_roll * normal * (vl / 0.2).tanh())
+                            + lat * (-0.75 * normal * (vs / 0.15).tanh())
                     }
                     ContactKind::Skid | ContactKind::Structure => {
                         let mu = if p.lift_rotor_count() == 0 && c.kind == ContactKind::Skid {
@@ -739,7 +801,7 @@ impl Sim {
                         }
                     }
                 };
-                let fc = V3::new(0.0, 0.0, -normal) + fric;
+                let fc = n_up * normal + fric;
                 f_w += fc;
                 m_b += r_b.cross(q.rotate_inv(fc));
             }
@@ -762,35 +824,67 @@ impl Sim {
         let mut crash: Option<CrashReason> = None;
         for c in &self.params.contacts {
             let r_b = c.pos - self.cg_offset;
-            let pz = s.pos.z + s.q.rotate(r_b).z;
+            let pt_w = s.pos + s.q.rotate(r_b);
+            if self.env.building_hit(pt_w.x, pt_w.y, -pt_w.z).is_some() {
+                crash = Some(CrashReason::Building);
+                break;
+            }
+            let h_g = self.env.ground_height(pt_w.x, pt_w.y);
+            let pz = pt_w.z + h_g;
             if pz <= 0.0 {
                 continue;
             }
-            let was_in = before.pos.z + before.q.rotate(r_b).z > 0.0;
+            let before_pt = before.pos + before.q.rotate(r_b);
+            let was_in = before_pt.z + self.env.ground_height(before_pt.x, before_pt.y) > 0.0;
+            let n_up = self.env.ground_normal_ned(pt_w.x, pt_w.y);
             let v_pt = before.vel + before.q.rotate(before.w.cross(r_b));
+            let v_into = -v_pt.dot(n_up);
+            let v_tan = (v_pt + n_up * v_into).norm();
+            let mountain_hit = self.env == EnvironmentKind::Mountains && h_g > 1.0;
             match c.kind {
                 ContactKind::Wheel { .. } | ContactKind::Skid => {
                     touching = true;
-                    if !was_in && v_pt.z > self.params.crash_sink {
-                        crash = Some(CrashReason::HardLanding);
+                    if !was_in && v_into > self.params.crash_sink {
+                        crash = Some(if mountain_hit {
+                            CrashReason::Terrain
+                        } else {
+                            CrashReason::HardLanding
+                        });
                     }
                 }
                 ContactKind::Structure => {
-                    let hard = v_pt.z > 0.8 * self.params.crash_sink
-                        || V3::new(v_pt.x, v_pt.y, 0.0).norm() > 6.0;
+                    let hard = v_into > 0.8 * self.params.crash_sink || v_tan > 6.0;
                     let spinning_rotor = self
                         .params
                         .rotors
                         .iter()
                         .enumerate()
                         .any(|(k, r)| (r.pos - c.pos).norm() < 1e-6 && self.motor_n[k] > 0.3);
-                    if spinning_rotor {
+                    if mountain_hit && hard && !was_in {
+                        crash = Some(CrashReason::Terrain);
+                    } else if spinning_rotor {
                         crash = Some(CrashReason::PropStrike);
                     } else if hard && !was_in {
                         crash = Some(CrashReason::Structure);
                     }
                     touching = true;
                 }
+            }
+        }
+        if crash.is_none() && self.env.building_hit(s.pos.x, s.pos.y, -s.pos.z).is_some() {
+            crash = Some(CrashReason::Building);
+        }
+        let h_cg = self.env.ground_height(s.pos.x, s.pos.y);
+        if crash.is_none() && s.pos.z + h_cg > 0.05 {
+            touching = true;
+            let was_in_cg =
+                before.pos.z + self.env.ground_height(before.pos.x, before.pos.y) > 0.05;
+            if !was_in_cg && before.vel.norm() > 4.0 {
+                crash = Some(if self.env == EnvironmentKind::Mountains && h_cg > 1.0 {
+                    CrashReason::Terrain
+                } else {
+                    CrashReason::Structure
+                });
             }
         }
         if touching {
@@ -812,7 +906,7 @@ impl Sim {
 
     pub fn update_telemetry(&mut self) {
         let s = self.state;
-        let agl = -s.pos.z;
+        let agl = -s.pos.z - self.env.ground_height(s.pos.x, s.pos.y);
         let wind = self.wind.velocity(agl);
         let v_air_b = s.q.rotate_inv(s.vel - wind);
         let airspeed = v_air_b.norm();

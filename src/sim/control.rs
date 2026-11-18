@@ -369,17 +369,24 @@ impl Autopilot {
             0.0
         };
         let q_des = (3.0 * (theta_cmd - theta) * phi.cos() + turn).clamp(-1.5, 1.5);
-        if airborne {
-            self.pitch_i = (self.pitch_i + 0.3 * (theta_cmd - theta) * dt).clamp(-0.3, 0.3);
+        let ground_rotate = c.on_ground && pitch_stick > 0.05 && c.airspeed > 0.85 * vs;
+        if airborne || ground_rotate {
+            self.pitch_i = (self.pitch_i + 0.35 * (theta_cmd - theta) * dt).clamp(-0.3, 0.3);
         } else {
             self.pitch_i = 0.0;
         }
         let qh = w.y * wa.mac / (2.0 * v_d);
         let alpha_w = c.alpha + wa.i_w;
+        let rot_ff = if ground_rotate {
+            0.55 * pitch_stick * wa.cm_de * DELTA_MAX
+        } else {
+            0.0
+        };
         let cm_cmd = i.iyy * 8.0 * (q_des - w.y) / (qs * wa.mac)
             - wa.cmq * qh
             - wa.cma * (alpha_w - wa.alpha_w_trim).sin()
-            + self.pitch_i;
+            + self.pitch_i
+            + rot_ff;
         let elevator = cm_cmd / (wa.cm_de.max(1e-4) * DELTA_MAX);
 
         // --- Yaw: turn coordination + yaw stick

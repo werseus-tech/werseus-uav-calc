@@ -619,6 +619,11 @@ pub fn show(
                 ..Default::default()
             })
         },
+        world: None,
+        world_vp: [0.0; 16],
+        world_eye: [0.0; 3],
+        world_light: [0.0; 3],
+        world_fill: [0.0; 3],
     };
     let renderer = st.renderer.clone();
     let failed_flag = st.gl_failed.clone();

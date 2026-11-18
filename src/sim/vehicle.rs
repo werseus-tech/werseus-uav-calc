@@ -13,8 +13,34 @@ use super::math::{Inertia, V3};
 use crate::calc::Model;
 use crate::calc::atmosphere::{G, isa};
 use crate::calc::geometry::TailKind;
+use crate::calc::presets::mission::Launch;
 use crate::geom3d::{self, PartKind, ViewOptions};
 use crate::project::{DroneType, Link, Project};
+
+/// How the aircraft leaves the ground in the simulator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TakeoffMode {
+    /// Ground roll on tricycle landing gear wheels (fixed wing or VTOL in fixed-wing mode).
+    #[default]
+    Runway,
+    /// Hand or catapult launch: no landing gear wheels.
+    HandLaunch,
+    /// Vertical lift-off (multirotors and VTOL in hover mode).
+    Vertical,
+}
+
+/// Default takeoff mode derived from `Project::simple.mission.launch` and `DroneType`.
+pub fn default_takeoff_for(p: &Project) -> TakeoffMode {
+    match p.drone_type {
+        DroneType::Multirotor | DroneType::VtolQuadplane => TakeoffMode::Vertical,
+        DroneType::FixedWingConventional | DroneType::FixedWingVTail | DroneType::FlyingWing => {
+            match p.simple.mission.launch {
+                Launch::Hand => TakeoffMode::HandLaunch,
+                Launch::Runway | Launch::Vertical => TakeoffMode::Runway,
+            }
+        }
+    }
+}
 
 /// Maximum control-surface deflection [rad] (20 deg, typical RC setup).
 pub const DELTA_MAX: f64 = 0.349;
@@ -144,6 +170,10 @@ pub struct VehicleParams {
     pub field_elevation: f64,
     pub v_stall: f64,
     pub v_cruise: f64,
+    pub v_launch: f64,
+    pub gamma_launch_deg: f64,
+    pub takeoff: TakeoffMode,
+    pub has_wheels: bool,
     /// CG position in the 3D scene frame (x fwd, y left, z up), for rendering.
     pub scene_cg: [f32; 3],
     /// Crash threshold for vertical touchdown speed [m/s].
@@ -179,11 +209,35 @@ fn rps_for(t: f64, rho: f64, d: f64) -> f64 {
 
 impl VehicleParams {
     pub fn from_project(p: &Project, m: &Model) -> VehicleParams {
+        Self::from_project_with_takeoff(p, m, default_takeoff_for(p))
+    }
+
+    pub fn from_project_with_takeoff(
+        p: &Project,
+        m: &Model,
+        takeoff: TakeoffMode,
+    ) -> VehicleParams {
         let dt = p.drone_type;
+        let takeoff = match dt {
+            DroneType::Multirotor => TakeoffMode::Vertical,
+            DroneType::VtolQuadplane => takeoff,
+            _ => {
+                if takeoff == TakeoffMode::Vertical {
+                    TakeoffMode::Runway
+                } else {
+                    takeoff
+                }
+            }
+        };
+        let want_wheels = dt.has_wing() && takeoff == TakeoffMode::Runway;
         let mass = design_mass(p, m);
         let field_elevation = finite_or(p.h, 0.0).clamp(0.0, 4000.0);
         let rho = isa(field_elevation).rho;
-        let spec = geom3d::from_project(p, m, &ViewOptions::default());
+        let opts = ViewOptions {
+            wheels_override: Some(want_wheels),
+            ..Default::default()
+        };
+        let spec = geom3d::from_project(p, m, &opts);
         let cg = spec.cg.unwrap_or(geom3d::Vec3::ZERO);
         let to_body = |v: geom3d::Vec3| -> V3 {
             V3::new(
@@ -452,6 +506,10 @@ impl VehicleParams {
             (fp(m.aero.v_stall, 10.0), fp(p.v_cr, 15.0))
         };
 
+        let has_wheels = contacts
+            .iter()
+            .any(|c| matches!(c.kind, ContactKind::Wheel { .. }));
+
         VehicleParams {
             drone_type: dt,
             mass,
@@ -474,6 +532,10 @@ impl VehicleParams {
             field_elevation,
             v_stall,
             v_cruise,
+            v_launch: fp(p.v_launch, 1.15 * v_stall.max(8.0)),
+            gamma_launch_deg: finite_or(p.gamma_launch_deg, 10.0).clamp(0.0, 35.0),
+            takeoff,
+            has_wheels,
             scene_cg: [cg.x, cg.y, cg.z],
             crash_sink: if dt == DroneType::Multirotor {
                 2.5

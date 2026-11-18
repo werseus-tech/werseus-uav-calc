@@ -54,6 +54,8 @@ pub fn status_label(sim: &Sim) -> (&'static str, bool) {
                 CrashReason::PropStrike => t("flightsim.crash.prop_strike"),
                 CrashReason::Overturned => t("flightsim.crash.overturned"),
                 CrashReason::Overload => t("flightsim.crash.overload"),
+                CrashReason::Terrain => t("flightsim.crash.terrain"),
+                CrashReason::Building => t("flightsim.crash.building"),
                 CrashReason::Numerical => t("flightsim.crash.numerical"),
             },
             true,
@@ -76,6 +78,9 @@ pub fn paint(p: &Painter, rect: Rect, sim: &Sim, tk: &Tokens, paused: bool) {
     }
     if tel.stall > 0.5 && sim.status == FlightStatus::Airborne {
         top = format!("{top}  ·  {}", t("flightsim.hud.stall"));
+    }
+    if sim.brakes > 0.5 && sim.status == FlightStatus::OnGround && sim.params.has_wheels {
+        top = format!("{top}  ·  {}", t("flightsim.hud.brakes"));
     }
     if paused {
         top = format!("{top}  ·  {}", t("flightsim.hud.paused"));

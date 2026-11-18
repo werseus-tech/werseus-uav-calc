@@ -18,16 +18,13 @@ use crate::calc::multirotor::MultirotorLayout;
 use crate::project::{DroneType, Project};
 
 /// Görünüme özgü seçenekler (hesabı etkilemez).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct ViewOptions {
     /// Kanat dihedrali [derece] — projede alan yok; yalnız görsel önizleme.
     pub dihedral_deg: f32,
-}
-
-impl Default for ViewOptions {
-    fn default() -> Self {
-        Self { dihedral_deg: 0.0 }
-    }
+    /// İniş takımı tekerlekleri geçersiz kılma (`None`: önizleme varsayılanı,
+    /// `Some(true)`: simülatör pist kalkışı, `Some(false)`: el/mancınık atışı).
+    pub wheels_override: Option<bool>,
 }
 
 fn pos_or(x: f64, min: f64, fallback: f64) -> f32 {
@@ -443,15 +440,25 @@ fn fixed_wing(
         }
     }
 
-    if !flying && !vtol {
+    let want_wheels = match opt.wheels_override {
+        Some(w) => w,
+        None => !flying && !vtol,
+    };
+    if want_wheels {
         let r_prop = pos_or(p.d_prop, 0.02, 0.25) * 0.5;
-        add_fixed_wing_gear(
-            &mut spec,
-            (x_root_le, l_fuse, d_fuse),
-            -d_fuse * 0.22,
-            c_r,
-            r_prop,
-        );
+        if flying {
+            let x_cg = (x_root_le as f64 - m.stab.cg_nose.x) as f32;
+            add_flying_wing_gear(&mut spec, c_r, b, r_prop, x_cg);
+        } else {
+            add_fixed_wing_gear(
+                &mut spec,
+                (x_root_le, l_fuse, d_fuse),
+                -d_fuse * 0.22,
+                c_r,
+                r_prop,
+                opt.wheels_override.is_some(),
+            );
+        }
     }
 
     if vtol {
@@ -681,12 +688,16 @@ fn add_fixed_wing_gear(
     z_axis: f32,
     c_r: f32,
     r_prop: f32,
+    force: bool,
 ) {
     let (x_root_le, l_fuse, d_fuse) = fuse;
     let wheel_r = (d_fuse * 0.4).clamp(0.015, 0.05);
-    let ground = z_axis - r_prop - 0.03;
-    let hub_z = ground + wheel_r;
     let top_z = z_axis - d_fuse * 0.4;
+    let mut ground = z_axis - r_prop - 0.03;
+    if force {
+        ground = ground.min(top_z - wheel_r - 0.02);
+    }
+    let hub_z = ground + wheel_r;
     if top_z - hub_z < 0.01 {
         return;
     }
@@ -709,6 +720,54 @@ fn add_fixed_wing_gear(
         });
     }
     let x_nose = x_root_le - l_fuse * 0.15;
+    spec.rods.push((
+        PartKind::Gear,
+        RodSpec {
+            a: Vec3::new(x_nose, 0.0, top_z),
+            b: Vec3::new(x_nose, 0.0, hub_z),
+            radius: strut_r,
+        },
+    ));
+    spec.wheels.push(WheelSpec {
+        center: Vec3::new(x_nose, 0.0, hub_z),
+        radius: wheel_r * 0.85,
+        width: wheel_r * 0.5,
+    });
+}
+
+/// Uçan kanat için pist kalkışı iniş takımı (üç tekerlekli, arka pervane açıklığı korunur).
+fn add_flying_wing_gear(spec: &mut AircraftSpec, c_r: f32, b: f32, r_prop: f32, x_cg: f32) {
+    let wheel_r = (c_r * 0.09).clamp(0.015, 0.038);
+    let ground = -(r_prop + 0.05).max(0.11);
+    let hub_z = ground + wheel_r;
+    let top_z = -0.012;
+    if top_z - hub_z < 0.01 {
+        return;
+    }
+    let cg = if x_cg.is_finite() {
+        x_cg.clamp(-0.8 * c_r, -0.1 * c_r)
+    } else {
+        -0.35 * c_r
+    };
+    let strut_r = (c_r * 0.018).clamp(0.003, 0.006);
+    let track = (b * 0.11).clamp(0.08, 0.24);
+    let x_main = cg - (c_r * 0.22).max(0.04);
+    let x_nose = (cg + (c_r * 0.42).max(0.10)).min(-0.01);
+    for side in [1.0_f32, -1.0] {
+        spec.rods.push((
+            PartKind::Gear,
+            RodSpec {
+                a: Vec3::new(x_main, side * track * 0.25, top_z),
+                b: Vec3::new(x_main, side * track, hub_z),
+                radius: strut_r,
+            },
+        ));
+        spec.wheels.push(WheelSpec {
+            center: Vec3::new(x_main, side * track, hub_z),
+            radius: wheel_r,
+            width: wheel_r * 0.55,
+        });
+    }
     spec.rods.push((
         PartKind::Gear,
         RodSpec {
@@ -1008,7 +1067,14 @@ mod tests {
         let p = Project::default();
         let m = eval(&p);
         let flat = build(&from_project(&p, &m, &ViewOptions::default()));
-        let dih = build(&from_project(&p, &m, &ViewOptions { dihedral_deg: 6.0 }));
+        let dih = build(&from_project(
+            &p,
+            &m,
+            &ViewOptions {
+                dihedral_deg: 6.0,
+                ..Default::default()
+            },
+        ));
         let zf = flat
             .part(PartKind::Wing)
             .unwrap()
