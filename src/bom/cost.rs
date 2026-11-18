@@ -42,6 +42,8 @@ pub const PRICE_LIST: &[(&str, f64, PriceBasis)] = &[
     ("cells", 4.0, PriceBasis::PerPiece),
     ("pack_extra", 8.0, PriceBasis::PerPiece),
     ("propulsion", 70.0, PriceBasis::PerPiece),
+    ("vtol_motor", 25.0, PriceBasis::PerPiece),
+    ("vtol_esc", 45.0, PriceBasis::PerPiece),
     ("avionics", 80.0, PriceBasis::PerPiece),
     ("payload", 40.0, PriceBasis::PerPiece),
     ("wing_shell", 35.0, PriceBasis::PerKg),

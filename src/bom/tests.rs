@@ -2,8 +2,8 @@
 use super::cost::{self, BomLine, CURRENCY, PRICE_LIST, PriceBasis};
 use super::dxf::{DxfStyle, entity_counts, write_dxf};
 use super::nest::{SheetSpec, nest};
-use super::outlines::{FlatPart, Outline, flat_parts};
-use super::{budget_mass_g, build_lines, model_mtow_g};
+use super::outlines::{FlatPart, Outline, circle_fits_in_polygon, flat_parts};
+use super::{SheetMaterial, budget_mass_g, build_lines, model_mtow_g};
 use crate::calc::{Library, evaluate};
 use crate::i18n::{Lang, with_lang};
 use crate::project::{DroneType, Project};
@@ -90,6 +90,35 @@ fn lines_reuse_the_model_mass_budget() {
         );
         assert!(lines.iter().all(|l| l.unit_mass_g > 0.0 && l.qty > 0));
     }
+    // VTOL: seyir tahriki + 4 kaldırma motoru + kaldırma ESC grubu ayrı kalemlerdir.
+    let (p_vtol, m_vtol) = fixture(DroneType::VtolQuadplane);
+    let vtol_lines = build_lines(&p_vtol, &m_vtol);
+    assert!(
+        vtol_lines
+            .iter()
+            .any(|l| l.key == "propulsion" && l.qty == 1)
+    );
+    assert!(
+        vtol_lines
+            .iter()
+            .any(|l| l.key == "vtol_motor" && l.qty == m_vtol.mr.n_motors.max(4))
+    );
+    assert!(vtol_lines.iter().any(|l| l.key == "vtol_esc" && l.qty == 1));
+
+    // Paket çarpanı < 1.0 ya da multirotor batarya farkı olsa bile bütçe toplamı MTOW'u aşmaz.
+    for dt in [DroneType::FixedWingConventional, DroneType::Multirotor] {
+        let mut p = Project::default();
+        p.set_drone_type(dt);
+        p.pack_overhead = 0.85;
+        let m = evaluate(&p, &Library::embedded());
+        let lines = build_lines(&p, &m);
+        let sum = budget_mass_g(&lines);
+        let mtow = model_mtow_g(&p, &m);
+        assert!(
+            (sum - mtow).abs() < 0.5 + mtow * 1e-6,
+            "{dt:?} (pack_overhead=0.85): satırlar {sum} g, MTOW {mtow} g"
+        );
+    }
 }
 
 fn split_csv(line: &str) -> Vec<String> {
@@ -141,6 +170,7 @@ fn rect_part(w: f64, h: f64, qty: u32) -> FlatPart {
     FlatPart {
         name: format!("r{w}x{h}"),
         qty,
+        material: SheetMaterial::CarbonPlate,
         thickness_mm: 2.0,
         outline: Outline::Polygon(vec![[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]]),
         holes: vec![],
@@ -236,9 +266,19 @@ fn oversized_parts_are_reported_not_dropped() {
     assert_eq!(res.unplaced.iter().filter(|u| u.part == 0).count(), 2);
     assert_eq!(res.unplaced.iter().filter(|u| u.part == 2).count(), 1);
     assert_eq!(res.placements.len(), 3);
-    // Döndürme ile sığan parça: 280x20 sığar, 20x280 de.
-    let tall = nest(&[rect_part(20.0, 285.0, 1)], &spec);
-    assert!(tall.unplaced.is_empty());
+    // Döndürme ile sığan parça: dar levhada (100x300) yalnız 90° döndürülerek sığar.
+    let rot_fit = nest(
+        &[rect_part(285.0, 20.0, 1)],
+        &SheetSpec {
+            width_mm: 100.0,
+            height_mm: 300.0,
+            allow_rotate: true,
+            ..spec
+        },
+    );
+    assert!(rot_fit.unplaced.is_empty());
+    assert_eq!(rot_fit.placements.len(), 1);
+    assert!(rot_fit.placements[0].rotated);
     let no_rot = SheetSpec {
         allow_rotate: false,
         ..spec
@@ -257,10 +297,35 @@ fn oversized_parts_are_reported_not_dropped() {
 }
 
 #[test]
+fn canonical_shelf_height_and_all_orientations_tested_before_new_shelf() {
+    let spec = SheetSpec {
+        width_mm: 210.0,
+        height_mm: 210.0,
+        spacing_mm: 0.0,
+        margin_mm: 5.0,
+        allow_rotate: true,
+    };
+    // 10x100 parça döndürülünce yüksekliği 10 olur; 50x50 parça (kanonik yükseklik 50) önce
+    // yerleştirilip raf açmalı, 10x100 onun yanına aynı rafa sığmalı (y < 55).
+    let parts = vec![rect_part(10.0, 100.0, 1), rect_part(50.0, 50.0, 1)];
+    let res = nest(&parts, &spec);
+    assert_eq!(res.sheets, 1);
+    assert!(res.placements.iter().all(|pl| (pl.y - 5.0).abs() < 1e-6));
+
+    // Mevcut rafa (yükseklik 50, kalan genişlik 25) 40x20 parça yatay sığmaz ama 20x40 olarak
+    // döndürülüp mevcut rafa yerleşmeli (yeni raf açmamalı).
+    let parts2 = vec![rect_part(175.0, 50.0, 1), rect_part(40.0, 20.0, 1)];
+    let res2 = nest(&parts2, &spec);
+    assert_eq!(res2.sheets, 1);
+    assert!(res2.placements.iter().all(|pl| (pl.y - 5.0).abs() < 1e-6));
+}
+
+#[test]
 fn invalid_outlines_and_specs_are_unplaced() {
     let bad = FlatPart {
         name: "bad".into(),
         qty: 1,
+        material: SheetMaterial::CarbonPlate,
         thickness_mm: 1.0,
         outline: Outline::Polygon(vec![[0.0, 0.0], [f64::NAN, 1.0], [1.0, 1.0]]),
         holes: vec![],
@@ -333,14 +398,38 @@ fn dxf_parses_back_with_expected_entity_counts() {
             assert_eq!(c.get("CIRCLE").copied().unwrap_or(0), n_circles, "{dt:?}");
             match style {
                 DxfStyle::R12 => {
+                    assert!(!dxf.contains("$INSUNITS"));
+                    assert!(dxf.contains(
+                        "0\nPOLYLINE\n8\nCUT\n66\n1\n10\n0.0\n20\n0.0\n30\n0.0\n70\n1\n"
+                    ));
                     assert_eq!(c.get("POLYLINE").copied().unwrap_or(0), n_poly);
                     assert_eq!(c.get("VERTEX").copied().unwrap_or(0), n_vertex);
                     assert_eq!(c.get("SEQEND").copied().unwrap_or(0), n_poly);
                     assert!(!c.contains_key("LWPOLYLINE"));
                 }
                 DxfStyle::R14 => {
+                    assert!(dxf.contains("$INSUNITS"));
+                    assert!(dxf.contains("100\nAcDbEntity\n"));
+                    assert!(dxf.contains("100\nAcDbLwPolyline\n"));
                     assert_eq!(c.get("LWPOLYLINE").copied().unwrap_or(0), n_poly);
                     assert!(!c.contains_key("POLYLINE"));
+                }
+            }
+        }
+        // Her levhada yalnızca aynı malzeme ve kalınlıktaki parçalar bulunur.
+        for s in 0..res.sheets {
+            let mut on_sheet = res.placements.iter().filter(|pl| pl.sheet == s);
+            if let Some(first) = on_sheet.next() {
+                let p0 = &parts[first.part];
+                for pl in on_sheet {
+                    let pt = &parts[pl.part];
+                    assert_eq!(pt.material, p0.material, "{dt:?} sheet {s}");
+                    assert!(
+                        (pt.thickness_mm - p0.thickness_mm).abs() < 1e-6,
+                        "{dt:?} sheet {s}: {} vs {}",
+                        pt.thickness_mm,
+                        p0.thickness_mm
+                    );
                 }
             }
         }
@@ -356,6 +445,14 @@ fn dxf_parser_rejects_truncated_files() {
     let cut = &dxf[..dxf.len() - "0\nEOF\n".len()];
     assert!(entity_counts(cut).is_err());
     assert!(entity_counts("0\nSECTION\nxx\n").is_err());
+    assert!(entity_counts("0\nSECTION\n2\nENTITIES\n0\nEOF\n").is_err());
+    assert!(entity_counts("0\nSECTION\n0\nEOF\n").is_err());
+    assert!(
+        entity_counts(
+            "0\nSECTION\n2\nENTITIES\n0\nCIRCLE\n8\nCUT\n10\nNaN\n20\n0.0\n30\n0.0\n40\n5.0\n0\nENDSEC\n0\nEOF\n"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -373,9 +470,9 @@ fn flat_parts_have_valid_geometry_for_every_type() {
                 .unwrap_or_else(|| panic!("{dt:?} {}", part.name));
             assert!(w > 0.0 && h > 0.0);
             assert!(part.net_area_mm2() > 0.0, "{dt:?} {}", part.name);
-            // Delikler dış hat kutusunun içinde.
             let (lo, hi) = part.bounds().unwrap();
-            for (c, d) in &part.holes {
+            for (i, (c, d)) in part.holes.iter().enumerate() {
+                assert!(*d > 0.0, "{dt:?} {}", part.name);
                 assert!(
                     c[0] - d / 2.0 >= lo[0] - 1e-6 && c[0] + d / 2.0 <= hi[0] + 1e-6,
                     "{dt:?} {}",
@@ -386,6 +483,53 @@ fn flat_parts_have_valid_geometry_for_every_type() {
                     "{dt:?} {}",
                     part.name
                 );
+                match &part.outline {
+                    Outline::Circle(r) => {
+                        assert!(
+                            c[0].hypot(c[1]) + d / 2.0 <= r + 1e-6,
+                            "{dt:?} {}: delik {c:?} d={d} daire r={r} dışında",
+                            part.name
+                        );
+                    }
+                    Outline::Polygon(pts) => {
+                        assert!(
+                            circle_fits_in_polygon(pts, *c, d / 2.0 - 1e-6),
+                            "{dt:?} {}: delik {c:?} d={d} çokgen sınırının dışında",
+                            part.name
+                        );
+                    }
+                }
+                for (c2, d2) in &part.holes[i + 1..] {
+                    let dist = (c[0] - c2[0]).hypot(c[1] - c2[1]);
+                    assert!(
+                        dist >= (d + d2) / 2.0 - 1e-6,
+                        "{dt:?} {}: delikler çakışıyor ({c:?} ve {c2:?})",
+                        part.name
+                    );
+                }
+            }
+        }
+    }
+    // Motor yuvası delik dairesi çapı (BCD) tam olarak `motor_bolt_pattern_mm` olmalı.
+    let (p_fw, m_fw) = fixture(DroneType::FixedWingConventional);
+    let fw_parts = flat_parts(&p_fw, &m_fw);
+    let mount = fw_parts
+        .iter()
+        .find(|pt| pt.material == SheetMaterial::CarbonPlate)
+        .unwrap();
+    for (c, _) in mount.holes.iter().skip(1) {
+        let bcd = 2.0 * c[0].hypot(c[1]);
+        assert!((bcd - 19.0).abs() < 1e-6, "BCD={bcd}");
+    }
+    // Çok daralan uçlu kanatta kiriş deliği ince uç kaburgasını ikiye bölmemeli.
+    let mut p_thin = p_fw;
+    p_thin.taper = 0.15;
+    p_thin.d_spar_o = 0.016;
+    let m_thin = evaluate(&p_thin, &Library::embedded());
+    for part in flat_parts(&p_thin, &m_thin) {
+        if let Outline::Polygon(pts) = &part.outline {
+            for (c, d) in &part.holes {
+                assert!(circle_fits_in_polygon(pts, *c, d / 2.0));
             }
         }
     }

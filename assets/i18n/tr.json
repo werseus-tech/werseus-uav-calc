@@ -2796,6 +2796,8 @@
   "bom.line.mr_misc": "Diğer (kablo, alıcı vb.)",
   "bom.line.payload": "Faydalı yük",
   "bom.line.propulsion": "Tahrik grubu (motor, ESC, pervane)",
+  "bom.line.vtol_motor": "Kaldırma motoru (VTOL)",
+  "bom.line.vtol_esc": "Kaldırma ESC grubu (VTOL)",
   "bom.line.avionics": "Aviyonik",
   "bom.line.wing_shell": "Kanat kabuğu",
   "bom.line.spar": "Kanat kirişi (karbon boru)",

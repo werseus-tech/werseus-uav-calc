@@ -2796,6 +2796,8 @@
   "bom.line.mr_misc": "Other (wiring, receiver, etc.)",
   "bom.line.payload": "Payload",
   "bom.line.propulsion": "Propulsion group (motor, ESC, propeller)",
+  "bom.line.vtol_motor": "Lift motor (VTOL)",
+  "bom.line.vtol_esc": "Lift ESC set (VTOL)",
   "bom.line.avionics": "Avionics",
   "bom.line.wing_shell": "Wing shell",
   "bom.line.spar": "Wing spar (carbon tube)",

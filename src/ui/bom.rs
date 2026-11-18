@@ -119,7 +119,12 @@ fn cost_section(ui: &mut Ui, p: &Project, m: &Model, st: &mut BomUiState) {
                         st.overrides.insert(l.line.key.to_string(), v);
                     }
                     let tag = if l.overridden {
-                        ui.colored_label(tk.accent, t("bom.source.override"))
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(t("bom.source.override")).color(tk.accent),
+                            )
+                            .sense(Sense::click()),
+                        )
                     } else {
                         ui.colored_label(tk.text_weak, t("bom.source.example"))
                     };
@@ -190,7 +195,12 @@ fn nest_section(ui: &mut Ui, p: &Project, m: &Model, st: &mut BomUiState) {
     if st.cache.as_ref().map(|c| c.0) != Some(key) {
         st.cache = Some((key, flat_parts(p, m)));
     }
-    let parts: Vec<FlatPart> = st.cache.as_ref().map(|c| c.1.clone()).unwrap_or_default();
+    let mut parts: Vec<FlatPart> = st.cache.as_ref().map(|c| c.1.clone()).unwrap_or_default();
+    for pt in &mut parts {
+        if pt.material == SheetMaterial::CarbonPlate {
+            pt.material = st.material;
+        }
+    }
 
     ui.horizontal_wrapped(|ui| {
         let s = &mut st.spec;
@@ -242,17 +252,25 @@ fn nest_section(ui: &mut Ui, p: &Project, m: &Model, st: &mut BomUiState) {
     });
 
     let res = nest(&parts, &st.spec);
-    report(ui, &parts, &res, st);
+    report(ui, &parts, &res);
     if res.sheets > 0 {
         st.sheet_view = st.sheet_view.min(res.sheets - 1);
         if res.sheets > 1 {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 for i in 0..res.sheets {
-                    ui.selectable_value(
-                        &mut st.sheet_view,
-                        i,
-                        tf("bom.sheet_n_fmt", &[(i + 1).to_string()]),
-                    );
+                    let label = match res.placements.iter().find(|pl| pl.sheet == i) {
+                        Some(pl) => {
+                            let pt = &parts[pl.part];
+                            format!(
+                                "{} ({}, {} mm)",
+                                tf("bom.sheet_n_fmt", &[(i + 1).to_string()]),
+                                pt.material.label(),
+                                fmt(pt.thickness_mm, 1),
+                            )
+                        }
+                        None => tf("bom.sheet_n_fmt", &[(i + 1).to_string()]),
+                    };
+                    ui.selectable_value(&mut st.sheet_view, i, label);
                 }
             });
         }
@@ -275,7 +293,7 @@ fn style_label(s: DxfStyle) -> &'static str {
     }
 }
 
-fn report(ui: &mut Ui, parts: &[FlatPart], res: &NestResult, st: &BomUiState) {
+fn report(ui: &mut Ui, parts: &[FlatPart], res: &NestResult) {
     let tk = theme::tokens(ui);
     let n_placed = res.placements.len();
     let cut_mass_g: f64 = res
@@ -283,7 +301,7 @@ fn report(ui: &mut Ui, parts: &[FlatPart], res: &NestResult, st: &BomUiState) {
         .iter()
         .map(|pl| {
             let pt = &parts[pl.part];
-            pt.net_area_mm2() * pt.thickness_mm * 1e-9 * st.material.density_kg_m3() * 1000.0
+            pt.net_area_mm2() * pt.thickness_mm * 1e-9 * pt.material.density_kg_m3() * 1000.0
         })
         .sum();
     ui.colored_label(
@@ -441,5 +459,71 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn find_text_center(shapes: &[egui::epaint::ClippedShape], needle: &str) -> Option<Pos2> {
+        for cs in shapes {
+            match &cs.shape {
+                Shape::Text(t) if t.galley.text() == needle => {
+                    return Some(t.visual_bounding_rect().center());
+                }
+                Shape::Vec(v) => {
+                    for s in v {
+                        if let Shape::Text(t) = s
+                            && t.galley.text() == needle
+                        {
+                            return Some(t.visual_bounding_rect().center());
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn clicking_override_tag_resets_single_line_override() {
+        let lib = Library::embedded();
+        let p = Project::default();
+        let m = evaluate(&p, &lib);
+        let ctx = egui::Context::default();
+        theme::install(&ctx, ThemeChoice::Dark);
+        let mut st = BomUiState::default();
+        st.overrides.insert("payload".into(), 12.0);
+        st.overrides.insert("avionics".into(), 25.0);
+
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 800.0));
+        let mut pos = None;
+        for _ in 0..2 {
+            let mut input = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input.clone(), |ui| show(ui, &p, &m, &mut st));
+            pos = find_text_center(&out.shapes, t("bom.source.override"));
+            out.textures_delta.clear();
+            let _ = &mut input;
+        }
+        let target = pos.expect("override etiketi çizilmeli");
+
+        for pressed in [true, false] {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events: vec![
+                    egui::Event::PointerMoved(target),
+                    egui::Event::PointerButton {
+                        pos: target,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| show(ui, &p, &m, &mut st));
+            out.textures_delta.clear();
+        }
+        assert_eq!(st.overrides.len(), 1);
     }
 }

@@ -71,7 +71,21 @@ struct Shelf {
     x: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct StockKey {
+    material: super::SheetMaterial,
+    thickness_um: i64,
+}
+
+fn stock_key(p: &FlatPart) -> StockKey {
+    StockKey {
+        material: p.material,
+        thickness_um: (p.thickness_mm * 1000.0).round() as i64,
+    }
+}
+
 struct SheetState {
+    group: StockKey,
     shelves: Vec<Shelf>,
     /// Sonraki raf için y.
     next_y: f64,
@@ -87,23 +101,59 @@ fn spec_valid(s: &SheetSpec) -> bool {
         && s.margin_mm >= 0.0
 }
 
-/// Parçaları levhalara yerleştirir. Sıra belirlenimcidir: yükseklik (azalan), genişlik (azalan),
-/// parça indeksi, kopya.
+fn valid_orientations(
+    w0: f64,
+    h0: f64,
+    usable_w: f64,
+    usable_h: f64,
+    allow_rotate: bool,
+) -> Vec<(f64, f64, bool)> {
+    let mut cands = Vec::with_capacity(2);
+    if w0 <= usable_w && h0 <= usable_h {
+        cands.push((w0, h0, false));
+    }
+    if allow_rotate && h0 <= usable_w && w0 <= usable_h && (w0 - h0).abs() > 1e-9 {
+        cands.push((h0, w0, true));
+    }
+    cands.sort_by(|a, b| a.1.total_cmp(&b.1).then(b.0.total_cmp(&a.0)));
+    cands
+}
+
+struct NestItem {
+    group: StockKey,
+    part: usize,
+    copy: u32,
+    w0: f64,
+    h0: f64,
+    canon_w: f64,
+    canon_h: f64,
+}
+
+/// Parçaları levhalara yerleştirir. Parçalar önce `(malzeme, kalınlık)` grubuna göre ayrılır; her
+/// grup içinde sıra belirlenimcidir: kanonik raf yüksekliği (azalan), genişlik (azalan), parça
+/// indeksi, kopya.
 pub fn nest(parts: &[FlatPart], spec: &SheetSpec) -> NestResult {
     let mut res = NestResult::default();
     let valid = spec_valid(spec);
     let usable_w = spec.width_mm - 2.0 * spec.margin_mm;
     let usable_h = spec.height_mm - 2.0 * spec.margin_mm;
-    // Her kopya: (parça, kopya no, w, h)
-    let mut items: Vec<(usize, u32, f64, f64)> = Vec::new();
+    let mut items: Vec<NestItem> = Vec::new();
     for (i, p) in parts.iter().enumerate() {
+        let thick_ok = p.thickness_mm.is_finite() && p.thickness_mm > 0.0;
         for c in 0..p.qty {
             match p.size() {
-                Some((w, h)) if valid => {
-                    let fits = (w <= usable_w && h <= usable_h)
-                        || (spec.allow_rotate && h <= usable_w && w <= usable_h);
-                    if fits {
-                        items.push((i, c, w, h));
+                Some((w, h)) if valid && thick_ok => {
+                    let cands = valid_orientations(w, h, usable_w, usable_h, spec.allow_rotate);
+                    if let Some(&(canon_w, canon_h, _)) = cands.first() {
+                        items.push(NestItem {
+                            group: stock_key(p),
+                            part: i,
+                            copy: c,
+                            w0: w,
+                            h0: h,
+                            canon_w,
+                            canon_h,
+                        });
                     } else {
                         res.unplaced.push(Unplaced {
                             part: i,
@@ -121,65 +171,69 @@ pub fn nest(parts: &[FlatPart], spec: &SheetSpec) -> NestResult {
         }
     }
     items.sort_by(|a, b| {
-        b.3.total_cmp(&a.3)
-            .then(b.2.total_cmp(&a.2))
-            .then(a.0.cmp(&b.0))
-            .then(a.1.cmp(&b.1))
+        a.group
+            .cmp(&b.group)
+            .then(b.canon_h.total_cmp(&a.canon_h))
+            .then(b.canon_w.total_cmp(&a.canon_w))
+            .then(a.part.cmp(&b.part))
+            .then(a.copy.cmp(&b.copy))
     });
     let mut sheets: Vec<SheetState> = Vec::new();
-    for (part, copy, w0, h0) in items {
-        // Yönelim adayları: önce yüksekliği küçük olan (rafa daha iyi oturur).
-        let mut cands = vec![(w0, h0, false)];
-        if spec.allow_rotate {
-            cands.push((h0, w0, true));
-        }
-        cands.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for item in items {
+        let cands = valid_orientations(item.w0, item.h0, usable_w, usable_h, spec.allow_rotate);
         let mut placed = None;
-        'orient: for &(w, h, rot) in &cands {
-            if w > usable_w || h > usable_h {
+        // 1. Mevcut raflarda tüm geçerli yönelimleri dene.
+        'shelf_search: for (si, sh) in sheets.iter_mut().enumerate() {
+            if sh.group != item.group {
                 continue;
             }
-            // Mevcut raflarda ilk uygun yer.
-            for (si, sh) in sheets.iter_mut().enumerate() {
-                for shelf in sh.shelves.iter_mut() {
-                    let gap = if shelf.x > 0.0 { spec.spacing_mm } else { 0.0 };
+            for shelf in sh.shelves.iter_mut() {
+                let gap = if shelf.x > 0.0 { spec.spacing_mm } else { 0.0 };
+                for &(w, h, rot) in &cands {
                     if h <= shelf.h && shelf.x + gap + w <= usable_w {
                         let x = shelf.x + gap;
                         shelf.x = x + w;
                         placed = Some((si, x, shelf.y, w, h, rot));
-                        break 'orient;
+                        break 'shelf_search;
                     }
                 }
-                // Bu levhada yeni raf.
+            }
+        }
+        // 2. Mevcut raflara sığmadıysa aynı gruptaki levhalarda yeni raf açmayı dene.
+        if placed.is_none() {
+            'new_shelf: for (si, sh) in sheets.iter_mut().enumerate() {
+                if sh.group != item.group {
+                    continue;
+                }
                 let gap = if sh.shelves.is_empty() {
                     0.0
                 } else {
                     spec.spacing_mm
                 };
-                if sh.next_y + gap + h <= usable_h {
-                    let y = sh.next_y + gap;
-                    sh.shelves.push(Shelf { y, h, x: w });
-                    sh.next_y = y + h;
-                    placed = Some((si, 0.0, y, w, h, rot));
-                    break 'orient;
+                for &(w, h, rot) in &cands {
+                    if sh.next_y + gap + h <= usable_h {
+                        let y = sh.next_y + gap;
+                        sh.shelves.push(Shelf { y, h, x: w });
+                        sh.next_y = y + h;
+                        placed = Some((si, 0.0, y, w, h, rot));
+                        break 'new_shelf;
+                    }
                 }
             }
         }
         let (si, x, y, w, h, rot) = placed.unwrap_or_else(|| {
-            // Yeni levha: sığacağı baştan doğrulandı.
-            let &(w, h, rot) = cands
-                .iter()
-                .find(|c| c.0 <= usable_w && c.1 <= usable_h)
-                .expect("sığan yönelim var");
+            // 3. Yeni levha: sığacağı baştan doğrulandı.
+            let (w, h, rot) = cands[0];
             sheets.push(SheetState {
+                group: item.group,
                 shelves: vec![Shelf { y: 0.0, h, x: w }],
                 next_y: h,
             });
             (sheets.len() - 1, 0.0, 0.0, w, h, rot)
         });
         res.placements.push(Placement {
-            part,
-            copy,
+            part: item.part,
+            copy: item.copy,
             sheet: si,
             x: spec.margin_mm + x,
             y: spec.margin_mm + y,

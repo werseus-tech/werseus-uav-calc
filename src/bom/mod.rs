@@ -45,54 +45,112 @@ pub fn build_lines(p: &Project, m: &Model) -> Vec<BomLine> {
     let mut v = Vec::new();
     let w = &m.weight;
     let n_cells = w.n_cells;
-    let cells_kg = n_cells as f64 * m.cell.mass_g / 1000.0;
-    push(
-        &mut v,
-        "cells",
-        tf("bom.line.cells_fmt", &[m.cell.name.as_str()]),
-        n_cells,
-        m.cell.mass_g / 1000.0,
-    );
+    let batt_kg = if p.drone_type == DroneType::Multirotor {
+        let non_batt = p.mr_m_frame
+            + m.mr.n_motors as f64 * p.mr_m_motor
+            + p.mr_m_esc_tot
+            + p.mr_m_fc
+            + p.m_payload
+            + p.mr_m_misc;
+        (m.mr.m_mtow - non_batt).max(0.0)
+    } else {
+        w.m_battery.max(0.0)
+    };
+    let raw_cells_kg = n_cells as f64 * m.cell.mass_g / 1000.0;
+    let cells_kg = if n_cells > 0 && raw_cells_kg.is_finite() && raw_cells_kg > 0.0 {
+        raw_cells_kg.min(batt_kg)
+    } else {
+        0.0
+    };
+    if n_cells > 0 && cells_kg > 0.0 {
+        push(
+            &mut v,
+            "cells",
+            tf("bom.line.cells_fmt", &[m.cell.name.as_str()]),
+            n_cells,
+            cells_kg / n_cells as f64,
+        );
+    }
     push(
         &mut v,
         "pack_extra",
         t("bom.line.pack_extra").to_string(),
         1,
-        (w.m_battery - cells_kg).max(0.0),
+        (batt_kg - cells_kg).max(0.0),
     );
     let n = |key: &'static str| t(key).to_string();
-    if p.drone_type == DroneType::Multirotor {
-        push(&mut v, "mr_frame", n("bom.line.mr_frame"), 1, p.mr_m_frame);
-        push(
-            &mut v,
-            "mr_motor",
-            n("bom.line.mr_motor"),
-            m.mr.n_motors,
-            p.mr_m_motor,
-        );
-        push(&mut v, "mr_esc", n("bom.line.mr_esc"), 1, p.mr_m_esc_tot);
-        push(&mut v, "mr_fc", n("bom.line.mr_fc"), 1, p.mr_m_fc);
-        push(&mut v, "mr_misc", n("bom.line.mr_misc"), 1, p.mr_m_misc);
-        push(&mut v, "payload", n("bom.line.payload"), 1, p.m_payload);
-    } else {
-        push(
-            &mut v,
-            "propulsion",
-            n("bom.line.propulsion"),
-            1,
-            p.m_propulsion,
-        );
-        push(&mut v, "avionics", n("bom.line.avionics"), 1, p.m_avionics);
-        push(&mut v, "payload", n("bom.line.payload"), 1, p.m_payload);
-        push(&mut v, "wing_shell", n("bom.line.wing_shell"), 1, w.m_shell);
-        push(&mut v, "spar", n("bom.line.spar"), 1, w.m_spar);
-        push(
-            &mut v,
-            "fuse_tail",
-            n("bom.line.fuse_tail"),
-            1,
-            p.m_fuse_tail,
-        );
+    match p.drone_type {
+        DroneType::Multirotor => {
+            push(&mut v, "mr_frame", n("bom.line.mr_frame"), 1, p.mr_m_frame);
+            push(
+                &mut v,
+                "mr_motor",
+                n("bom.line.mr_motor"),
+                m.mr.n_motors,
+                p.mr_m_motor,
+            );
+            push(&mut v, "mr_esc", n("bom.line.mr_esc"), 1, p.mr_m_esc_tot);
+            push(&mut v, "mr_fc", n("bom.line.mr_fc"), 1, p.mr_m_fc);
+            push(&mut v, "mr_misc", n("bom.line.mr_misc"), 1, p.mr_m_misc);
+            push(&mut v, "payload", n("bom.line.payload"), 1, p.m_payload);
+        }
+        DroneType::VtolQuadplane => {
+            let n_lift = m.mr.n_motors.max(4);
+            let lift_m = (n_lift as f64 * p.mr_m_motor).max(0.0);
+            let esc_m = p.mr_m_esc_tot.max(0.0);
+            let sub = lift_m + esc_m;
+            let (cruise_kg, lift_tot_kg, esc_kg) = if p.m_propulsion > 0.0 && sub > 0.0 {
+                if sub < p.m_propulsion {
+                    (p.m_propulsion - sub, lift_m, esc_m)
+                } else {
+                    let c = 0.30 * p.m_propulsion;
+                    let rem = p.m_propulsion - c;
+                    (c, rem * (lift_m / sub), rem * (esc_m / sub))
+                }
+            } else {
+                (p.m_propulsion, 0.0, 0.0)
+            };
+            push(&mut v, "propulsion", n("bom.line.propulsion"), 1, cruise_kg);
+            push(
+                &mut v,
+                "vtol_motor",
+                n("bom.line.vtol_motor"),
+                n_lift,
+                lift_tot_kg / n_lift as f64,
+            );
+            push(&mut v, "vtol_esc", n("bom.line.vtol_esc"), 1, esc_kg);
+            push(&mut v, "avionics", n("bom.line.avionics"), 1, p.m_avionics);
+            push(&mut v, "payload", n("bom.line.payload"), 1, p.m_payload);
+            push(&mut v, "wing_shell", n("bom.line.wing_shell"), 1, w.m_shell);
+            push(&mut v, "spar", n("bom.line.spar"), 1, w.m_spar);
+            push(
+                &mut v,
+                "fuse_tail",
+                n("bom.line.fuse_tail"),
+                1,
+                p.m_fuse_tail,
+            );
+        }
+        _ => {
+            push(
+                &mut v,
+                "propulsion",
+                n("bom.line.propulsion"),
+                1,
+                p.m_propulsion,
+            );
+            push(&mut v, "avionics", n("bom.line.avionics"), 1, p.m_avionics);
+            push(&mut v, "payload", n("bom.line.payload"), 1, p.m_payload);
+            push(&mut v, "wing_shell", n("bom.line.wing_shell"), 1, w.m_shell);
+            push(&mut v, "spar", n("bom.line.spar"), 1, w.m_spar);
+            push(
+                &mut v,
+                "fuse_tail",
+                n("bom.line.fuse_tail"),
+                1,
+                p.m_fuse_tail,
+            );
+        }
     }
     v.push(BomLine {
         key: "fasteners",
@@ -123,7 +181,7 @@ pub fn model_mtow_g(p: &Project, m: &Model) -> f64 {
 }
 
 /// Levha malzemesi (kesim parçası kütlesi için yoğunluk).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SheetMaterial {
     CarbonPlate,
     G10,
