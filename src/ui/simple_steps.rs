@@ -38,6 +38,7 @@ pub fn step_for_tab(tab: super::Tab, dt: DroneType) -> Option<StepId> {
         | Tab::Summary
         | Tab::Schematic
         | Tab::WindTunnel
+        | Tab::Bom
         | Tab::ControlTuning
         | Tab::Library
         | Tab::Regulation

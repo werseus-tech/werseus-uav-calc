@@ -881,6 +881,9 @@ impl App {
             Some(super::steps::CenterSlot::ControlTuning) => {
                 super::controltuning::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::Bom) => {
+                super::bom::show(ui, &self.project, model, &mut self.bom_state);
+            }
             None => {}
         }
     }

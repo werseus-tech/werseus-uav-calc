@@ -3,6 +3,7 @@
 pub mod aero;
 pub mod aero_simple;
 pub mod ai;
+pub mod bom;
 pub mod cad_fast;
 pub mod components;
 pub mod computebudget;
@@ -84,6 +85,7 @@ pub enum Tab {
     Regulation,
     Library,
     ControlTuning,
+    Bom,
 }
 
 impl Tab {
@@ -112,6 +114,7 @@ impl Tab {
             Tab::Regulation => t("regulation.tab"),
             Tab::Library => t("tab_library"),
             Tab::ControlTuning => t("controltuning.tab"),
+            Tab::Bom => t("bom.tab"),
         }
     }
 
@@ -136,6 +139,7 @@ impl Tab {
                 Tab::Regulation,
                 Tab::Library,
                 Tab::ControlTuning,
+                Tab::Bom,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -161,6 +165,7 @@ impl Tab {
                 Tab::Regulation,
                 Tab::Library,
                 Tab::ControlTuning,
+                Tab::Bom,
             ],
             _ => vec![
                 Tab::Summary,
@@ -185,6 +190,7 @@ impl Tab {
                 Tab::Regulation,
                 Tab::Library,
                 Tab::ControlTuning,
+                Tab::Bom,
             ],
         }
     }
@@ -229,6 +235,7 @@ pub struct App {
     pub cb_state: computebudget::CbState,
     pub ac_state: acoustics::AcState,
     pub tp_state: thermalpower::TpState,
+    pub bom_state: bom::BomUiState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -331,6 +338,7 @@ impl App {
             cb_state: computebudget::CbState::default(),
             ac_state: acoustics::AcState::default(),
             tp_state: thermalpower::TpState::default(),
+            bom_state: bom::BomUiState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -407,6 +415,7 @@ impl App {
             cb_state: computebudget::CbState::default(),
             ac_state: acoustics::AcState::default(),
             tp_state: thermalpower::TpState::default(),
+            bom_state: bom::BomUiState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

@@ -59,6 +59,8 @@ pub enum Screen {
     Library,
     /// Uzman modundaki kontrol ayarı sekmesi (merkezde yerleşim yuvasında çizilir).
     ControlTuning,
+    /// Uzman modundaki malzeme listesi ve DXF yerleşimi (merkezde yuvada çizilir).
+    Bom,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -76,6 +78,7 @@ pub enum CenterSlot {
     Regulation,
     Library,
     ControlTuning,
+    Bom,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -137,6 +140,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Regulation => Screen::Regulation,
         Tab::Library => Screen::Library,
         Tab::ControlTuning => Screen::ControlTuning,
+        Tab::Bom => Screen::Bom,
     }
 }
 
@@ -166,6 +170,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Regulation => Some(CenterSlot::Regulation),
         Screen::Library => Some(CenterSlot::Library),
         Screen::ControlTuning => Some(CenterSlot::ControlTuning),
+        Screen::Bom => Some(CenterSlot::Bom),
         _ => None,
     }
 }
@@ -181,6 +186,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::Bom
             | Screen::ControlTuning
             | Screen::Library
             | Screen::Regulation
@@ -213,6 +219,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
@@ -263,6 +270,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Schematic
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::Bom
             | Screen::ControlTuning
             | Screen::Library
             | Screen::Regulation
@@ -305,6 +313,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
@@ -345,6 +354,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
@@ -421,6 +431,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
@@ -515,6 +526,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Bom
         | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation

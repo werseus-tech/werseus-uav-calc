@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 pub mod ai;
+pub mod bom;
 pub mod cad;
 pub mod calc;
 pub mod computebudget;
