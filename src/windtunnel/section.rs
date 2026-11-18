@@ -271,7 +271,12 @@ impl Surf {
             p
         };
         let d = sub(p, self.root);
-        let s = d[1] * self.cg + d[2] * self.sg;
+        let mut s = d[1] * self.cg + d[2] * self.sg;
+        // Dihedralli kanatta simetri düzlemindeki kök kesitin (y = 0) iki yarısı arasındaki
+        // dar kama kök kesitle köprülenir; yoksa kökün alt/üst yarısı kesilirdi.
+        if self.mirrored && s < 0.0 {
+            s = 0.0;
+        }
         if !(0.0..=self.semi).contains(&s) {
             return false;
         }
@@ -372,7 +377,14 @@ impl Body {
                 (sub(lo, [*r; 3]), add(hi, [*r; 3]))
             }
             Prim::Box { c, h } => (sub(*c, *h), add(*c, *h)),
-            Prim::Rotor { c, r, .. } => (sub(*c, [*r; 3]), add(*c, [*r; 3])),
+            Prim::Rotor { c, n, r } => {
+                // Eksen boyunca ince, düzlemde r yarıçaplı diskin sıkı kutusu.
+                let mut h = [0.0; 3];
+                for k in 0..3 {
+                    h[k] = 0.04 * r * n[k].abs() + r * (1.0 - n[k] * n[k]).max(0.0).sqrt();
+                }
+                (sub(*c, h), add(*c, h))
+            }
         };
         (finite3(lo) && finite3(hi)).then_some(Body { prim, kind, lo, hi })
     }
@@ -631,16 +643,24 @@ pub fn cut_geometry(spec: &AircraftSpec, cut: &CutParams) -> CutGeometry {
                 };
                 geom.pivot = Some([s0 * w.tan_sweep + 0.25 * w.chord_at(s0), 0.0]);
                 geom.offset_m = s0;
-                geom.bodies = Body::new(Prim::Surface(Box::new(w.clone())), PartKind::Wing)
+                // Kesit düzlemi tek bir yarım kanatta kalır; ayna katlaması dihedralli kanatta
+                // kök yakınındaki noktaları öbür yarıya yansıtıp kesiti bozardı.
+                let mut half_wing = w.clone();
+                half_wing.mirrored = false;
+                geom.bodies = Body::new(Prim::Surface(Box::new(half_wing)), PartKind::Wing)
                     .into_iter()
                     .collect();
                 return geom;
             }
-            let arm = bodies.iter().find_map(|b| match (&b.prim, b.kind) {
-                (Prim::Rod { a, b: bb, .. }, PartKind::Arm | PartKind::Boom) => Some((*a, *bb)),
+            let arm = bodies.iter().position(|b| {
+                matches!(b.kind, PartKind::Arm | PartKind::Boom)
+                    && matches!(b.prim, Prim::Rod { .. })
+            });
+            let arm_ends = arm.and_then(|i| match &bodies[i].prim {
+                Prim::Rod { a, b, .. } => Some((*a, *b)),
                 _ => None,
             });
-            if let Some((a, b)) = arm {
+            if let Some((a, b)) = arm_ends {
                 if let Some(d) = unit(sub(b, a)) {
                     let t = cut.station.clamp(0.05, 0.95);
                     let o = add(a, mul(sub(b, a), t));
@@ -655,14 +675,9 @@ pub fn cut_geometry(spec: &AircraftSpec, cut: &CutParams) -> CutGeometry {
                     geom.plane = Plane { o, ea, eb };
                     geom.section_of = SectionOf::Arm;
                     geom.offset_m = t * norm(sub(b, a));
-                    // Yalnız kollar/bomlar ve motorlar: kol dairesi çerçeveyi doldurur (pervane
-                    // diski kesite girip ölçeği küçültmesin).
-                    geom.bodies = bodies
-                        .into_iter()
-                        .filter(|b| {
-                            matches!(b.kind, PartKind::Arm | PartKind::Boom | PartKind::Motor)
-                        })
-                        .collect();
+                    // Yalnız seçilen kol: komşu kollar/motorlar (ör. altıgende 60°) düzlemi eğik
+                    // keser, kesiti uzatır ve Re başvuru uzunluğunu şişirirdi.
+                    geom.bodies = arm.map(|i| bodies[i].clone()).into_iter().collect();
                     return geom;
                 }
             }
@@ -798,7 +813,7 @@ fn test_at(geom: &CutGeometry, rects: &[(usize, [f64; 4])], a: f64, b: f64, ph: 
 }
 
 /// Kesitin gerçek (dönmemiş) sınırını kaba bir taramayla bulur: (a0, a1, b0, b1).
-fn scan_extent(geom: &CutGeometry, rects: &[(usize, [f64; 4])]) -> Option<[f64; 4]> {
+fn union_rect(rects: &[(usize, [f64; 4])]) -> Option<[f64; 4]> {
     let mut u = [
         f64::INFINITY,
         f64::NEG_INFINITY,
@@ -811,11 +826,16 @@ fn scan_extent(geom: &CutGeometry, rects: &[(usize, [f64; 4])]) -> Option<[f64; 
         u[2] = u[2].min(r[2]);
         u[3] = u[3].max(r[3]);
     }
-    if !u.iter().all(|v| v.is_finite()) || u[1] <= u[0] || u[3] <= u[2] {
-        return None;
-    }
+    (u.iter().all(|v| v.is_finite()) && u[1] > u[0] && u[3] > u[2]).then_some(u)
+}
+
+/// `ph`: gözenekli diskin en küçük yarı kalınlığı (`rasterize` ile aynı değer kullanılır;
+/// en az tarama adımı).
+fn scan_extent(geom: &CutGeometry, rects: &[(usize, [f64; 4])], ph: f64) -> Option<[f64; 4]> {
+    let u = union_rect(rects)?;
     let (wa, wb) = (u[1] - u[0], u[3] - u[2]);
     let step = (wa.max(wb) / 480.0).max(1e-6);
+    let ph = ph.max(step);
     let na = ((wa / step).ceil() as usize).clamp(2, 960);
     let nb = ((wb / step).ceil() as usize).clamp(2, 960);
     let mut e = [
@@ -828,7 +848,7 @@ fn scan_extent(geom: &CutGeometry, rects: &[(usize, [f64; 4])]) -> Option<[f64; 
         let b = u[2] + (j as f64 + 0.5) * wb / nb as f64;
         for i in 0..na {
             let a = u[0] + (i as f64 + 0.5) * wa / na as f64;
-            if test_at(geom, rects, a, b, step) != FLUID {
+            if test_at(geom, rects, a, b, ph) != FLUID {
                 e[0] = e[0].min(a);
                 e[1] = e[1].max(a);
                 e[2] = e[2].min(b);
@@ -879,7 +899,25 @@ pub fn rasterize(geom: &CutGeometry, alpha_deg: f64, nx: usize, ny: usize) -> Ma
     };
     let mut cells = vec![FLUID; nx * ny];
     let rects0 = plane_rects(geom, 0.0);
-    let Some(ext) = scan_extent(geom, &rects0) else {
+    let mut ext = scan_extent(geom, &rects0, 0.0);
+    // Pervane diski çizimde en az bir hücre kalınlığındadır; çerçeveleme taraması da aynı
+    // kalınlığı kullansın (yoksa diske yakın kesitler boş görünür / disk kanala taşar).
+    if geom
+        .bodies
+        .iter()
+        .any(|b| matches!(b.prim, Prim::Rotor { .. }))
+    {
+        let est = ext
+            .or_else(|| union_rect(&rects0))
+            .map(|e| frame_for(geom, e, nx, ny).dx);
+        if let Some(dx0) = est {
+            let r1 = plane_rects(geom, dx0);
+            if let Some(e1) = scan_extent(geom, &r1, dx0) {
+                ext = Some(e1);
+            }
+        }
+    }
+    let Some(ext) = ext else {
         return Mask {
             nx,
             ny,
@@ -1081,7 +1119,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        for kind in [CutKind::Side, CutKind::Top] {
+        for kind in [CutKind::Side, CutKind::Top, CutKind::Front] {
             let g = cut_geometry(
                 &spec,
                 &CutParams {
@@ -1101,8 +1139,118 @@ mod tests {
                     }
                 }
             }
-            assert!(mismatch * 100 <= m.solid_cells, "{kind:?}: {mismatch}");
+            assert!(
+                mismatch * 100 <= m.solid_cells,
+                "{kind:?}: up-down {mismatch}"
+            );
+            if kind == CutKind::Front {
+                // Left-right symmetry about the middle of the solid columns (the frame itself
+                // puts the body at the upstream side of the channel).
+                let cols: Vec<usize> = (0..nx)
+                    .filter(|&i| (0..ny).any(|j| m.cells[j * nx + i] == SOLID))
+                    .collect();
+                let (i0, i1) = (cols[0], cols[cols.len() - 1]);
+                let mut lr = 0;
+                for j in 0..ny {
+                    for k in 0..=(i1 - i0) {
+                        if m.cells[j * nx + i0 + k] != m.cells[j * nx + i1 - k] {
+                            lr += 1;
+                        }
+                    }
+                }
+                assert!(lr * 100 <= m.solid_cells, "front left-right {lr}");
+            }
         }
+    }
+
+    fn solid_area(g: &CutGeometry) -> f64 {
+        let m = rasterize(g, 0.0, 360, 180);
+        m.solid_cells as f64 * m.dx * m.dx
+    }
+
+    /// Dihedral does not chop the root section (centreline side cut) or distort a section
+    /// cut near the root.
+    #[test]
+    fn dihedral_wing_keeps_full_root_and_near_root_sections() {
+        let flat = wing_only("0012", 0.0, true);
+        let mut dih = wing_only("0012", 0.0, true);
+        dih.surfaces[0].1.dihedral_deg = 15.0;
+        for (kind, station) in [(CutKind::Side, 0.0), (CutKind::Section, 0.04)] {
+            let cut = CutParams {
+                kind,
+                station,
+                alpha_deg: 0.0,
+            };
+            let a0 = solid_area(&cut_geometry(&flat, &cut));
+            let a1 = solid_area(&cut_geometry(&dih, &cut));
+            assert!(
+                a0 > 0.0 && (a1 / a0 - 1.0).abs() < 0.1,
+                "{kind:?}: {a0} vs {a1}"
+            );
+        }
+    }
+
+    /// A hexacopter arm cut contains only the selected arm: the neighbours (60 degrees
+    /// apart) would otherwise be sliced obliquely and stretch the section.
+    #[test]
+    fn arm_section_uses_only_the_selected_arm() {
+        let rods: Vec<(PartKind, crate::geom3d::aircraft::RodSpec)> = (0..6)
+            .map(|k| {
+                let ang = (k as f32) * std::f32::consts::FRAC_PI_3;
+                (
+                    PartKind::Arm,
+                    crate::geom3d::aircraft::RodSpec {
+                        a: Vec3::ZERO,
+                        b: Vec3::new(0.3 * ang.cos(), 0.3 * ang.sin(), 0.0),
+                        radius: 0.01,
+                    },
+                )
+            })
+            .collect();
+        let spec = AircraftSpec {
+            rods,
+            ..Default::default()
+        };
+        let g = cut_geometry(
+            &spec,
+            &CutParams {
+                kind: CutKind::Section,
+                station: 0.35,
+                alpha_deg: 0.0,
+            },
+        );
+        assert_eq!(g.section_of, SectionOf::Arm);
+        assert_eq!(g.bodies.len(), 1);
+        let m = rasterize(&g, 0.0, 240, 120);
+        assert!(!m.empty && m.l_ref < 0.03, "l_ref {}", m.l_ref);
+    }
+
+    /// The rotor disk box is thin along its axis, not a cube of side 2r.
+    #[test]
+    fn rotor_bounds_follow_the_disk() {
+        let c = [0.0, 0.0, 0.1];
+        let up = Body::new(
+            Prim::Rotor {
+                c,
+                n: [0.0, 0.0, 1.0],
+                r: 0.12,
+            },
+            PartKind::Rotor,
+        )
+        .unwrap();
+        assert!(up.hi[2] - up.lo[2] < 0.02, "{:?} {:?}", up.lo, up.hi);
+        assert!((up.hi[0] - up.lo[0] - 0.24).abs() < 1e-9);
+        let fwd = Body::new(
+            Prim::Rotor {
+                c,
+                n: [1.0, 0.0, 0.0],
+                r: 0.12,
+            },
+            PartKind::Rotor,
+        )
+        .unwrap();
+        assert!(fwd.hi[0] - fwd.lo[0] < 0.02);
+        assert!((fwd.hi[2] - fwd.lo[2] - 0.24).abs() < 1e-9);
     }
 
     /// Bozuk/boş tasarımlarda panik yok; boş kesit `empty` olarak işaretlenir.

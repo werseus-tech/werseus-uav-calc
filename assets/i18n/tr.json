@@ -2802,6 +2802,8 @@
   "ft.row_ld": "En büyük L/D",
   "ft.row_e": "Oswald katsayısı e",
   "ft.row_vstall": "Tutunma kaybı hızı",
+  "ft.panel_hdr_plain": "Panel yöntemi + VLM",
+  "ft.polar_needs_aoa": "2B profil değerleri yalnız yan ve kanat kesitinde (hücum açısıyla) gösterilir.",
   "ft.panel_hdr": "Panel yöntemi + VLM (α = {0}°)",
   "ft.row_cl2d": "Profil cl (2D)",
   "ft.row_cd2d": "Profil cd (2D)",

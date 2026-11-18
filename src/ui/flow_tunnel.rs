@@ -466,7 +466,11 @@ pub fn advance_particles(
     emit_step: &mut u64,
     s: &Snapshot,
 ) {
-    if s.step < *part_step || parts.iter().any(|p| !p[0].is_finite()) {
+    if s.step < *part_step
+        || parts
+            .iter()
+            .any(|p| !(p[0].is_finite() && p[1].is_finite()))
+    {
         parts.clear();
         *part_step = s.step;
         *emit_step = s.step;
@@ -495,13 +499,16 @@ pub fn advance_particles(
     if n > 0 {
         *emit_step += n * spacing;
         n = n.min(4);
-        for _ in 0..n {
+        for m in 0..n {
+            // Aynı karede birikmiş gruplar tek noktada üst üste binmesin: eski grup akış
+            // yönünde ~1.4 hücre ilerlemiş sayılır.
+            let x = 1.5 + (n - 1 - m) as f32 * 1.4;
             for k in 0..SMOKE_SEEDS {
                 if parts.len() >= MAX_PARTICLES {
                     break;
                 }
                 let y = (k as f32 + 0.5) / SMOKE_SEEDS as f32 * (s.ny - 1) as f32;
-                parts.push([1.5, y]);
+                parts.push([x, y]);
             }
         }
     }
@@ -643,7 +650,14 @@ fn numbers(ui: &mut Ui, p: &Project, m: &Model, st: &FlowUiState, wts: &mut WtSt
             grid_row(ui, t("ft.row_vstall"), opt(m.aero.v_stall, 1, "m/s"));
         });
         ui.add_space(space::S);
-        ui.label(egui::RichText::new(tf("ft.panel_hdr", &[&fmt(st.alpha, 1)])).strong());
+        // α yalnız yan ve kanat kesitinde hücum açısıdır; üst/ön kesitte yana kayma / yatış.
+        let alpha_is_aoa = matches!(st.cut, CutKind::Side | CutKind::Section);
+        let hdr = if alpha_is_aoa {
+            tf("ft.panel_hdr", &[&fmt(st.alpha, 1)])
+        } else {
+            t("ft.panel_hdr_plain").to_string()
+        };
+        ui.label(egui::RichText::new(hdr).strong());
         if wt::is_computing(wts) {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -651,14 +665,19 @@ fn numbers(ui: &mut Ui, p: &Project, m: &Model, st: &FlowUiState, wts: &mut WtSt
             });
         } else if let Some((cla, np)) = wt::vlm_summary(wts) {
             egui::Grid::new("ft_panel").num_columns(2).show(ui, |ui| {
-                match wt::polar_at(wts, st.alpha) {
+                match alpha_is_aoa.then(|| wt::polar_at(wts, st.alpha)).flatten() {
                     Some((cl, cd, cm)) => {
                         grid_row(ui, t("ft.row_cl2d"), opt(cl, 3, ""));
                         grid_row(ui, t("ft.row_cd2d"), opt(cd, 4, ""));
                         grid_row(ui, t("ft.row_cm2d"), opt(cm, 3, ""));
                     }
                     None => {
-                        ui.label(egui::RichText::new(t("ft.alpha_outside")).color(tk.text_weak));
+                        let key = if alpha_is_aoa {
+                            "ft.alpha_outside"
+                        } else {
+                            "ft.polar_needs_aoa"
+                        };
+                        ui.label(egui::RichText::new(t(key)).color(tk.text_weak));
                         ui.end_row();
                     }
                 }
@@ -785,6 +804,9 @@ mod tests {
                     for lang in [crate::i18n::Lang::Tr, crate::i18n::Lang::En] {
                         let ctx = egui::Context::default();
                         theme::install(&ctx, choice);
+                        // The texture belongs to the previous context: rebuild it in this one.
+                        st.tex = None;
+                        st.tex_key = None;
                         crate::i18n::with_lang(lang, || {
                             let t0 = Instant::now();
                             loop {
@@ -836,6 +858,15 @@ mod tests {
         let mut parts = Vec::new();
         let (mut a, mut b) = (0, 0);
         advance_particles(&mut parts, &mut a, &mut b, &s);
+        // Several emission intervals elapsed at once: the groups must not stack on one x.
+        let spacing = ((1.4 / s.u_lat.max(1e-4)) as u64).max(1);
+        let mut stacked = Vec::new();
+        let (mut a2, mut b2) = (s.step, s.step.saturating_sub(4 * spacing));
+        advance_particles(&mut stacked, &mut a2, &mut b2, &s);
+        let mut xs: Vec<i32> = stacked.iter().map(|q| (q[0] * 100.0) as i32).collect();
+        xs.sort_unstable();
+        xs.dedup();
+        assert!(xs.len() >= 2 || s.step < 4 * spacing, "{xs:?}");
         assert!(parts.len() <= MAX_PARTICLES);
         assert!(parts.iter().all(|q| q[0].is_finite() && q[1].is_finite()));
     }
