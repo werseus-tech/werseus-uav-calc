@@ -11,6 +11,7 @@ pub mod flow_tunnel;
 pub mod formulas;
 pub mod geometry;
 pub mod help;
+pub mod massprops;
 pub mod mission;
 pub mod mr_structure;
 pub mod multirotor;
