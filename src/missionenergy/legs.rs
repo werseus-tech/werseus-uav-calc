@@ -204,47 +204,64 @@ pub fn simulate(v: &Vehicle, env: &Env, legs: &[Leg], extra_reserve: f64) -> Mis
     } else {
         0.0
     };
-    let budget = fin(v.pack_wh) * v.dod.clamp(0.0, 1.0) * derate.energy_factor * (1.0 - reserve);
+    let budget =
+        fin(v.pack_wh) * fin(v.dod).clamp(0.0, 1.0) * derate.energy_factor * (1.0 - reserve);
+    let batt_temp = env.battery_temp_c();
     let mut out = MissionResult {
         budget_wh: budget,
         cold_factor: derate.energy_factor,
-        battery_temp_c: env.battery_temp_c(),
+        battery_temp_c: if batt_temp.is_finite() {
+            batt_temp
+        } else {
+            25.0
+        },
         all_feasible: true,
         ..Default::default()
     };
-    let eta = v.eta_vertical();
+    let eta_fw = v.eta_fixed_wing();
+    let hotel_fw = v.hotel_fixed_wing();
+    let mut in_hover = v.has_hover();
     let mut agl = 0.0_f64;
     let mut dropped = 0.0_f64;
     let mut cum = 0.0_f64;
+    let alt_msl = if env.alt_msl_m.is_finite() {
+        env.alt_msl_m
+    } else {
+        0.0
+    };
     for leg in legs {
         let mass = v.mass_kg(dropped);
         let weight = mass * G;
         let mut agl_mid = agl;
         let mut agl_next = agl;
         let h = fin(leg.height_m);
+        let dh = match leg.kind {
+            LegKind::Descent => h.min(agl),
+            _ => h,
+        };
         match leg.kind {
             LegKind::Climb => {
-                agl_mid = agl + 0.5 * h;
-                agl_next = agl + h;
+                agl_mid = agl + 0.5 * dh;
+                agl_next = agl + dh;
             }
             LegKind::Descent => {
-                agl_mid = (agl - 0.5 * h).max(0.0);
-                agl_next = (agl - h).max(0.0);
+                agl_mid = agl - 0.5 * dh;
+                agl_next = agl - dh;
             }
             LegKind::Landing => agl_next = 0.0,
             _ => {}
         }
-        let rho = env.rho_at(env.alt_msl_m + agl_mid);
-        let loiter_v = v.loiter_speed(rho);
+        let rho = env.rho_at(alt_msl + agl_mid);
+        let rho = if rho.is_finite() && rho > 0.0 {
+            rho
+        } else {
+            crate::calc::atmosphere::RHO0
+        };
+        let loiter_v = v.loiter_speed(rho, dropped);
         let airspeed_in = if fin(leg.airspeed_ms) > 0.0 {
             leg.airspeed_ms
         } else {
             v.v_cruise
-        };
-        // Bekleme/askı gücü: çok rotorlu ve VTOL askıda, sabit kanat bekleme hızında uçar.
-        let hold_w = match v.hover_w(rho, dropped) {
-            Some(p) => p,
-            None => v.level_w(rho, dropped, loiter_v),
         };
         let mut feasible = true;
         let (mut time, mut power, mut va, mut gs, mut hw, mut cw) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
@@ -252,40 +269,59 @@ pub fn simulate(v: &Vehicle, env: &Env, legs: &[Leg], extra_reserve: f64) -> Mis
         match leg.kind {
             LegKind::Climb => {
                 let vz = fin(leg.rate_ms).max(0.1);
-                time = h / vz;
-                let base = if v.has_hover() {
-                    hold_w
+                time = dh / vz;
+                if in_hover {
+                    power = v.vertical_w(rho, dropped, vz).unwrap_or(0.0);
                 } else {
                     va = airspeed_in;
                     stall = v.below_stall(rho, dropped, va);
-                    v.level_w(rho, dropped, va)
-                };
-                power = base + weight * vz / eta;
+                    if vz >= va {
+                        feasible = false;
+                    } else {
+                        gs = (va * va - vz * vz).sqrt();
+                    }
+                    if stall {
+                        feasible = false;
+                    }
+                    power = v.level_w(rho, dropped, va) + weight * vz / eta_fw;
+                }
             }
             LegKind::Descent => {
                 let vz = fin(leg.rate_ms).max(0.1);
-                time = h / vz;
-                let (base, floor) = if v.has_hover() {
-                    (hold_w, 0.5 * hold_w)
+                time = dh / vz;
+                if in_hover {
+                    power = v.vertical_w(rho, dropped, -vz).unwrap_or(0.0);
                 } else {
                     va = airspeed_in;
                     stall = v.below_stall(rho, dropped, va);
-                    (v.level_w(rho, dropped, va), v.hotel_w())
-                };
-                power = (base - weight * vz / eta).max(floor);
+                    if vz >= va {
+                        feasible = false;
+                    } else {
+                        gs = (va * va - vz * vz).sqrt();
+                    }
+                    if stall {
+                        feasible = false;
+                    }
+                    power = (v.level_w(rho, dropped, va) - weight * vz / eta_fw).max(hotel_fw);
+                }
             }
             LegKind::Cruise => {
                 va = airspeed_in;
                 stall = v.below_stall(rho, dropped, va);
-                let (head, cross) = env.wind_components(leg.heading_deg);
+                let heading = if leg.heading_deg.is_finite() {
+                    leg.heading_deg
+                } else {
+                    0.0
+                };
+                let (head, cross) = env.wind_components(heading);
                 hw = head;
                 cw = cross;
                 let along2 = va * va - cross * cross;
-                if along2 <= 0.0 {
+                if !along2.is_finite() || along2 <= 0.0 {
                     feasible = false;
                 } else {
                     gs = along2.sqrt() - head;
-                    if gs < 0.5 {
+                    if !gs.is_finite() || gs < 0.5 {
                         feasible = false;
                     }
                 }
@@ -295,23 +331,49 @@ pub fn simulate(v: &Vehicle, env: &Env, legs: &[Leg], extra_reserve: f64) -> Mis
                 } else {
                     gs = 0.0;
                 }
+                if stall {
+                    feasible = false;
+                }
             }
-            LegKind::Loiter | LegKind::Drop | LegKind::Transition => {
+            LegKind::Loiter | LegKind::Drop => {
                 time = fin(leg.duration_s);
-                power = hold_w;
-                if !v.has_hover() {
+                if in_hover {
+                    power = v.hover_w(rho, dropped).unwrap_or(0.0);
+                } else {
                     va = loiter_v;
+                    stall = v.below_stall(rho, dropped, va);
+                    if stall {
+                        feasible = false;
+                    }
+                    power = v.level_w(rho, dropped, va);
+                }
+            }
+            LegKind::Transition => {
+                time = fin(leg.duration_s);
+                if v.kind == Kind::Vtol || in_hover {
+                    power = v.hover_w(rho, dropped).unwrap_or(0.0);
+                } else {
+                    va = loiter_v;
+                    stall = v.below_stall(rho, dropped, va);
+                    if stall {
+                        feasible = false;
+                    }
+                    power = v.level_w(rho, dropped, va);
                 }
             }
             LegKind::Landing => {
                 time = fin(leg.duration_s);
-                power = if v.has_hover() {
-                    hold_w
+                if in_hover {
+                    power = v.hover_w(rho, dropped).unwrap_or(0.0);
                 } else {
-                    // Sabit kanat: yaklaşma/sönümleme, bekleme gücünün ~%60'ı (basitleştirme).
+                    // Sabit kanat / kanat üzerinde iniş: yaklaşma/sönümleme, bekleme gücünün ~%60'ı (basitleştirme).
                     va = loiter_v;
-                    0.6 * hold_w
-                };
+                    stall = v.below_stall(rho, dropped, va);
+                    if stall {
+                        feasible = false;
+                    }
+                    power = 0.6 * v.level_w(rho, dropped, va);
+                }
             }
         }
         let mut energy = power * time / 3600.0;
@@ -346,6 +408,9 @@ pub fn simulate(v: &Vehicle, env: &Env, legs: &[Leg], extra_reserve: f64) -> Mis
         });
         if leg.kind == LegKind::Drop {
             dropped += v.clamp_drop(dropped, fin(leg.drop_kg));
+        }
+        if v.kind == Kind::Vtol && leg.kind == LegKind::Transition {
+            in_hover = !in_hover;
         }
         agl = agl_next;
     }
@@ -586,7 +651,8 @@ mod tests {
 
     #[test]
     fn degenerate_inputs_do_not_nan() {
-        let (_, v) = veh(DroneType::FixedWingConventional);
+        let (_, mut v) = veh(DroneType::FixedWingConventional);
+        v.dod = f64::NAN;
         let bad = Leg {
             kind: LegKind::Cruise,
             height_m: f64::NAN,
@@ -598,6 +664,115 @@ mod tests {
             drop_kg: f64::NAN,
         };
         let r = simulate(&v, &Env::default(), &[bad], f64::NAN);
-        assert!(r.total_wh.is_finite());
+        assert!(
+            r.total_wh.is_finite()
+                && r.total_time_s.is_finite()
+                && r.budget_wh.is_finite()
+                && r.cold_factor.is_finite()
+                && r.battery_temp_c.is_finite()
+                && r.margin_wh.is_finite()
+                && r.margin_pct.is_finite()
+        );
+        for l in &r.legs {
+            assert!(
+                l.time_s.is_finite()
+                    && l.airspeed.is_finite()
+                    && l.ground_speed.is_finite()
+                    && l.headwind.is_finite()
+                    && l.crosswind.is_finite()
+                    && l.power_w.is_finite()
+                    && l.energy_wh.is_finite()
+                    && l.rho.is_finite()
+                    && l.mass_kg.is_finite()
+                    && l.cum_wh.is_finite()
+                    && l.remaining_pct.is_finite()
+            );
+        }
+    }
+
+    #[test]
+    fn vtol_uses_wing_power_between_transitions() {
+        let (_, v) = veh(DroneType::VtolQuadplane);
+        let env = Env::default();
+        let legs = default_legs(&v);
+        let r = simulate(&v, &env, &legs, 0.0);
+        // default_legs: [0]=Climb(hover), [1]=Transition, [2]=Cruise, [3]=Drop(wing), ...
+        let hover_w = v.hover_w(env.rho_at(30.0), 0.0).unwrap();
+        assert!(r.legs[3].power_w < hover_w * 0.5);
+        assert!(r.legs[3].airspeed > 1.0);
+        // İkinci Transition sonrası Descent tekrar askı modundadır.
+        let desc = &r.legs[6];
+        assert_eq!(desc.kind, LegKind::Descent);
+        assert!(desc.power_w > r.legs[3].power_w);
+    }
+
+    #[test]
+    fn descent_clamps_to_available_agl() {
+        let (_, v) = veh(DroneType::Multirotor);
+        let env = Env::default();
+        let legs = vec![
+            Leg {
+                height_m: 30.0,
+                rate_ms: 2.0,
+                ..Leg::new(LegKind::Climb, &v)
+            },
+            Leg {
+                height_m: 100.0,
+                rate_ms: 2.0,
+                ..Leg::new(LegKind::Descent, &v)
+            },
+            Leg {
+                height_m: 100.0,
+                rate_ms: 2.0,
+                ..Leg::new(LegKind::Descent, &v)
+            },
+        ];
+        let r = simulate(&v, &env, &legs, 0.0);
+        assert!((r.legs[1].time_s - 15.0).abs() < 1e-9);
+        assert!(r.legs[2].time_s.abs() < 1e-9 && r.legs[2].energy_wh.abs() < 1e-9);
+    }
+
+    #[test]
+    fn fixed_wing_climb_checks_vz_stall_and_ground_speed() {
+        let (p, v) = veh(DroneType::FixedWingConventional);
+        let env = Env::default();
+        // Geçerli tırmanma: yatay yer hızı bildirilir.
+        let ok = Leg {
+            height_m: 100.0,
+            rate_ms: 3.0,
+            airspeed_ms: 18.0,
+            ..Leg::new(LegKind::Climb, &v)
+        };
+        let r_ok = simulate(&v, &env, &[ok], 0.0);
+        let want_gs = (18.0_f64 * 18.0 - 9.0).sqrt();
+        assert!((r_ok.legs[0].ground_speed - want_gs).abs() < 1e-9);
+        assert!(r_ok.legs[0].feasible);
+
+        // vz >= va imkânsızdır.
+        let too_steep = Leg {
+            height_m: 100.0,
+            rate_ms: 20.0,
+            airspeed_ms: 18.0,
+            ..Leg::new(LegKind::Climb, &v)
+        };
+        let r_steep = simulate(&v, &env, &[too_steep], 0.0);
+        assert!(!r_steep.all_feasible && !r_steep.pass);
+
+        // Stall olan sabit kanat bekleme/bırakma/iniş bacakları geçersiz sayılır.
+        let mut m_stall = evaluate(&p, &Library::embedded());
+        m_stall.perf_end.v = 3.0;
+        let v_stall = Vehicle::from_model(&p, &m_stall);
+        let r_stall = simulate(
+            &v_stall,
+            &env,
+            &[
+                Leg::new(LegKind::Loiter, &v_stall),
+                Leg::new(LegKind::Drop, &v_stall),
+                Leg::new(LegKind::Landing, &v_stall),
+            ],
+            0.0,
+        );
+        assert!(r_stall.legs.iter().all(|l| l.stall_warn && !l.feasible));
+        assert!(!r_stall.pass && !r_stall.all_feasible);
     }
 }

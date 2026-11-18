@@ -20,6 +20,8 @@ struct MeState {
     /// Proje DoD'sine ek rezerv [%].
     reserve_pct: f64,
     kind: Kind,
+    prev_v_cruise: f64,
+    prev_payload_kg: f64,
 }
 
 fn kind_label(k: LegKind) -> &'static str {
@@ -47,6 +49,25 @@ fn new_state(p: &Project, veh: &Vehicle) -> MeState {
         legs: default_legs(veh),
         reserve_pct: 0.0,
         kind: veh.kind,
+        prev_v_cruise: veh.v_cruise,
+        prev_payload_kg: veh.payload_kg,
+    }
+}
+
+fn sync_leg_defaults(legs: &mut [Leg], old_v: f64, new_v: f64, old_pay: f64, new_pay: f64) {
+    if (old_v - new_v).abs() > 1e-9 {
+        for leg in legs.iter_mut() {
+            if (leg.airspeed_ms - old_v).abs() < 1e-6 {
+                leg.airspeed_ms = new_v;
+            }
+        }
+    }
+    if (old_pay - new_pay).abs() > 1e-9 {
+        for leg in legs.iter_mut() {
+            if leg.kind == LegKind::Drop && (leg.drop_kg - old_pay).abs() < 1e-6 {
+                leg.drop_kg = new_pay;
+            }
+        }
     }
 }
 
@@ -70,7 +91,17 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model) {
     if st.kind != veh.kind {
         st.legs = default_legs(&veh);
         st.kind = veh.kind;
+    } else {
+        sync_leg_defaults(
+            &mut st.legs,
+            st.prev_v_cruise,
+            veh.v_cruise,
+            st.prev_payload_kg,
+            veh.payload_kg,
+        );
     }
+    st.prev_v_cruise = veh.v_cruise;
+    st.prev_payload_kg = veh.payload_kg;
     let tk = theme::tokens(ui);
 
     section_header(ui, t("tab_missionenergy"));
@@ -218,6 +249,7 @@ fn leg_editor(ui: &mut Ui, veh: &Vehicle, legs: &mut Vec<Leg>) {
     let mut remove = None;
     let mut swap_up = None;
     let n = legs.len();
+    let mut in_hover = veh.has_hover();
     egui::Grid::new("me_legs")
         .num_columns(4)
         .spacing([space::S, space::XS])
@@ -237,7 +269,10 @@ fn leg_editor(ui: &mut Ui, veh: &Vehicle, legs: &mut Vec<Leg>) {
                 if kind != leg.kind {
                     *leg = Leg::new(kind, veh);
                 }
-                ui.horizontal(|ui| leg_params(ui, leg));
+                ui.horizontal(|ui| leg_params(ui, leg, !in_hover));
+                if veh.kind == Kind::Vtol && leg.kind == LegKind::Transition {
+                    in_hover = !in_hover;
+                }
                 ui.horizontal(|ui| {
                     if ui.add_enabled(i > 0, egui::Button::new("↑")).clicked() {
                         swap_up = Some(i);
@@ -272,13 +307,17 @@ fn leg_editor(ui: &mut Ui, veh: &Vehicle, legs: &mut Vec<Leg>) {
     });
 }
 
-fn leg_params(ui: &mut Ui, leg: &mut Leg) {
+fn leg_params(ui: &mut Ui, leg: &mut Leg, wing_borne: bool) {
     match leg.kind {
         LegKind::Climb | LegKind::Descent => {
             ui.label(t("missionenergy.p.height"));
             drag(ui, &mut leg.height_m, 1.0, 0.0, 5000.0, " m");
             ui.label(t("missionenergy.p.rate"));
             drag(ui, &mut leg.rate_ms, 0.1, 0.1, 20.0, " m/s");
+            if wing_borne {
+                ui.label(t("missionenergy.p.airspeed"));
+                drag(ui, &mut leg.airspeed_ms, 0.2, 1.0, 80.0, " m/s");
+            }
         }
         LegKind::Cruise => {
             ui.label(t("missionenergy.p.distance"));
@@ -339,11 +378,16 @@ fn results_table(ui: &mut Ui, res: &MissionResult) {
                     tk.text
                 };
                 ui.label(egui::RichText::new(fmt(l.remaining_pct, 0)).color(rem_color));
-                let note = if !l.feasible {
-                    egui::RichText::new(t("missionenergy.note.infeasible")).color(tk.danger)
-                } else if l.stall_warn {
+                let note = if l.stall_warn {
                     egui::RichText::new(t("missionenergy.note.stall")).color(tk.warning)
-                } else if l.headwind.abs() > 0.05 {
+                } else if !l.feasible {
+                    let key = if matches!(l.kind, LegKind::Climb | LegKind::Descent) {
+                        "missionenergy.note.rate_exceeds_airspeed"
+                    } else {
+                        "missionenergy.note.infeasible"
+                    };
+                    egui::RichText::new(t(key)).color(tk.danger)
+                } else if l.headwind.abs() > 0.05 || l.crosswind.abs() > 0.05 {
                     egui::RichText::new(tf(
                         "missionenergy.note.wind",
                         &[fmt(l.headwind, 1), fmt(l.crosswind.abs(), 1)],
@@ -370,7 +414,18 @@ fn summary(ui: &mut Ui, res: &MissionResult) {
         ],
     ));
     if !res.all_feasible {
-        components::banner(ui, Status::Err, t("missionenergy.sum.infeasible"));
+        let msg = if res.legs.iter().any(|l| l.stall_warn) {
+            t("missionenergy.sum.stall")
+        } else if res
+            .legs
+            .iter()
+            .any(|l| !l.feasible && matches!(l.kind, LegKind::Climb | LegKind::Descent))
+        {
+            t("missionenergy.sum.rate")
+        } else {
+            t("missionenergy.sum.infeasible")
+        };
+        components::banner(ui, Status::Err, msg);
     } else if res.pass {
         components::banner(
             ui,
@@ -471,5 +526,30 @@ fn chart(ui: &mut Ui, res: &MissionResult) {
             small.clone(),
             tk.text,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::calc::{Library, evaluate};
+    use crate::project::DroneType;
+
+    #[test]
+    fn sync_leg_defaults_updates_unedited_fields_and_preserves_custom() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::FixedWingConventional);
+        let m = evaluate(&p, &Library::embedded());
+        let veh = Vehicle::from_model(&p, &m);
+        let mut legs = default_legs(&veh);
+        // İlk seyir bacağı varsayılan hızı kullanır; ikinciye özel hız verelim.
+        legs[3].airspeed_ms = veh.v_cruise + 5.0;
+        let old_v = veh.v_cruise;
+        let old_pay = veh.payload_kg;
+        sync_leg_defaults(&mut legs, old_v, old_v + 3.0, old_pay, old_pay + 0.5);
+        assert!((legs[0].airspeed_ms - (old_v + 3.0)).abs() < 1e-9);
+        assert!((legs[1].airspeed_ms - (old_v + 3.0)).abs() < 1e-9);
+        assert!((legs[3].airspeed_ms - (old_v + 5.0)).abs() < 1e-9);
+        assert!((legs[2].drop_kg - (old_pay + 0.5)).abs() < 1e-9);
     }
 }

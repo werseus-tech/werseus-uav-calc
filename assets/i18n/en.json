@@ -2792,6 +2792,7 @@
   "missionenergy.col.remaining": "Remaining (%)",
   "missionenergy.col.note": "Note",
   "missionenergy.note.infeasible": "Wind exceeds airspeed",
+  "missionenergy.note.rate_exceeds_airspeed": "Vertical rate exceeds airspeed",
   "missionenergy.note.stall": "Airspeed below stall limit",
   "missionenergy.note.wind": "Headwind {0} m/s, crosswind {1} m/s",
   "missionenergy.sum.title": "Mission summary",
@@ -2799,6 +2800,8 @@
   "missionenergy.sum.pass": "Mission OK: {0} Wh ({1} %) margin remains.",
   "missionenergy.sum.fail": "Not enough energy: short by {0} Wh ({1} %).",
   "missionenergy.sum.infeasible": "Some legs cannot be flown (wind exceeds airspeed).",
+  "missionenergy.sum.stall": "Some legs cannot be flown (airspeed below stall limit).",
+  "missionenergy.sum.rate": "Some legs cannot be flown (vertical rate exceeds airspeed).",
   "missionenergy.chart.title": "Energy per leg",
   "missionenergy.chart.axis": "Wh (above bar: remaining %)"
 }

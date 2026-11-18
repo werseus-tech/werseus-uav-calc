@@ -2792,6 +2792,7 @@
   "missionenergy.col.remaining": "Kalan (%)",
   "missionenergy.col.note": "Not",
   "missionenergy.note.infeasible": "Rüzgâr hava hızını aşıyor",
+  "missionenergy.note.rate_exceeds_airspeed": "Düşey hız hava hızını aşıyor",
   "missionenergy.note.stall": "Hava hızı stall sınırının altında",
   "missionenergy.note.wind": "Kafa rüzgârı {0} m/s, yan {1} m/s",
   "missionenergy.sum.title": "Görev özeti",
@@ -2799,6 +2800,8 @@
   "missionenergy.sum.pass": "Görev uygun: {0} Wh (%{1}) marj kalıyor.",
   "missionenergy.sum.fail": "Görev enerjisi yetmiyor: {0} Wh (%{1}) eksik.",
   "missionenergy.sum.infeasible": "Bazı bacaklar uçulamıyor (rüzgâr hava hızını aşıyor).",
+  "missionenergy.sum.stall": "Bazı bacaklar uçulamıyor (hava hızı stall sınırının altında).",
+  "missionenergy.sum.rate": "Bazı bacaklar uçulamıyor (düşey hız hava hızını aşıyor).",
   "missionenergy.chart.title": "Bacak başına enerji",
   "missionenergy.chart.axis": "Wh (çubuk üstü: kalan %)"
 }

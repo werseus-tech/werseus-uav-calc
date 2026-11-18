@@ -59,7 +59,9 @@ impl Env {
 
     /// `h_msl` irtifasındaki hava yoğunluğu [kg/m³] (ISA basıncı, sapmalı sıcaklık).
     pub fn rho_at(&self, h_msl: f64) -> f64 {
-        isa(h_msl).p / (R_AIR * self.temp_k_at(h_msl))
+        let t = self.temp_k_at(h_msl);
+        let t = if t.is_finite() { t.max(100.0) } else { T0 };
+        isa(h_msl).p / (R_AIR * t)
     }
 
     /// Kalkış noktası yoğunluk irtifası [m].
@@ -77,16 +79,37 @@ impl Env {
     }
 
     /// Verilen rota yönü için (kafa, yan) rüzgâr bileşenleri [m/s]; kafa rüzgârı pozitif.
-    /// Hamle payı kafa rüzgârını artırır, arka rüzgârı azaltır.
+    /// Hamle payı kafa rüzgârını artırır, arka rüzgârı azaltır; yan rüzgârı küçültmez.
     pub fn wind_components(&self, track_deg: f64) -> (f64, f64) {
-        let a = (track_deg - self.wind_from_deg).to_radians();
-        let gust = self.gust.max(0.0);
-        let vw = if a.cos() >= 0.0 {
-            self.wind_speed + gust
+        let track = if track_deg.is_finite() {
+            track_deg
         } else {
-            (self.wind_speed - gust).max(0.0)
+            0.0
         };
-        (vw * a.cos(), vw * a.sin())
+        let from = if self.wind_from_deg.is_finite() {
+            self.wind_from_deg
+        } else {
+            0.0
+        };
+        let ws = if self.wind_speed.is_finite() {
+            self.wind_speed.max(0.0)
+        } else {
+            0.0
+        };
+        let gust = if self.gust.is_finite() {
+            self.gust.max(0.0)
+        } else {
+            0.0
+        };
+        let a = (track - from).to_radians();
+        let cos_a = a.cos();
+        let head = if cos_a >= 0.0 {
+            (ws + gust) * cos_a
+        } else {
+            (ws - gust).max(0.0) * cos_a
+        };
+        let cross = (ws + gust) * a.sin();
+        (head, cross)
     }
 }
 
@@ -197,14 +220,37 @@ mod tests {
 
     #[test]
     fn gust_hurts_both_directions() {
-        let e = Env {
+        let steady = Env {
             wind_speed: 6.0,
             wind_from_deg: 0.0,
-            gust: 2.0,
+            gust: 0.0,
             ..Env::default()
+        };
+        let e = Env {
+            gust: 2.0,
+            ..steady.clone()
         };
         assert!((e.wind_components(0.0).0 - 8.0).abs() < 1e-9);
         assert!((e.wind_components(180.0).0 + 4.0).abs() < 1e-9);
+        // Çapraz arka rüzgâr (135°): hamle yan rüzgârı küçültmemeli ve kafa bileşeni artmalı (daha az arka rüzgâr).
+        let (h0, c0) = steady.wind_components(135.0);
+        let (hg, cg) = e.wind_components(135.0);
+        assert!(hg > h0 && cg.abs() > c0.abs());
+        // ±90° civarında süreklilik:
+        let (h_lo, c_lo) = e.wind_components(89.99);
+        let (h_hi, c_hi) = e.wind_components(90.01);
+        assert!((h_lo - h_hi).abs() < 1e-2 && (c_lo - c_hi).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rho_at_clamps_extreme_cold_temperature() {
+        let e = Env {
+            temp_mode: TempMode::Absolute,
+            temp_abs_c: -273.15,
+            ..Env::default()
+        };
+        let rho = e.rho_at(0.0);
+        assert!(rho.is_finite() && rho > 0.0);
     }
 
     #[test]
