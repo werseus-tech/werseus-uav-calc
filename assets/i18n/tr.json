@@ -2787,5 +2787,10 @@
   "computebudget.verdict": "Sonuç",
   "computebudget.verdict_pass": "Geçti: durma mesafesi yeterli marj bırakır.",
   "computebudget.verdict_warn": "Uyarı: marj tespit mesafesinin %20'sinden azdır.",
-  "computebudget.verdict_fail": "Başarısız: araç tespit mesafesi içinde duramaz."
+  "computebudget.verdict_fail": "Başarısız: araç tespit mesafesi içinde duramaz.",
+  "computebudget.warn_thrust_exceeded": "Eklenen kütle mevcut azami itkiyi aşıyor; araç dikey kalkış yapamaz veya askıda kalamaz.",
+  "computebudget.warn_stall_exceeded": "Eklenen ağırlık perdövites hızını seyir hızının üzerine çıkarıyor; bu hızda düzenli uçuş sürdürülemez.",
+  "computebudget.warn_power_exceeded": "Yeni ağırlıkta gereken seyir itki gücü kurulu motor gücünü aşıyor.",
+  "computebudget.warn_vtol_hover": "VTOL notu: uçuş süresi kaybı yalnızca sabit kanat seyir fazını yansıtır; ek kütlenin gücü daha dik artırdığı askı ve geçiş fazları dahil değildir.",
+  "computebudget.warn_inference_bottleneck": "Çıkarım süresi kamera kare periyodunu aşıyor; etkin algılama hızı çıkarım tarafından sınırlanıyor."
 }

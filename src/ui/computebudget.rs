@@ -46,15 +46,19 @@ impl Default for CbState {
     }
 }
 
-fn drag(ui: &mut Ui, label: &str, v: &mut f64, max: f64, dec: usize) {
+fn drag_range(ui: &mut Ui, label: &str, v: &mut f64, min: f64, max: f64, dec: usize) {
     ui.label(label);
     ui.add(
         egui::DragValue::new(v)
-            .range(0.0..=max)
+            .range(min..=max)
             .max_decimals(dec)
             .speed(0.1),
     );
     ui.end_row();
+}
+
+fn drag(ui: &mut Ui, label: &str, v: &mut f64, max: f64, dec: usize) {
+    drag_range(ui, label, v, 0.0, max, dec);
 }
 
 pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut CbState) {
@@ -91,7 +95,17 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut CbState) {
             ui.text_edit_singleline(&mut st.computer_name);
             ui.end_row();
             drag(ui, t("computebudget.idle_w"), &mut st.idle_w, 1.0e3, 2);
-            drag(ui, t("computebudget.load_w"), &mut st.load_w, 1.0e3, 2);
+            if st.load_w < st.idle_w {
+                st.load_w = st.idle_w;
+            }
+            drag_range(
+                ui,
+                t("computebudget.load_w"),
+                &mut st.load_w,
+                st.idle_w,
+                1.0e3,
+                2,
+            );
             drag(ui, t("computebudget.mass_g"), &mut st.mass_g, 1.0e5, 1);
         });
     ui.checkbox(&mut st.use_load, t("computebudget.use_load"));
@@ -211,6 +225,18 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut CbState) {
                         c,
                     );
                 });
+            if r.thrust_exceeded {
+                components::banner(ui, Status::Err, t("computebudget.warn_thrust_exceeded"));
+            }
+            if r.stall_exceeded {
+                components::banner(ui, Status::Err, t("computebudget.warn_stall_exceeded"));
+            }
+            if r.power_exceeded {
+                components::banner(ui, Status::Err, t("computebudget.warn_power_exceeded"));
+            }
+            if r.vtol_hover_omitted {
+                components::banner(ui, Status::Warn, t("computebudget.warn_vtol_hover"));
+            }
         }
     }
 
@@ -220,7 +246,7 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut CbState) {
         .num_columns(2)
         .show(ui, |ui| {
             let l = &mut st.lat;
-            drag(ui, t("computebudget.fps"), &mut l.fps, 1.0e4, 1);
+            drag_range(ui, t("computebudget.fps"), &mut l.fps, 0.1, 1.0e4, 1);
             drag(
                 ui,
                 t("computebudget.exposure"),
@@ -245,7 +271,14 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut CbState) {
                 1.0e5,
                 1,
             );
-            drag(ui, t("computebudget.decel"), &mut l.max_decel_ms2, 1.0e3, 2);
+            drag_range(
+                ui,
+                t("computebudget.decel"),
+                &mut l.max_decel_ms2,
+                0.01,
+                1.0e3,
+                2,
+            );
         });
     let r = latency::evaluate(&st.lat);
     ui.add_space(space::XS);
@@ -305,4 +338,11 @@ pub fn show(ui: &mut Ui, p: &Project, m: &Model, st: &mut CbState) {
     ui.add_space(space::XS);
     ui.label(t("computebudget.verdict"));
     components::banner(ui, status, t(key));
+    if r.inference_bottleneck {
+        components::banner(
+            ui,
+            Status::Warn,
+            t("computebudget.warn_inference_bottleneck"),
+        );
+    }
 }

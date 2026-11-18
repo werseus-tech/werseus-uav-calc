@@ -19,18 +19,37 @@ pub fn baseline_from_model(dt: DroneType, m: &Model) -> Option<Baseline> {
     match dt {
         DroneType::Multirotor => {
             let r = &m.mr;
-            (ok(r.e_usable_wh) && ok(r.p_total_hover) && ok(r.m_mtow)).then_some(Baseline::Rotor {
-                e_usable_wh: r.e_usable_wh,
-                p_total_w: r.p_total_hover,
-                mass_kg: r.m_mtow,
-            })
+            let p_hotel_w = (r.p_total_hover - r.p_elec_hover_total).max(0.0);
+            (ok(r.e_usable_wh) && ok(r.p_elec_hover_total) && ok(r.m_mtow)).then_some(
+                Baseline::Rotor {
+                    e_usable_wh: r.e_usable_wh,
+                    p_prop_w: r.p_elec_hover_total,
+                    p_hotel_w,
+                    mass_kg: r.m_mtow,
+                    t_max_n: if r.t_max_total.is_finite() && r.t_max_total > 0.0 {
+                        r.t_max_total
+                    } else {
+                        0.0
+                    },
+                },
+            )
         }
         _ => {
             let p = &m.perf_in;
             let v = m.perf_cr.v;
+            let vtol_t_max_n = (dt == DroneType::VtolQuadplane).then_some(
+                if m.mr.t_max_total.is_finite() && m.mr.t_max_total > 0.0 {
+                    m.mr.t_max_total
+                } else {
+                    0.0
+                },
+            );
             (ok(p.w) && ok(p.ws) && ok(p.e_pack_wh) && ok(v)).then(|| Baseline::Wing {
                 perf: p.clone(),
                 v_cruise: v,
+                cl_max: m.aero.cl_max,
+                p_max_elec: m.prop_in.p_installed_elec,
+                vtol_t_max_n,
             })
         }
     }
@@ -56,6 +75,7 @@ mod tests {
             assert!(none.t_base_min > 0.0, "{dt:?}");
             assert!(none.lost_min.abs() < 1e-9, "{dt:?}");
             assert!(some.lost_min > 0.0 && some.lost_pct < 100.0, "{dt:?}");
+            assert_eq!(some.vtol_hover_omitted, dt == DroneType::VtolQuadplane);
         }
     }
 }

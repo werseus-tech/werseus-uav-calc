@@ -45,6 +45,8 @@ pub struct LatencyOut {
     pub margin_m: f64,
     pub max_safe_speed_ms: f64,
     pub verdict: Verdict,
+    /// True when inference time exceeds the camera frame period (`1000.0 / fps`).
+    pub inference_bottleneck: bool,
 }
 
 pub fn sanitize(x: f64, lo: f64, hi: f64) -> f64 {
@@ -61,7 +63,9 @@ pub fn evaluate(i: &LatencyIn) -> LatencyOut {
     let detect_range_m = sanitize(i.detect_range_m, 0.0, 1.0e6);
     let max_decel_ms2 = sanitize(i.max_decel_ms2, 0.01, 1.0e4);
 
-    let frame_wait_ms = 1000.0 / fps;
+    let frame_period_ms = 1000.0 / fps;
+    let inference_bottleneck = inference_ms > frame_period_ms;
+    let frame_wait_ms = frame_period_ms.max(inference_ms);
     let total_latency_ms =
         frame_wait_ms + exposure_readout_ms + inference_ms + comm_ms + fc_loop_ms;
     let t = total_latency_ms / 1000.0;
@@ -74,14 +78,15 @@ pub fn evaluate(i: &LatencyIn) -> LatencyOut {
     let max_safe_speed_ms = if detect_range_m == 0.0 {
         0.0
     } else {
-        let r = detect_range_m;
+        // Solve for the Verdict::Pass threshold (20% margin: stopping_distance <= 0.8 * range)
+        let r = 0.8 * detect_range_m;
         let a = max_decel_ms2;
         2.0 * r / (t + (t * t + 2.0 * r / a).sqrt())
     };
 
-    let verdict = if stopping_distance_m > detect_range_m {
+    let verdict = if detect_range_m <= 0.0 || stopping_distance_m > detect_range_m {
         Verdict::Fail
-    } else if stopping_distance_m > 0.8 * detect_range_m {
+    } else if stopping_distance_m > 0.8 * detect_range_m * (1.0 + 1e-12) {
         Verdict::Warn
     } else {
         Verdict::Pass
@@ -96,6 +101,7 @@ pub fn evaluate(i: &LatencyIn) -> LatencyOut {
         margin_m,
         max_safe_speed_ms,
         verdict,
+        inference_bottleneck,
     }
 }
 
@@ -110,7 +116,7 @@ mod tests {
     #[test]
     fn latency_sums() {
         let input = LatencyIn {
-            fps: 50.0,
+            fps: 25.0,
             exposure_readout_ms: 10.0,
             inference_ms: 30.0,
             comm_ms: 5.0,
@@ -120,7 +126,33 @@ mod tests {
             max_decel_ms2: 1.0,
         };
         let output = evaluate(&input);
-        assert!(approx(output.total_latency_ms, 70.0, 1e-9));
+        assert!(!output.inference_bottleneck);
+        assert!(approx(output.frame_wait_ms, 40.0, 1e-9));
+        assert!(approx(output.total_latency_ms, 90.0, 1e-9));
+    }
+
+    #[test]
+    fn inference_bottleneck_caps_frame_rate() {
+        let slow_cam = LatencyIn {
+            fps: 25.0, // 40 ms period == 40 ms inference
+            inference_ms: 40.0,
+            ..Default::default()
+        };
+        let fast_cam = LatencyIn {
+            fps: 120.0, // 8.33 ms period < 40 ms inference
+            inference_ms: 40.0,
+            ..Default::default()
+        };
+        let out_slow = evaluate(&slow_cam);
+        let out_fast = evaluate(&fast_cam);
+        assert!(!out_slow.inference_bottleneck);
+        assert!(out_fast.inference_bottleneck);
+        assert!(approx(out_fast.frame_wait_ms, 40.0, 1e-9));
+        assert!(approx(
+            out_fast.total_latency_ms,
+            out_slow.total_latency_ms,
+            1e-9
+        ));
     }
 
     #[test]
@@ -136,11 +168,13 @@ mod tests {
             max_decel_ms2: 5.0,
         };
         let output = evaluate(&input);
-        assert!(approx(output.total_latency_ms, 50.0, 1e-9));
-        assert!(approx(output.blind_distance_m, 0.5, 1e-9));
+        assert!(output.inference_bottleneck);
+        assert!(approx(output.frame_wait_ms, 20.0, 1e-9));
+        assert!(approx(output.total_latency_ms, 60.0, 1e-9));
+        assert!(approx(output.blind_distance_m, 0.6, 1e-9));
         assert!(approx(output.braking_distance_m, 10.0, 1e-9));
-        assert!(approx(output.stopping_distance_m, 10.5, 1e-9));
-        assert!(approx(output.margin_m, 19.5, 1e-9));
+        assert!(approx(output.stopping_distance_m, 10.6, 1e-9));
+        assert!(approx(output.margin_m, 19.4, 1e-9));
         assert_eq!(output.verdict, Verdict::Pass);
     }
 
@@ -158,7 +192,7 @@ mod tests {
             max_decel_ms2: 5.0,
         };
         let output_warn = evaluate(&input_warn);
-        assert!(approx(output_warn.stopping_distance_m, 23.25, 1e-9));
+        assert!(approx(output_warn.stopping_distance_m, 23.4, 1e-9));
         assert_eq!(output_warn.verdict, Verdict::Warn);
 
         // Fail case
@@ -173,7 +207,7 @@ mod tests {
             max_decel_ms2: 5.0,
         };
         let output_fail = evaluate(&input_fail);
-        assert!(approx(output_fail.stopping_distance_m, 41.0, 1e-9));
+        assert!(approx(output_fail.stopping_distance_m, 41.2, 1e-9));
         assert_eq!(output_fail.verdict, Verdict::Fail);
     }
 
@@ -200,14 +234,15 @@ mod tests {
             let v = output.max_safe_speed_ms;
             let t = output.total_latency_ms / 1000.0;
             let calculated_stopping = v * t + (v * v) / (2.0 * decel);
-            assert!(approx(calculated_stopping, range, 1e-9));
+            assert!(approx(calculated_stopping, 0.8 * range, 1e-9));
 
             let input_check = LatencyIn {
                 speed_ms: v,
                 ..input
             };
             let output_check = evaluate(&input_check);
-            assert!(approx(output_check.margin_m, 0.0, 1e-9));
+            assert!(approx(output_check.margin_m, 0.2 * range, 1e-9));
+            assert_eq!(output_check.verdict, Verdict::Pass);
         }
     }
 
@@ -252,5 +287,14 @@ mod tests {
         };
         let output = evaluate(&input);
         assert!(approx(output.max_safe_speed_ms, 0.0, 1e-9));
+        assert_eq!(output.verdict, Verdict::Fail);
+
+        // Zero speed with zero detection range must still fail
+        let zero_speed = LatencyIn {
+            detect_range_m: 0.0,
+            speed_ms: 0.0,
+            ..Default::default()
+        };
+        assert_eq!(evaluate(&zero_speed).verdict, Verdict::Fail);
     }
 }

@@ -2787,5 +2787,10 @@
   "computebudget.verdict": "Verdict",
   "computebudget.verdict_pass": "Pass: the stopping distance leaves a comfortable margin.",
   "computebudget.verdict_warn": "Warning: the margin is below 20% of the detection range.",
-  "computebudget.verdict_fail": "Fail: the vehicle cannot stop within the detection range."
+  "computebudget.verdict_fail": "Fail: the vehicle cannot stop within the detection range.",
+  "computebudget.warn_thrust_exceeded": "Added mass exceeds maximum available thrust; the aircraft cannot hover or take off vertically.",
+  "computebudget.warn_stall_exceeded": "Added weight pushes stall speed above cruise speed; steady flight cannot be sustained at this speed.",
+  "computebudget.warn_power_exceeded": "Required cruise propulsion power exceeds installed motor power at the new weight.",
+  "computebudget.warn_vtol_hover": "VTOL note: endurance loss reflects fixed-wing cruise only and omits hover/transition phases, where added mass increases power more steeply.",
+  "computebudget.warn_inference_bottleneck": "Inference time exceeds camera frame period; effective perception rate is bottlenecked by inference."
 }
