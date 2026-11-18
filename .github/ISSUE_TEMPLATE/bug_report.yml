@@ -12,8 +12,8 @@ body:
     id: version
     attributes:
       label: "Program Sürümü / Version"
-      description: "Hangi sürümü kullanıyorsunuz? (Yardım -> Hakkında veya v0.0.1)"
-      placeholder: "v0.0.1"
+      description: "Hangi sürümü kullanıyorsunuz? (Yardım -> Hakkında veya v0.0.2)"
+      placeholder: "v0.0.2"
     validations:
       required: true
   - type: dropdown

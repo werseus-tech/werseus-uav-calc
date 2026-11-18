@@ -2,7 +2,7 @@
 
 [![CI](https://img.shields.io/badge/CI-windows--msvc-blue.svg)](https://github.com/werseus-tech/werseus-uav-calc)
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](https://github.com/werseus-tech/werseus-uav-calc)
-[![Version](https://img.shields.io/badge/Version-v0.0.1-green.svg)](https://github.com/werseus-tech/werseus-uav-calc)
+[![Version](https://img.shields.io/badge/Version-v0.0.2-green.svg)](https://github.com/werseus-tech/werseus-uav-calc)
 
 Küçük, elektrikli sabit kanatlı (klasik ve V-kuyruk), uçan kanat (flying wing), çok rotorlu (multirotor: 3/4/6/8 kol, X/+/H, koaksiyel) ve hibrit VTOL Quadplane İHA'ların ön tasarımı ve aerodinamik/yapısal analizi için açık kaynaklı masaüstü mühendislik yazılımı (Rust 1.99, eframe/egui).
 
@@ -20,7 +20,7 @@ Küçük, elektrikli sabit kanatlı (klasik ve V-kuyruk), uçan kanat (flying wi
 
 *Download the zip from the release page, extract it, and run `werseus-uav-calc.exe`. No installation needed.*
 
-> **Windows SmartScreen uyarısı / warning:** `.exe` dijital olarak imzalı değildir; Windows "Windows bilgisayarınızı korudu" uyarısı gösterebilir. **Ek bilgi → Yine de çalıştır** seçeneğini kullanın. İndirdiğiniz dosyayı sürümle birlikte gelen `SHA256SUMS.txt` ile doğrulayabilirsiniz: `Get-FileHash .\WerSeuS-UAV-Calc-v0.0.1-windows-x64.zip -Algorithm SHA256`.
+> **Windows SmartScreen uyarısı / warning:** `.exe` dijital olarak imzalı değildir; Windows "Windows bilgisayarınızı korudu" uyarısı gösterebilir. **Ek bilgi → Yine de çalıştır** seçeneğini kullanın. İndirdiğiniz dosyayı sürümle birlikte gelen `SHA256SUMS.txt` ile doğrulayabilirsiniz: `Get-FileHash .\WerSeuS-UAV-Calc-v0.0.2-windows-x64.zip -Algorithm SHA256`.
 > *The exe is unsigned. If SmartScreen warns you, choose **More info → Run anyway**, and verify the zip with `Get-FileHash` against `SHA256SUMS.txt`.*
 
 ---
