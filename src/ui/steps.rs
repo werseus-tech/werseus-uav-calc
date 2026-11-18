@@ -80,6 +80,8 @@ pub enum Screen {
     ThrustStand,
     /// Uzman modundaki sürü (swarm) analizi (merkez yuvasında çizilir).
     Swarm,
+    /// Uzman modundaki iz ve beka (RCS / IR / GNSS sapması) sekmesi; merkezde yuvada çizilir.
+    Signature,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -108,6 +110,7 @@ pub enum CenterSlot {
     Topology,
     ThrustStand,
     Swarm,
+    Signature,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -180,6 +183,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Topology => Screen::Topology,
         Tab::ThrustStand => Screen::ThrustStand,
         Tab::Swarm => Screen::Swarm,
+        Tab::Signature => Screen::Signature,
     }
 }
 
@@ -220,6 +224,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Topology => Some(CenterSlot::Topology),
         Screen::ThrustStand => Some(CenterSlot::ThrustStand),
         Screen::Swarm => Some(CenterSlot::Swarm),
+        Screen::Signature => Some(CenterSlot::Signature),
         _ => None,
     }
 }
@@ -238,6 +243,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::Signature
             | Screen::Swarm
             | Screen::ThrustStand
             | Screen::Topology
@@ -278,6 +284,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Signature
         | Screen::Swarm
         | Screen::ThrustStand
         | Screen::Topology
@@ -343,6 +350,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Wiring
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::Signature
             | Screen::Swarm
             | Screen::ThrustStand
             | Screen::Topology
@@ -395,6 +403,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::Signature
         | Screen::Swarm
         | Screen::ThrustStand
         | Screen::Topology
@@ -443,6 +452,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Signature
         | Screen::Swarm
         | Screen::ThrustStand
         | Screen::Topology
@@ -530,6 +540,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Signature
         | Screen::Swarm
         | Screen::ThrustStand
         | Screen::Topology
@@ -635,6 +646,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Signature
         | Screen::Swarm
         | Screen::ThrustStand
         | Screen::Topology

@@ -914,6 +914,9 @@ impl App {
             Some(super::steps::CenterSlot::Swarm) => {
                 super::swarm::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::Signature) => {
+                super::signature::show(ui, &self.project, model, &mut self.sig_state);
+            }
             None => {}
         }
     }

@@ -57,6 +57,7 @@ fn side_window_sources_have_no_hardcoded_colors() {
         ("sensorfov.rs", include_str!("sensorfov.rs")),
         ("wiring.rs", include_str!("wiring.rs")),
         ("swarm.rs", include_str!("swarm.rs")),
+        ("signature.rs", include_str!("signature.rs")),
         ("formulas.rs", include_str!("formulas.rs")),
         ("help.rs", include_str!("help.rs")),
         ("schematic.rs", include_str!("schematic.rs")),

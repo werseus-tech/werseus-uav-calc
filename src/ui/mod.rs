@@ -34,6 +34,7 @@ pub mod schematic;
 pub mod sensorfov;
 pub mod settings_page;
 pub mod shell;
+pub mod signature;
 pub mod simple_steps;
 pub mod stability;
 pub mod step_ui;
@@ -106,6 +107,7 @@ pub enum Tab {
     Topology,
     ThrustStand,
     Swarm,
+    Signature,
 }
 
 impl Tab {
@@ -145,6 +147,7 @@ impl Tab {
             Tab::Topology => t("tab_topology"),
             Tab::ThrustStand => t("tab_thruststand"),
             Tab::Swarm => t("tab_swarm"),
+            Tab::Signature => t("tab_signature"),
         }
     }
 
@@ -180,6 +183,7 @@ impl Tab {
                 Tab::Topology,
                 Tab::ThrustStand,
                 Tab::Swarm,
+                Tab::Signature,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -216,6 +220,7 @@ impl Tab {
                 Tab::Topology,
                 Tab::ThrustStand,
                 Tab::Swarm,
+                Tab::Signature,
             ],
             _ => vec![
                 Tab::Summary,
@@ -251,6 +256,7 @@ impl Tab {
                 Tab::Topology,
                 Tab::ThrustStand,
                 Tab::Swarm,
+                Tab::Signature,
             ],
         }
     }
@@ -298,6 +304,7 @@ pub struct App {
     pub bom_state: bom::BomUiState,
     pub rel_state: reliability::ReliabilityUi,
     pub dw_state: downwash::DwState,
+    pub sig_state: signature::SigState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -403,6 +410,7 @@ impl App {
             bom_state: bom::BomUiState::default(),
             rel_state: reliability::ReliabilityUi::default(),
             dw_state: downwash::DwState::default(),
+            sig_state: signature::SigState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -482,6 +490,7 @@ impl App {
             bom_state: bom::BomUiState::default(),
             rel_state: reliability::ReliabilityUi::default(),
             dw_state: downwash::DwState::default(),
+            sig_state: signature::SigState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
