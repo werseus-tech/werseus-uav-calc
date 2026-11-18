@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 //! Yeni başlayanlar için "Basit mod" ekranları: Aerodinamik, Kanat (profil kartları, kanat büyüklüğü)
 //! ve Tasarım Noktası adımlarının günlük dil sürümü. Matematik `calc::aero_presets` içindedir.
-use super::components::{Status, section::section_header};
+use super::components::{AirfoilPreviewOptions, Status, airfoil_preview, section::section_header};
 use super::step_ui;
 use super::theme;
 use super::widgets::{fmt, fmt_sci};
@@ -876,6 +876,9 @@ fn learn_corner(ui: &mut Ui) {
 // Kanat adımı: profil kartları ve kanat büyüklüğü
 // ---------------------------------------------------------------------------------------------
 
+/// Basit modda sunulan 4 haneli NACA profil kodları.
+pub const PRESET_NACA_CODES: [&str; 6] = ["2412", "2415", "4412", "4415", "0009", "0012"];
+
 struct Card {
     code: &'static str,
     tags: &'static [&'static str],
@@ -883,27 +886,27 @@ struct Card {
 
 const CARDS: [Card; 6] = [
     Card {
-        code: "2412",
+        code: PRESET_NACA_CODES[0],
         tags: &["aeros.tag.beginner"],
     },
     Card {
-        code: "2415",
+        code: PRESET_NACA_CODES[1],
         tags: &["aeros.tag.thick_strong"],
     },
     Card {
-        code: "4412",
+        code: PRESET_NACA_CODES[2],
         tags: &["aeros.tag.endurance"],
     },
     Card {
-        code: "4415",
+        code: PRESET_NACA_CODES[3],
         tags: &["aeros.tag.endurance", "aeros.tag.thick_strong"],
     },
     Card {
-        code: "0009",
+        code: PRESET_NACA_CODES[4],
         tags: &["aeros.tag.speed"],
     },
     Card {
-        code: "0012",
+        code: PRESET_NACA_CODES[5],
         tags: &["aeros.tag.symmetric"],
     },
 ];
@@ -1023,20 +1026,21 @@ pub fn airfoil_cards(ui: &mut Ui, p: &mut Project, m: &Model) {
                     ui.set_width(cw);
                     ui.vertical(|ui| {
                         ui.strong(format!("NACA {}", card.code));
-                        let (resp, painter) = ui.allocate_painter(
-                            egui::vec2(cw.min(145.0), 44.0),
-                            egui::Sense::hover(),
-                        );
-                        let pts = foil_screen(
-                            &foil_points(card.code),
-                            resp.rect.center() - egui::vec2(32.5, 0.0),
-                            130.0,
-                            0.0,
-                        );
-                        painter.add(egui::Shape::closed_line(
-                            pts,
-                            egui::Stroke::new(1.5, tk.accent),
-                        ));
+                        if let Ok(card_prof) =
+                            crate::cad::airfoil::AirfoilProfile::from_naca4(card.code, 60, true)
+                        {
+                            airfoil_preview(
+                                ui,
+                                &card_prof,
+                                AirfoilPreviewOptions {
+                                    canvas_height: 46.0,
+                                    show_name: false,
+                                    show_metrics: true,
+                                    framed: false,
+                                    role: None,
+                                },
+                            );
+                        }
                         for k in card.tags {
                             ui.label(RichText::new(tag_text(k)).small().color(tk.warning));
                         }
@@ -1207,6 +1211,16 @@ pub fn airfoil_cards(ui: &mut Ui, p: &mut Project, m: &Model) {
             });
         });
     });
+    ui.add_space(theme::space::XS);
+    airfoil_preview(
+        ui,
+        &p.airfoil,
+        AirfoilPreviewOptions {
+            canvas_height: 68.0,
+            role: Some(t("airfoil.preview.selected_wing")),
+            ..Default::default()
+        },
+    );
     step_ui::note(ui, t("aeros.cards.note"));
 }
 

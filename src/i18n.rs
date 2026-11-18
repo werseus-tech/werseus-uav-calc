@@ -477,6 +477,7 @@ mod tests {
             include_str!("ui/wizard.rs"),
             include_str!("ui/theme.rs"),
             include_str!("ui/components/mod.rs"),
+            include_str!("ui/components/airfoil_preview.rs"),
             include_str!("ui/components/card.rs"),
             include_str!("ui/components/alert.rs"),
             include_str!("ui/components/input.rs"),

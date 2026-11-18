@@ -302,6 +302,16 @@ fn airfoil_selector(ui: &mut Ui, p: &mut Project) {
             }
         }
     }
+    ui.add_space(theme::space::XS);
+    components::airfoil_preview(
+        ui,
+        &p.airfoil,
+        components::AirfoilPreviewOptions {
+            canvas_height: 72.0,
+            role: Some(t("airfoil.preview.selected_wing")),
+            ..Default::default()
+        },
+    );
 }
 
 fn status_ws(ws: f64) -> Status {
@@ -495,7 +505,6 @@ pub fn results(ui: &mut Ui, p: &mut Project, m: &Model) {
 /// Profil önizleme: hesaplanan t/c, "uygula" düğmesi ve kontur çizimi.
 fn airfoil_preview(ui: &mut Ui, p: &mut Project) {
     let tk = theme::tokens(ui);
-    let plot_pts: Vec<[f64; 2]> = p.airfoil.points.clone();
     let tc_calc = p.airfoil.max_thickness();
     egui::Frame::new()
         .fill(tk.surface)
@@ -513,31 +522,16 @@ fn airfoil_preview(ui: &mut Ui, p: &mut Project) {
                     p.tc_w = tc_calc;
                 }
             });
-            egui_plot::Plot::new("airfoil_preview")
-                .width((ui.available_width() - 2.0).max(40.0))
-                .data_aspect(1.0)
-                .height(110.0)
-                .allow_zoom(false)
-                .allow_drag(false)
-                .allow_scroll(false)
-                .show(ui, |plot_ui| {
-                    plot_ui.line(
-                        egui_plot::Line::new(
-                            t("geo.plot_airfoil_contour"),
-                            egui_plot::PlotPoints::from(plot_pts),
-                        )
-                        .color(tk.accent)
-                        .width(2.0),
-                    );
-                    plot_ui.line(
-                        egui_plot::Line::new(
-                            t("geo.plot_chord_line"),
-                            egui_plot::PlotPoints::from(vec![[0.0, 0.0], [1.0, 0.0]]),
-                        )
-                        .color(tk.text_weak)
-                        .style(egui_plot::LineStyle::Dashed { length: 5.0 }),
-                    );
-                });
+            ui.add_space(theme::space::XS);
+            components::airfoil_preview(
+                ui,
+                &p.airfoil,
+                components::AirfoilPreviewOptions {
+                    canvas_height: 88.0,
+                    framed: false,
+                    ..Default::default()
+                },
+            );
         });
 }
 
@@ -588,6 +582,38 @@ fn tail_airfoil_section(ui: &mut Ui, p: &mut Project) {
                     ),
                 );
             }
+            ui.add_space(theme::space::XS);
+            if conventional {
+                components::airfoil_preview(
+                    ui,
+                    &p.tail_airfoil_h,
+                    components::AirfoilPreviewOptions {
+                        canvas_height: 54.0,
+                        role: Some(t("airfoil.preview.selected_tail_h")),
+                        ..Default::default()
+                    },
+                );
+                ui.add_space(theme::space::XS);
+                components::airfoil_preview(
+                    ui,
+                    &p.tail_airfoil_v,
+                    components::AirfoilPreviewOptions {
+                        canvas_height: 54.0,
+                        role: Some(t("airfoil.preview.selected_tail_v")),
+                        ..Default::default()
+                    },
+                );
+            } else {
+                components::airfoil_preview(
+                    ui,
+                    &p.tail_airfoil_v,
+                    components::AirfoilPreviewOptions {
+                        canvas_height: 58.0,
+                        role: Some(t("airfoil.preview.selected_tail_vtail")),
+                        ..Default::default()
+                    },
+                );
+            }
         }
         TailKind::FlyingWing => {
             section_header(ui, t("geo.section_winglet_airfoil"));
@@ -604,6 +630,16 @@ fn tail_airfoil_section(ui: &mut Ui, p: &mut Project) {
                     p.tail_airfoil_v = crate::cad::AirfoilProfile::default_tail_symmetric();
                 }
             });
+            ui.add_space(theme::space::XS);
+            components::airfoil_preview(
+                ui,
+                &p.tail_airfoil_v,
+                components::AirfoilPreviewOptions {
+                    canvas_height: 58.0,
+                    role: Some(t("airfoil.preview.selected_winglet")),
+                    ..Default::default()
+                },
+            );
         }
     }
 }
