@@ -252,11 +252,10 @@ fn show_inner(ui: &mut Ui, p: &Project, m: &Model, st: &mut SfState) {
         row(
             ui,
             t("sensorfov.res_gsd_center"),
-            format!(
-                "{} / {} cm/px",
-                fmt(fp.gsd_cross_cm, 2),
-                fmt(fp.gsd_along_cm, 2)
-            ),
+            match (fp.gsd_cross_cm, fp.gsd_along_cm) {
+                (Some(c), Some(a)) => format!("{} / {} cm/px", fmt(c, 2), fmt(a, 2)),
+                _ => "—".to_string(),
+            },
         );
         row(
             ui,
@@ -295,7 +294,7 @@ fn show_inner(ui: &mut Ui, p: &Project, m: &Model, st: &mut SfState) {
 }
 
 fn show_obstruction(ui: &mut Ui, obs: &ObstructionReport) {
-    if obs.items.is_empty() {
+    if obs.total_pct < 0.5 {
         components::banner(ui, Status::Ok, t("sensorfov.obs_none"));
     } else {
         let status = if obs.total_pct >= 10.0 {

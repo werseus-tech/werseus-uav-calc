@@ -223,15 +223,22 @@ pub fn analyze(inp: &DamperInput, exc: &[Excitation]) -> DampingReport {
         let r80 = r_for_transmissibility(0.2, inp.zeta);
         let k_max = k_from_r(r80);
         let k_min = inp.mass_kg * G / inp.max_sag_mm.max(0.1);
+        let feasible = k_min <= k_max;
+        let k_raw = k_from_r(3.0_f64.max(r80));
+        let k_target = if feasible {
+            k_raw.clamp(k_min, k_max)
+        } else {
+            k_raw
+        };
         let n = inp.n_dampers.max(1) as f64;
         Recommendation {
             k_max_total_80: k_max,
-            k_target_r3: k_from_r(3.0),
+            k_target_r3: k_target,
             k_min_sag: k_min,
             per_damper_max_80: k_max / n,
             per_damper_min_sag: k_min / n,
-            per_damper_target: k_from_r(3.0) / n,
-            feasible: k_min <= k_max,
+            per_damper_target: k_target / n,
+            feasible,
         }
     });
     DampingReport {
@@ -333,7 +340,32 @@ mod tests {
         );
         assert!(!rep.too_soft);
         let rec = rep.recommendation.unwrap();
-        assert!(rec.feasible && rec.k_target_r3 < rec.k_max_total_80 * 10.0);
+        assert!(
+            rec.feasible
+                && rec.k_min_sag <= rec.k_target_r3
+                && rec.k_target_r3 <= rec.k_max_total_80
+        );
+        // Yüksek sönüm (ζ = 0.5): r80 > 3 iken hedef sertlik üst sınırı aşmamalı.
+        let high_zeta = DamperInput { zeta: 0.5, ..soft };
+        let rec_hz = analyze(&high_zeta, &exc).recommendation.unwrap();
+        assert!(rec_hz.feasible);
+        assert!(
+            rec_hz.k_min_sag <= rec_hz.k_target_r3 && rec_hz.k_target_r3 <= rec_hz.k_max_total_80,
+            "{rec_hz:?}"
+        );
+        // Düşük uyarım frekansı: r = 3 sertliği k_min_sag altında kalırsa alt sınıra kenetlenmeli.
+        let low_exc = excitations(0, 2400.0, 2); // 40 Hz
+        let low_f = DamperInput {
+            mass_kg: 1.0,
+            max_sag_mm: 2.0,
+            ..soft
+        };
+        let rec_lf = analyze(&low_f, &low_exc).recommendation.unwrap();
+        assert!(rec_lf.feasible);
+        assert!(
+            rec_lf.k_min_sag <= rec_lf.k_target_r3 && rec_lf.k_target_r3 <= rec_lf.k_max_total_80,
+            "{rec_lf:?}"
+        );
         // f_n uyarıma çok yakın: rezonans.
         let stiff = DamperInput {
             k_per_n_mm: 29.6,

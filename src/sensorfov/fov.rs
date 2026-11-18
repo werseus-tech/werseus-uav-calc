@@ -83,9 +83,9 @@ pub struct Footprint {
     pub far_m: Option<f64>,
     pub width_near_m: f64,
     pub width_far_m: Option<f64>,
-    /// Işın merkezinde çapraz-iz GSD [cm/px] ve iz boyunca GSD [cm/px].
-    pub gsd_cross_cm: f64,
-    pub gsd_along_cm: f64,
+    /// Işın merkezinde çapraz-iz GSD [cm/px] ve iz boyunca GSD [cm/px] (ufukta/üzerinde None).
+    pub gsd_cross_cm: Option<f64>,
+    pub gsd_along_cm: Option<f64>,
     /// Yaklaşık yer alanı [m²] (yamuk; uzak kenar yoksa None).
     pub area_m2: Option<f64>,
 }
@@ -100,24 +100,33 @@ pub fn footprint(
     f: f64,
     px_w: f64,
 ) -> Footprint {
-    let tilt = tilt.clamp(1.0, 90.0);
+    let tilt = tilt.clamp(0.0, 90.0);
     let alt = alt_m.max(0.0);
     let ground = |phi_deg: f64| -> Option<f64> {
-        if phi_deg <= 0.01 {
+        if phi_deg <= 0.01 || phi_deg >= 179.99 {
             None
         } else {
-            Some(alt / phi_deg.min(90.0).to_radians().tan())
+            Some(alt / phi_deg.to_radians().tan())
         }
     };
-    let width_at = |d: f64| 2.0 * (alt * alt + d * d).sqrt() * (hfov / 2.0).to_radians().tan();
+    let width_at = |d: f64| {
+        2.0 * (alt * alt + d * d).sqrt()
+            * (vfov / 2.0).to_radians().cos()
+            * (hfov / 2.0).to_radians().tan()
+    };
     let near_m = ground(tilt + vfov / 2.0).unwrap_or(0.0);
     let far_m = ground(tilt - vfov / 2.0);
-    let slant = alt / tilt.to_radians().sin();
     let pitch = if px_w > 0.0 { sensor_w / px_w } else { 0.0 };
-    let gsd_cross = if f > 0.0 {
-        slant * pitch / f * 100.0
+    let (gsd_cross_cm, gsd_along_cm) = if tilt > 0.0 {
+        let s = tilt.to_radians().sin();
+        let g = if f > 0.0 {
+            (alt / s) * pitch / f * 100.0
+        } else {
+            0.0
+        };
+        (Some(g), Some(g / s))
     } else {
-        0.0
+        (None, None)
     };
     let width_near = width_at(near_m);
     let width_far = far_m.map(width_at);
@@ -128,8 +137,8 @@ pub fn footprint(
         far_m,
         width_near_m: width_near,
         width_far_m: width_far,
-        gsd_cross_cm: gsd_cross,
-        gsd_along_cm: gsd_cross / tilt.to_radians().sin(),
+        gsd_cross_cm,
+        gsd_along_cm,
         area_m2: area,
     }
 }
@@ -286,7 +295,7 @@ impl Airframe {
             }
             leg_solids(&mut items, 0.0, 0.0, 30.0);
             [
-                [plate_r, 0.0, 0.0],
+                [plate_r, 0.0, -10.0],
                 [0.0, 0.0, -3.0],
                 [plate_r * 0.5, 0.0, -gimbal_drop_mm],
             ]
@@ -354,8 +363,8 @@ impl Airframe {
             }
             leg_solids(&mut items, x_wle, -r, leg.tab_w_mm / 2.0 + 0.5);
             [
-                [-0.04 * len, 0.0, 0.0],
-                [-0.35 * len, 0.0, -r],
+                [1.0, 0.0, 0.0],
+                [-0.35 * len, 0.0, -r - 3.0],
                 [-0.35 * len, 0.0, -r - gimbal_drop_mm],
             ]
         };
@@ -566,12 +575,40 @@ mod tests {
 
     #[test]
     fn nadir_footprint_matches_fov() {
-        let f = footprint(100.0, 68.9, 55.0, 90.0, 6.17, 4.5, 4000.0);
+        let hfov = fov_deg(6.17, 4.5);
+        let f = footprint(100.0, hfov, 55.0, 90.0, 6.17, 4.5, 4000.0);
         let w = 100.0 * 6.17 / 4.5;
-        assert!((f.width_near_m - w).abs() / w < 0.1, "{}", f.width_near_m);
-        assert!((f.gsd_cross_cm - f.gsd_along_cm).abs() < 1e-9);
-        let oblique = footprint(100.0, 68.9, 55.0, 20.0, 6.17, 4.5, 4000.0);
+        let far = f.far_m.unwrap();
+        let wf = f.width_far_m.unwrap();
+        let area = f.area_m2.unwrap();
+        assert!((f.near_m + far).abs() < 1e-9, "{} vs {}", f.near_m, far);
+        assert!(
+            (f.width_near_m - w).abs() < 1e-9,
+            "{} vs {w}",
+            f.width_near_m
+        );
+        assert!((wf - w).abs() < 1e-9, "{wf} vs {w}");
+        assert!(
+            (area - w * (far - f.near_m)).abs() < 1e-6,
+            "{area} vs {}",
+            w * (far - f.near_m)
+        );
+        let gc = f.gsd_cross_cm.unwrap();
+        let ga = f.gsd_along_cm.unwrap();
+        assert!((gc - ga).abs() < 1e-9);
+
+        let oblique = footprint(100.0, hfov, 55.0, 20.0, 6.17, 4.5, 4000.0);
         assert!(oblique.far_m.is_none(), "uzak kenar ufuk üstünde");
+
+        let horiz = footprint(100.0, hfov, 55.0, 0.0, 6.17, 4.5, 4000.0);
+        let expected_near = 100.0 / (55.0_f64 / 2.0).to_radians().tan();
+        assert!(
+            (horiz.near_m - expected_near).abs() < 1e-9,
+            "{} vs {expected_near}",
+            horiz.near_m
+        );
+        assert!(horiz.far_m.is_none());
+        assert!(horiz.gsd_cross_cm.is_none() && horiz.gsd_along_cm.is_none());
     }
 
     fn disc(x: f64, y: f64, z: f64, r: f64) -> Solid {
@@ -635,8 +672,57 @@ mod tests {
                         "{dt:?} {r:?}"
                     );
                     assert!(r.items.iter().all(|i| i.pct.is_finite()));
+                    if mount == Mount::Gimbal && tilt == 90.0 {
+                        assert!(r.total_pct < 100.0, "{dt:?} gimbal 90: {}", r.total_pct);
+                    }
+                    if mount == Mount::Nose && tilt == 0.0 {
+                        assert!(
+                            !r.items.iter().any(|i| i.kind == ItemKind::Fuselage),
+                            "{dt:?} nose 0° fuselage self-occlusion: {:?}",
+                            r.items
+                        );
+                        if matches!(dt, DroneType::Multirotor | DroneType::FlyingWing) {
+                            assert!(r.total_pct < 100.0, "{dt:?} nose 0: {}", r.total_pct);
+                        }
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn multirotor_plus_nose_is_below_forward_arm() {
+        let mut p = Project::default();
+        p.set_drone_type(DroneType::Multirotor);
+        p.mr_layout = crate::calc::multirotor::MultirotorLayout::Plus;
+        let m = evaluate(&p, &Library::embedded());
+        let af = Airframe::from_project(&p, &m, 60.0);
+        let c0 = Camera {
+            pos: af.camera_pos(Mount::Nose),
+            tilt_deg: 0.0,
+            hfov_deg: 68.9,
+            vfov_deg: 55.0,
+        };
+        let r0 = obstruction(&af.items, &c0);
+        let arm1_pct = r0
+            .items
+            .iter()
+            .find(|i| i.label == "Arm 1")
+            .map_or(0.0, |i| i.pct);
+        assert!(
+            arm1_pct < 30.0,
+            "arm should not block upper half of the view: {r0:?}"
+        );
+        let r30 = obstruction(
+            &af.items,
+            &Camera {
+                tilt_deg: 30.0,
+                ..c0
+            },
+        );
+        assert!(
+            !r30.items.iter().any(|i| i.label == "Arm 1"),
+            "arm should be above 30° downward view: {r30:?}"
+        );
     }
 }
