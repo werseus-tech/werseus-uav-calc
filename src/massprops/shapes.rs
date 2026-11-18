@@ -91,7 +91,10 @@ impl Body {
             pos[1] - self.cg[1],
             pos[2] - self.cg[2],
         ];
-        self.translated(d)
+        let mut b = self.translated(d);
+        // Exactly the requested position, also when an internal centroid was not finite.
+        b.cg = pos;
+        b
     }
 }
 
@@ -230,7 +233,10 @@ pub fn wing_lamina(
 ) -> Body {
     let half = span * 0.5;
     let dy = half / WING_STRIPS as f64;
-    let tan_le = sweep_le_deg.to_radians().tan();
+    let tan_le = match sweep_le_deg.to_radians().tan() {
+        t if t.is_finite() => t,
+        _ => 0.0,
+    };
     let mut strips: Vec<(f64, V3, f64)> = Vec::with_capacity(2 * WING_STRIPS);
     let mut area = 0.0;
     for side in [-1.0, 1.0] {

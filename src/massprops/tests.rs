@@ -190,7 +190,7 @@ fn heavier_wing_span_raises_roll_inertia() {
 }
 
 #[test]
-fn multirotor_offset_is_reported_in_percent_of_arm_length() {
+fn multirotor_offset_is_reported_in_percent_of_frame_size() {
     let mut p = Project::default();
     p.set_drone_type(DroneType::Multirotor);
     p.mr_components[0].x += 0.02;
@@ -200,8 +200,118 @@ fn multirotor_offset_is_reported_in_percent_of_arm_length() {
     assert!(
         rel(
             mp.thrust.offset_pct,
-            100.0 * mp.thrust.offset_m / m.mr.l_arm
+            100.0 * mp.thrust.offset_m / p.mr_frame_size
         ) < 1e-12
     );
-    assert!(mp.thrust.limit_pct.unwrap() > 0.0);
+    // Same limit as the existing multirotor CG check.
+    assert!(rel(mp.thrust.limit_pct.unwrap(), 100.0 * CG_OFFSET_MAX_FRAC) < 1e-12);
+    assert_eq!(mp.thrust.exceeds, !m.mr.cg_offset_ok);
+}
+
+fn multirotor_project() -> Project {
+    let mut p = Project::default();
+    p.set_drone_type(DroneType::Multirotor);
+    p
+}
+
+#[test]
+fn hub_without_plate_radius_is_small() {
+    let mut p = multirotor_project();
+    p.mr_r_plate = 0.0;
+    let m = eval(&p);
+    let mp = compute(&p, &m);
+    let hub = mp
+        .items
+        .iter()
+        .find(|i| i.name_key == "massprops.item.frame_plate")
+        .expect("hub item");
+    let r = HUB_FRACTION * p.mr_frame_size;
+    assert!(rel(hub.own_inertia[2][2], 0.5 * hub.mass_kg * r * r) < 1e-9);
+}
+
+#[test]
+fn every_motor_and_arm_is_listed_at_its_own_position() {
+    let p = multirotor_project();
+    let m = eval(&p);
+    let mp = compute(&p, &m);
+    let motors: Vec<&MassItem> = mp
+        .items
+        .iter()
+        .filter(|i| i.name_key == "massprops.item.motors")
+        .collect();
+    assert_eq!(motors.len(), m.mr.motor_coords.len());
+    for (it, &(x, y)) in motors.iter().zip(&m.mr.motor_coords) {
+        assert!((it.pos_m[0] - x).abs() < 1e-12 && (it.pos_m[1] - y).abs() < 1e-12);
+    }
+    let arms = mp
+        .items
+        .iter()
+        .filter(|i| i.name_key == "massprops.item.arms")
+        .count();
+    assert_eq!(arms, m.mr.motor_coords.len());
+}
+
+#[test]
+fn frame_group_stays_at_the_frame_centre_for_asymmetric_layouts() {
+    let p = multirotor_project();
+    let mut m = eval(&p);
+    // Pull one motor outwards: the arms are no longer symmetric.
+    m.mr.motor_coords[0].0 += 0.1;
+    let mp = compute(&p, &m);
+    let (mut mass, mut cg) = (0.0, [0.0; 2]);
+    for i in mp.items.iter().filter(|i| {
+        i.name_key == "massprops.item.frame_plate" || i.name_key == "massprops.item.arms"
+    }) {
+        mass += i.mass_kg;
+        cg[0] += i.mass_kg * i.pos_m[0];
+        cg[1] += i.mass_kg * i.pos_m[1];
+    }
+    assert!(rel(mass, p.mr_m_frame) < 1e-9);
+    assert!(cg[0].abs() / mass < 1e-12 && cg[1].abs() / mass < 1e-12);
+    // Longer arm carries more mass.
+    let arms: Vec<&MassItem> = mp
+        .items
+        .iter()
+        .filter(|i| i.name_key == "massprops.item.arms")
+        .collect();
+    assert!(arms[0].mass_kg > arms[1].mass_kg);
+}
+
+#[test]
+fn non_finite_geometry_does_not_poison_the_inertia() {
+    for (name, mut p) in samples() {
+        if p.drone_type == DroneType::Multirotor {
+            continue;
+        }
+        p.l_h = f64::NAN;
+        p.x_ac_frac = f64::INFINITY;
+        p.sweep_le_deg = f64::NAN;
+        let m = eval(&p);
+        let mp = compute(&p, &m);
+        if !mp.valid {
+            continue;
+        }
+        assert!(
+            mp.inertia_kgm2.iter().flatten().all(|v| v.is_finite()),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn cg_percent_of_mac_needs_a_valid_mac() {
+    let p = Project::default();
+    let mut m = eval(&p);
+    m.wing.mac = 0.0;
+    assert!(compute(&p, &m).thrust.cg_pct_mac.is_none());
+}
+
+#[test]
+fn placing_a_body_sets_its_centre_exactly() {
+    let b = Body {
+        mass: 1.0,
+        cg: [f64::NAN; 3],
+        inertia: [[0.0; 3]; 3],
+    };
+    assert_eq!(b.placed_at([1.0, 2.0, 3.0]).cg, [1.0, 2.0, 3.0]);
 }

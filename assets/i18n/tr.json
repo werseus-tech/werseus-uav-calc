@@ -2760,7 +2760,7 @@
   "massprops.card.izz.tip": "AG'den geçen z ekseni etrafındaki atalet momenti.",
   "massprops.card.offset_mr": "AG'nin motor merkezine uzaklığı",
   "massprops.card.offset_mr.tip": "Rotor düzleminde AG ile motorların ağırlık merkezi arasındaki uzaklık.",
-  "massprops.card.offset_mr.detail": "kol uzunluğunun %{0}'i (sınır %{1})",
+  "massprops.card.offset_mr.detail": "çerçeve boyutunun %{0}'i (sınır %{1})",
   "massprops.card.cg_mac": "AG konumu",
   "massprops.card.cg_mac.tip": "Stabilite modelinden, MAC hücum kenarından ölçülen AG.",
   "massprops.card.cg_mac.detail": "statik marj %{0}",

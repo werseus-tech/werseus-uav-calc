@@ -16,9 +16,13 @@
 //! - fuselage + tail: solid cylinder (ellipsoid for a flying-wing pod) plus thin rectangular
 //!   plates for the horizontal, vertical or V tail, mass shared by wetted area, the whole group
 //!   moved rigidly so its CG sits at the declared position
-//! - battery: solid box (assumed pack density and 3:2:1 edge ratio)
+//! - battery: solid box (assumed pack density and 3:2:1 edge ratio; fixed wing and VTOL, whose
+//!   component rows carry a type and a height)
 //! - motors / payload / avionics / manual rows: point masses
-//! - multirotor frame: thin disc (centre plate) plus one thin rod per arm, motors as points
+//! - multirotor frame: thin disc (centre plate) plus one thin rod per arm, motors as points.
+//!   The multirotor component list has neither a type nor a height, so its rows are point masses
+//!   in the rotor plane (z = 0) and the multirotor inertia is that of a flat layout; the frame
+//!   group is anchored at the frame centre like the existing CG calculation
 //!
 //! The values are estimates from simplified shapes, not measured data.
 use crate::calc::Model;
@@ -31,6 +35,9 @@ pub mod shapes;
 
 /// Assumed average density of a battery pack [kg/m^3] (Li-ion / LiPo pack incl. wrap).
 pub const PACK_DENSITY: f64 = 2400.0;
+/// Radius of the central hub disc as a fraction of the frame size when no plate radius is
+/// given.
+pub const HUB_FRACTION: f64 = 0.1;
 
 /// Axis convention of the reported numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,7 +51,7 @@ pub enum AxisFrame {
 /// What the CG offset is measured against.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OffsetKind {
-    /// Offset from the motor centroid in the rotor plane, relative to the arm length.
+    /// Offset from the motor centroid in the rotor plane, relative to the frame size.
     MotorCentroid,
     /// Offset from the thrust line (y, z), relative to the MAC; CG position as % MAC.
     ThrustAxis,
@@ -60,11 +67,12 @@ pub struct ThrustOffset {
     /// ((x, y) for the multirotor, (y, z) for fixed wing) [m].
     pub offset_vec_m: [f64; 2],
     pub offset_m: f64,
-    /// Reference length: arm length (multirotor) or MAC (fixed wing) [m].
+    /// Reference length: frame size (multirotor, as in the existing CG check) or MAC (fixed
+    /// wing) [m].
     pub reference_len_m: f64,
     /// `offset_m / reference_len_m` in percent.
     pub offset_pct: f64,
-    /// Multirotor limit in the same unit (percent of arm length); `None` for fixed wing.
+    /// Multirotor limit in the same unit (percent of the frame size); `None` for fixed wing.
     pub limit_pct: Option<f64>,
     /// CG position relative to the MAC leading edge, percent of MAC (fixed wing only).
     pub cg_pct_mac: Option<f64>,
@@ -86,6 +94,8 @@ pub struct MassItem {
     pub mass_kg: f64,
     pub pos_m: V3,
     pub own_inertia: M3,
+    /// 1-based number of a repeated synthesised item (one per motor or arm).
+    pub index: Option<usize>,
 }
 
 /// Mass properties of the whole aircraft.
@@ -134,6 +144,7 @@ fn item(
         mass_kg: body.mass,
         pos_m: pos,
         own_inertia: body.inertia,
+        index: None,
     }
 }
 
@@ -147,6 +158,10 @@ fn fuse_tail_body(p: &Project, m: &Model, mass: f64) -> (Body, &'static str) {
         return (pod, "massprops.shape.ellipsoid");
     }
     let x_ac = m.stab.datum + p.x_ac_frac * m.wing.mac;
+    // Tail panels need finite geometry; without it only the fuselage body is modelled.
+    let tail_ok = [x_ac, p.l_h, p.l_v, p.gamma_v_deg, p.s_h, p.s_v, p.s_vtail]
+        .iter()
+        .all(|v| v.is_finite());
     let c_tail = if finite_pos(p.c_tail) { p.c_tail } else { 0.0 };
     // (area, chord, span) of each tail panel and its position; chord positions use the quarter
     // chord at the tail arm measured from the wing aerodynamic centre.
@@ -157,6 +172,7 @@ fn fuse_tail_body(p: &Project, m: &Model, mass: f64) -> (Body, &'static str) {
         }
     };
     match p.tail_kind {
+        _ if !tail_ok => {}
         TailKind::Conventional => {
             let s_h = p.s_h;
             let ch = if c_tail > 0.0 {
@@ -302,7 +318,12 @@ fn multirotor_items(p: &Project, m: &Model) -> Vec<MassItem> {
             ));
         }
     }
-    let coords = &m.mr.motor_coords;
+    let coords: Vec<(f64, f64)> =
+        m.mr.motor_coords
+            .iter()
+            .copied()
+            .filter(|&(x, y)| x.is_finite() && y.is_finite())
+            .collect();
     // Frame: central plate (disc) plus one thin rod per arm, from the plate edge to the motor.
     if finite_pos(p.mr_m_frame) {
         let r_plate = if p.mr_r_plate.is_finite() {
@@ -323,60 +344,69 @@ fn multirotor_items(p: &Project, m: &Model) -> Vec<MassItem> {
         };
         let m_arms = (m_arm_each * rods.len() as f64).min(0.9 * p.mr_m_frame);
         let m_plate = p.mr_m_frame - m_arms;
+        let total_len: f64 = rods.iter().map(|r| r.2).sum();
+        // Parts of the frame before anchoring: plate at the centre, arms where they are.
+        let mut parts: Vec<(&'static str, &'static str, Body)> = Vec::new();
         if m_plate > 0.0 {
+            // Without a plate radius the hub is small, not as big as the whole frame.
             let r = if r_plate > 0.0 {
                 r_plate
             } else {
-                0.5 * p.mr_frame_size.max(0.0)
+                HUB_FRACTION * p.mr_frame_size.max(0.0)
             };
-            let b = shapes::disc_z(m_plate, r, [0.0; 3]);
-            items.push(item(
+            parts.push((
                 "massprops.item.frame_plate",
-                "",
                 "massprops.shape.disc",
-                &b,
-                [0.0; 3],
+                shapes::disc_z(m_plate, r, [0.0; 3]),
             ));
         }
-        if m_arms > 0.0 && !rods.is_empty() {
-            let each = m_arms / rods.len() as f64;
-            let parts: Vec<Body> = rods
-                .iter()
-                .map(|&(x, y, len)| {
-                    let d = x.hypot(y);
-                    let u = [x / d, y / d, 0.0];
-                    let mid = (r_plate + len / 2.0) / d;
-                    shapes::rod(each, len, u, [x * mid, y * mid, 0.0])
-                })
-                .collect();
-            let g = shapes::combine(&parts);
-            items.push(item(
-                "massprops.item.arms",
-                "",
-                "massprops.shape.rod",
-                &g,
-                g.cg,
-            ));
+        if m_arms > 0.0 && total_len > 0.0 {
+            for &(x, y, len) in &rods {
+                let d = x.hypot(y);
+                let u = [x / d, y / d, 0.0];
+                let mid = (r_plate + len / 2.0) / d;
+                // Longer arms carry more of the arm mass.
+                parts.push((
+                    "massprops.item.arms",
+                    "massprops.shape.rod",
+                    shapes::rod(m_arms * len / total_len, len, u, [x * mid, y * mid, 0.0]),
+                ));
+            }
+        }
+        // The existing CG calculation puts the whole frame at the frame centre: move the
+        // frame group rigidly so that its CG is there too (no shift for symmetric layouts).
+        let bodies: Vec<Body> = parts.iter().map(|q| q.2).collect();
+        let g = shapes::combine(&bodies);
+        let shift = [-g.cg[0], -g.cg[1], -g.cg[2]];
+        let mut n_arm = 0;
+        for (key, shape_key, body) in parts {
+            let b = body.translated(shift);
+            let mut it = item(key, "", shape_key, &b, b.cg);
+            if key == "massprops.item.arms" {
+                n_arm += 1;
+                it.index = Some(n_arm);
+            }
+            items.push(it);
         }
     }
-    if finite_pos(p.mr_m_motor) && !coords.is_empty() {
+    if finite_pos(p.mr_m_motor) {
         let per = if p.mr_coaxial {
             2.0 * p.mr_m_motor
         } else {
             p.mr_m_motor
         };
-        let parts: Vec<Body> = coords
-            .iter()
-            .map(|&(x, y)| shapes::point(per, [x, y, 0.0]))
-            .collect();
-        let g = shapes::combine(&parts);
-        items.push(item(
-            "massprops.item.motors",
-            "",
-            "massprops.shape.point",
-            &g,
-            g.cg,
-        ));
+        for (k, &(x, y)) in coords.iter().enumerate() {
+            let b = shapes::point(per, [x, y, 0.0]);
+            let mut it = item(
+                "massprops.item.motors",
+                "",
+                "massprops.shape.point",
+                &b,
+                b.cg,
+            );
+            it.index = Some(k + 1);
+            items.push(it);
+        }
     }
     items
 }
@@ -429,27 +459,20 @@ fn thrust_offset(
         let centre = [m.mr.geom_center_x, m.mr.geom_center_y, 0.0];
         let v = [cg[0] - centre[0], cg[1] - centre[1]];
         let off = v[0].hypot(v[1]);
-        let l_arm = if finite_pos(m.mr.l_arm) {
-            m.mr.l_arm
-        } else {
-            0.5 * p.mr_frame_size
-        };
-        let pct = if finite_pos(l_arm) {
-            100.0 * off / l_arm
+        // Same reference and limit as the existing multirotor CG check (percent of frame size).
+        let l_ref = p.mr_frame_size;
+        let pct = if finite_pos(l_ref) {
+            100.0 * off / l_ref
         } else {
             f64::NAN
         };
-        let limit = if finite_pos(l_arm) {
-            Some(100.0 * CG_OFFSET_MAX_FRAC * p.mr_frame_size / l_arm)
-        } else {
-            None
-        };
+        let limit = finite_pos(l_ref).then_some(100.0 * CG_OFFSET_MAX_FRAC);
         ThrustOffset {
             kind: OffsetKind::MotorCentroid,
             centre_m: centre,
             offset_vec_m: v,
             offset_m: off,
-            reference_len_m: l_arm,
+            reference_len_m: l_ref,
             offset_pct: pct,
             limit_pct: limit,
             cg_pct_mac: None,
@@ -488,7 +511,7 @@ fn thrust_offset(
                 f64::NAN
             },
             limit_pct: None,
-            cg_pct_mac: Some(100.0 * m.stab.x_cg_rel / mac),
+            cg_pct_mac: finite_pos(mac).then(|| 100.0 * m.stab.x_cg_rel / mac),
             static_margin: Some(m.stab.sm),
             exceeds: !m.stab.in_band,
         }

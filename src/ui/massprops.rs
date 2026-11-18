@@ -226,14 +226,26 @@ fn sketch(ui: &mut Ui, mp: &MassProperties, m: &Model) {
     }
     let c = to(mp.thrust.centre_m[1], fwd(mp.thrust.centre_m[0]));
     let ring = theme::status_color(tk, offset_status(mp));
-    painter.line_segment(
-        [c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)],
-        Stroke::new(1.5, tk.text),
-    );
-    painter.line_segment(
-        [c - vec2(0.0, 7.0), c + vec2(0.0, 7.0)],
-        Stroke::new(1.5, tk.text),
-    );
+    match mp.thrust.kind {
+        OffsetKind::MotorCentroid => {
+            painter.line_segment(
+                [c - vec2(7.0, 0.0), c + vec2(7.0, 0.0)],
+                Stroke::new(1.5, tk.text),
+            );
+            painter.line_segment(
+                [c - vec2(0.0, 7.0), c + vec2(0.0, 7.0)],
+                Stroke::new(1.5, tk.text),
+            );
+        }
+        OffsetKind::ThrustAxis => {
+            // The thrust line runs along the aircraft axis: only its lateral position counts,
+            // so draw a line instead of a point at the propeller.
+            painter.line_segment(
+                [pos2(c.x, rect.top() + 4.0), pos2(c.x, rect.bottom() - 4.0)],
+                Stroke::new(1.5, tk.text),
+            );
+        }
+    }
     let g = to(mp.cg_m[1], fwd(mp.cg_m[0]));
     painter.circle_stroke(g, 7.0, Stroke::new(2.5, ring));
     painter.circle_filled(g, 2.5, ring);
@@ -258,10 +270,12 @@ fn items_table(ui: &mut Ui, mp: &MassProperties) {
         .items
         .iter()
         .map(|i| TableRow {
-            name: if i.name.is_empty() {
-                t(i.name_key).to_string()
-            } else {
+            name: if !i.name.is_empty() {
                 i.name.clone()
+            } else if let Some(k) = i.index {
+                format!("{} {k}", t(i.name_key))
+            } else {
+                t(i.name_key).to_string()
             },
             cells: vec![
                 fmt(i.mass_kg * 1000.0, 0),

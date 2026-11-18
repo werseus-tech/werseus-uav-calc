@@ -2760,7 +2760,7 @@
   "massprops.card.izz.tip": "Moment of inertia about the z axis through the CG.",
   "massprops.card.offset_mr": "CG offset from motor centroid",
   "massprops.card.offset_mr.tip": "Distance in the rotor plane between the CG and the centroid of the motors.",
-  "massprops.card.offset_mr.detail": "{0} % of arm length (limit {1} %)",
+  "massprops.card.offset_mr.detail": "{0} % of frame size (limit {1} %)",
   "massprops.card.cg_mac": "CG position",
   "massprops.card.cg_mac.tip": "CG measured from the leading edge of the MAC, from the stability model.",
   "massprops.card.cg_mac.detail": "static margin {0} %",
