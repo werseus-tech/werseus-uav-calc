@@ -878,6 +878,9 @@ impl App {
             Some(super::steps::CenterSlot::Library) => {
                 super::library::show(ui, &mut self.project, &mut self.library_ui);
             }
+            Some(super::steps::CenterSlot::ControlTuning) => {
+                super::controltuning::show(ui, &self.project, model);
+            }
             None => {}
         }
     }

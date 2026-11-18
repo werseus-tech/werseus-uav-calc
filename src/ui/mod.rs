@@ -6,6 +6,7 @@ pub mod ai;
 pub mod cad_fast;
 pub mod components;
 pub mod computebudget;
+pub mod controltuning;
 pub mod design_point;
 pub mod endurance;
 pub mod flightsim;
@@ -82,6 +83,7 @@ pub enum Tab {
     ThermalPower,
     Regulation,
     Library,
+    ControlTuning,
 }
 
 impl Tab {
@@ -109,6 +111,7 @@ impl Tab {
             Tab::ThermalPower => t("thermalpower.tab"),
             Tab::Regulation => t("regulation.tab"),
             Tab::Library => t("tab_library"),
+            Tab::ControlTuning => t("controltuning.tab"),
         }
     }
 
@@ -132,6 +135,7 @@ impl Tab {
                 Tab::ThermalPower,
                 Tab::Regulation,
                 Tab::Library,
+                Tab::ControlTuning,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -156,6 +160,7 @@ impl Tab {
                 Tab::ThermalPower,
                 Tab::Regulation,
                 Tab::Library,
+                Tab::ControlTuning,
             ],
             _ => vec![
                 Tab::Summary,
@@ -179,6 +184,7 @@ impl Tab {
                 Tab::ThermalPower,
                 Tab::Regulation,
                 Tab::Library,
+                Tab::ControlTuning,
             ],
         }
     }

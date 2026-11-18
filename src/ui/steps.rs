@@ -57,6 +57,8 @@ pub enum Screen {
     Regulation,
     /// Bileşen kütüphanesi sekmesi (uzman modu; merkezde yerleşim yuvasında çizilir).
     Library,
+    /// Uzman modundaki kontrol ayarı sekmesi (merkezde yerleşim yuvasında çizilir).
+    ControlTuning,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -73,6 +75,7 @@ pub enum CenterSlot {
     ThermalPower,
     Regulation,
     Library,
+    ControlTuning,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -133,6 +136,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::ThermalPower => Screen::ThermalPower,
         Tab::Regulation => Screen::Regulation,
         Tab::Library => Screen::Library,
+        Tab::ControlTuning => Screen::ControlTuning,
     }
 }
 
@@ -161,6 +165,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::ThermalPower => Some(CenterSlot::ThermalPower),
         Screen::Regulation => Some(CenterSlot::Regulation),
         Screen::Library => Some(CenterSlot::Library),
+        Screen::ControlTuning => Some(CenterSlot::ControlTuning),
         _ => None,
     }
 }
@@ -176,6 +181,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::ControlTuning
             | Screen::Library
             | Screen::Regulation
             | Screen::Acoustics
@@ -207,6 +213,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
         | Screen::ThermalPower
@@ -256,6 +263,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Schematic
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::ControlTuning
             | Screen::Library
             | Screen::Regulation
             | Screen::PropCurves
@@ -297,6 +305,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
         | Screen::Acoustics
@@ -336,6 +345,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
         | Screen::ThermalPower
@@ -411,6 +421,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
         | Screen::ThermalPower
@@ -504,6 +515,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ControlTuning
         | Screen::Library
         | Screen::Regulation
         | Screen::ThermalPower
