@@ -74,6 +74,8 @@ pub enum Screen {
     Downwash,
     /// Kablo demeti ve pinout (merkezde yuvada çizilir).
     Wiring,
+    /// Uzman modundaki topoloji eniyileme sekmesi (merkezde yuvada çizilir).
+    Topology,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -99,6 +101,7 @@ pub enum CenterSlot {
     SensorFov,
     Downwash,
     Wiring,
+    Topology,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -168,6 +171,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::SensorFov => Screen::SensorFov,
         Tab::Downwash => Screen::Downwash,
         Tab::Wiring => Screen::Wiring,
+        Tab::Topology => Screen::Topology,
     }
 }
 
@@ -205,6 +209,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::SensorFov => Some(CenterSlot::SensorFov),
         Screen::Downwash => Some(CenterSlot::Downwash),
         Screen::Wiring => Some(CenterSlot::Wiring),
+        Screen::Topology => Some(CenterSlot::Topology),
         _ => None,
     }
 }
@@ -223,6 +228,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::Topology
             | Screen::Wiring
             | Screen::Downwash
             | Screen::SensorFov
@@ -260,6 +266,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
         | Screen::SensorFov
@@ -322,6 +329,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Wiring
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::Topology
             | Screen::Downwash
             | Screen::SensorFov
             | Screen::FlightLog
@@ -371,6 +379,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
         | Screen::SensorFov
@@ -416,6 +425,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
         | Screen::SensorFov
@@ -500,6 +510,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
         | Screen::SensorFov
@@ -602,6 +613,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
         | Screen::SensorFov

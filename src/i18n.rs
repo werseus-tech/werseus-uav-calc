@@ -490,6 +490,7 @@ mod tests {
             include_str!("ui/viewport3d/mod.rs"),
             include_str!("ui/teach.rs"),
             include_str!("ui/outputs.rs"),
+            include_str!("ui/topology.rs"),
             include_str!("ui/settings_page.rs"),
             include_str!("ui/type_cards.rs"),
             include_str!("cad/outputs.rs"),

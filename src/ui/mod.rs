@@ -44,6 +44,7 @@ pub mod summary;
 pub mod teach;
 pub mod theme;
 pub mod thermalpower;
+pub mod topology;
 pub mod type_cards;
 pub mod viewport3d;
 pub mod weight;
@@ -100,6 +101,7 @@ pub enum Tab {
     SensorFov,
     Downwash,
     Wiring,
+    Topology,
 }
 
 impl Tab {
@@ -136,6 +138,7 @@ impl Tab {
             Tab::SensorFov => t("tab_sensorfov"),
             Tab::Downwash => t("tab_downwash"),
             Tab::Wiring => t("tab_wiring"),
+            Tab::Topology => t("tab_topology"),
         }
     }
 
@@ -168,6 +171,7 @@ impl Tab {
                 Tab::SensorFov,
                 Tab::Downwash,
                 Tab::Wiring,
+                Tab::Topology,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -201,6 +205,7 @@ impl Tab {
                 Tab::SensorFov,
                 Tab::Downwash,
                 Tab::Wiring,
+                Tab::Topology,
             ],
             _ => vec![
                 Tab::Summary,
@@ -233,6 +238,7 @@ impl Tab {
                 Tab::SensorFov,
                 Tab::Downwash,
                 Tab::Wiring,
+                Tab::Topology,
             ],
         }
     }

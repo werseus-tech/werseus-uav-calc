@@ -28,6 +28,7 @@ pub mod structfea;
 pub mod support;
 pub mod teach;
 pub mod thermalpower;
+pub mod topology;
 pub mod ui;
 pub mod windtunnel;
 pub mod wiring;
