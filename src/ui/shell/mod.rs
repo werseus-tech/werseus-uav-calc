@@ -875,6 +875,9 @@ impl App {
             Some(super::steps::CenterSlot::Regulation) => {
                 super::regulation::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::Library) => {
+                super::library::show(ui, &mut self.project, &mut self.library_ui);
+            }
             None => {}
         }
     }

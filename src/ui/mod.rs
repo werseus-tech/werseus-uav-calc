@@ -13,6 +13,7 @@ pub mod flow_tunnel;
 pub mod formulas;
 pub mod geometry;
 pub mod help;
+pub mod library;
 pub mod massprops;
 pub mod mission;
 pub mod mr_structure;
@@ -80,6 +81,7 @@ pub enum Tab {
     Acoustics,
     ThermalPower,
     Regulation,
+    Library,
 }
 
 impl Tab {
@@ -106,6 +108,7 @@ impl Tab {
             Tab::Acoustics => t("acoustics.tab"),
             Tab::ThermalPower => t("thermalpower.tab"),
             Tab::Regulation => t("regulation.tab"),
+            Tab::Library => t("tab_library"),
         }
     }
 
@@ -128,6 +131,7 @@ impl Tab {
                 Tab::Acoustics,
                 Tab::ThermalPower,
                 Tab::Regulation,
+                Tab::Library,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -151,6 +155,7 @@ impl Tab {
                 Tab::Acoustics,
                 Tab::ThermalPower,
                 Tab::Regulation,
+                Tab::Library,
             ],
             _ => vec![
                 Tab::Summary,
@@ -173,6 +178,7 @@ impl Tab {
                 Tab::Acoustics,
                 Tab::ThermalPower,
                 Tab::Regulation,
+                Tab::Library,
             ],
         }
     }
@@ -237,6 +243,7 @@ pub struct App {
 
     // Flight simulator screen state (not saved in the project)
     pub flightsim_state: flightsim::FlightSimState,
+    pub library_ui: library::LibraryUi,
 }
 
 impl App {
@@ -332,6 +339,7 @@ impl App {
             teacher_state: crate::ui::teach::TeacherUiState::new(settings.teacher),
             shell: shell::ShellState::new(settings.theme),
             flightsim_state: Default::default(),
+            library_ui: library::LibraryUi::default(),
         };
 
         startup_prefs.apply(&mut app, &cc.egui_ctx);
@@ -403,6 +411,7 @@ impl App {
             teacher_state: crate::ui::teach::TeacherUiState::new(Default::default()),
             shell: shell::ShellState::new(theme::ThemeChoice::Dark),
             flightsim_state: Default::default(),
+            library_ui: library::LibraryUi::default(),
         }
     }
 
