@@ -888,6 +888,71 @@ fn build_warnings(p: &Project, m: &mut Model) -> Vec<Warn> {
             vec![],
         );
     }
+    if m.inputs_ok && p.drone_type == crate::project::DroneType::VtolQuadplane {
+        let lay = crate::cad::layout::Layout::new(p, m);
+        let cad_clr = lay.check_pusher_clearance(p);
+        let spec3d = crate::geom3d::from_project(p, m, &crate::geom3d::ViewOptions::default());
+        let g3d_clr = crate::geom3d::check_pusher_clearance(&spec3d);
+        let tail_ok = cad_clr.as_ref().is_none_or(|c| c.tail_ok())
+            && g3d_clr.as_ref().is_none_or(|c| c.tail_ok());
+        let boom_ok = cad_clr.as_ref().is_none_or(|c| c.boom_ok())
+            && g3d_clr.as_ref().is_none_or(|c| c.boom_ok());
+        let req_mm = cad_clr
+            .as_ref()
+            .map(|c| c.min_clearance_mm)
+            .or_else(|| g3d_clr.as_ref().map(|c| c.min_clearance_m as f64 * 1000.0))
+            .unwrap_or(0.0);
+        if !tail_ok {
+            let cad_d = cad_clr
+                .as_ref()
+                .and_then(|c| {
+                    if c.wing_tail_overlap {
+                        Some(0.0)
+                    } else {
+                        c.tail_clearance_mm
+                    }
+                })
+                .unwrap_or(f64::INFINITY);
+            let g3d_d = g3d_clr
+                .as_ref()
+                .and_then(|c| {
+                    if c.wing_tail_overlap {
+                        Some(0.0)
+                    } else {
+                        c.tail_clearance_m.map(|d| d as f64 * 1000.0)
+                    }
+                })
+                .unwrap_or(f64::INFINITY);
+            let actual = cad_d.min(g3d_d);
+            let actual = if actual.is_finite() { actual } else { 0.0 };
+            push(
+                &mut v,
+                Sev::Warn,
+                "area.geometry",
+                "warn.geometry.pusher_tail_clearance",
+                vec![format!("{:.0}", actual), format!("{:.0}", req_mm)],
+            );
+        }
+        if !boom_ok {
+            let cad_d = cad_clr
+                .as_ref()
+                .and_then(|c| c.boom_clearance_mm)
+                .unwrap_or(f64::INFINITY);
+            let g3d_d = g3d_clr
+                .as_ref()
+                .and_then(|c| c.boom_clearance_m.map(|d| d as f64 * 1000.0))
+                .unwrap_or(f64::INFINITY);
+            let actual = cad_d.min(g3d_d);
+            let actual = if actual.is_finite() { actual } else { 0.0 };
+            push(
+                &mut v,
+                Sev::Warn,
+                "area.geometry",
+                "warn.geometry.pusher_boom_clearance",
+                vec![format!("{:.0}", actual), format!("{:.0}", req_mm)],
+            );
+        }
+    }
 
     if p.drone_type.has_wing() {
         // --- Aero
@@ -1387,5 +1452,44 @@ mod model_tests {
         }
         let m3 = evaluate(&p, &lib);
         assert!((m3.stab.sm - p.sm_target).abs() < 1e-9, "sm {}", m3.stab.sm);
+    }
+    #[test]
+    fn impossible_vtol_pusher_clearance_emits_warning() {
+        let lib = Library::embedded();
+        let mut p = crate::project::load_example("vtol_quadplane.json").unwrap();
+        for kind in TailKind::ALL {
+            p.tail_kind = kind;
+            let m = evaluate(&p, &lib);
+            assert!(
+                !m.warnings.iter().any(|w| {
+                    w.msg_key == "warn.geometry.pusher_tail_clearance"
+                        || w.msg_key == "warn.geometry.pusher_boom_clearance"
+                }),
+                "{kind:?}: sample VTOL should have clean pusher clearance"
+            );
+        }
+
+        // Fuselage too short for wing + tail + pusher clearance -> tail clearance warning.
+        p.tail_kind = TailKind::Conventional;
+        p.l_fuse = 0.40;
+        let m_short = evaluate(&p, &lib);
+        assert!(
+            m_short
+                .warnings
+                .iter()
+                .any(|w| w.msg_key == "warn.geometry.pusher_tail_clearance")
+        );
+
+        // Huge pusher prop reaching into booms -> boom clearance warning.
+        let mut p_boom = crate::project::load_example("vtol_quadplane.json").unwrap();
+        p_boom.l_fuse = 0.58;
+        p_boom.d_prop = 0.90;
+        let m_boom = evaluate(&p_boom, &lib);
+        assert!(
+            m_boom
+                .warnings
+                .iter()
+                .any(|w| w.msg_key == "warn.geometry.pusher_boom_clearance")
+        );
     }
 }

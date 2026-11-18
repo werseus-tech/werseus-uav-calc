@@ -511,6 +511,14 @@ fn wing_in(ui: &mut Ui, p: &mut Project, m: &Model, lib: &Library) {
         return;
     }
     section_header(ui, t("simple.frame.wing_section"));
+    pick(
+        ui,
+        "simple.frame.q.tail",
+        &mut p.tail_kind,
+        &crate::calc::geometry::TailKind::ALL,
+        crate::calc::geometry::TailKind::key,
+        crate::calc::geometry::TailKind::desc_key,
+    );
     {
         let a = &mut p.simple.frame;
         pick(

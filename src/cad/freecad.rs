@@ -482,7 +482,10 @@ pub struct MotorMountCadParams {
 
 impl MotorMountCadParams {
     pub fn from_project(p: &Project, _m: &Model) -> Self {
-        let mount_type = if p.drone_type == crate::project::DroneType::FlyingWing {
+        let mount_type = if matches!(
+            p.drone_type,
+            crate::project::DroneType::FlyingWing | crate::project::DroneType::VtolQuadplane
+        ) {
             "pusher".into()
         } else {
             "tractor".into()

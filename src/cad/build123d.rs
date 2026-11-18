@@ -1183,7 +1183,7 @@ mod tests {
             .map(|f| (f.to_string(), crate::project::load_example(f).unwrap()))
             .collect();
         for dt in DroneType::ALL {
-            for tk in [TailKind::Conventional, TailKind::VTail] {
+            for tk in TailKind::ALL {
                 let p = Project {
                     drone_type: dt,
                     tail_kind: tk,

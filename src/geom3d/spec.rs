@@ -284,7 +284,14 @@ fn fixed_wing(
             }),
         });
         add_fuselage_bays(&mut spec);
-        let tail_x = -pos_or(p.l_h, 0.05, 0.7);
+        let x_fuse_end = x_root_le - l_fuse;
+        let r = pos_or(p.d_prop, 0.02, 0.25) * 0.5;
+        let min_clear = 0.10 * r;
+        let standoff = 0.030_f32.max(min_clear + 0.005);
+        let x_prop = x_fuse_end - standoff;
+        let x_tail_aft_limit = x_fuse_end.max(x_prop + min_clear + 0.005);
+
+        let nom_h = -pos_or(p.l_h, 0.05, 0.7);
         let fuse_top_at_tail = z_axis + d_fuse * 0.5 * 0.35;
         let c_tail = pos_or(p.c_tail, 0.02, 0.0);
         let tail_prof_h = profile_of(&p.tail_airfoil_h);
@@ -297,6 +304,26 @@ fn fixed_wing(
                 } else {
                     let bh = (s_h * 4.0).sqrt().max(0.2);
                     (bh, s_h / bh)
+                };
+                let s_v = pos_or(p.s_v, 0.0, 0.02);
+                let nom_v = -pos_or(p.l_v, 0.05, (-nom_h) as f64);
+                let (h_v, c_v) = if c_tail > 0.0 {
+                    ((s_v / c_tail).clamp(0.03, 1.0), c_tail)
+                } else {
+                    let hv = (s_v * 1.5).sqrt().max(0.08);
+                    (hv, s_v / hv)
+                };
+                let (tail_x, x_v) = if vtol {
+                    let dx_h = c_h.max((b_h * 0.5) * 8f32.to_radians().tan() + c_h * 0.8);
+                    let dx_v = (c_v * 1.15).max(h_v * 30f32.to_radians().tan() + c_v * 0.75);
+                    let dx_tail = dx_h.max(dx_v);
+                    let x_nom = nom_h.min(nom_v);
+                    let x_le = x_nom
+                        .max(x_tail_aft_limit + dx_tail)
+                        .min((-c_r - 0.01).max(x_nom));
+                    (x_le, x_le)
+                } else {
+                    (nom_h, nom_v)
                 };
                 spec.surfaces.push((
                     PartKind::Tail,
@@ -320,14 +347,6 @@ fn fixed_wing(
                         mirrored: true,
                     },
                 ));
-                let s_v = pos_or(p.s_v, 0.0, 0.02);
-                let x_v = -pos_or(p.l_v, 0.05, -tail_x as f64);
-                let (h_v, c_v) = if c_tail > 0.0 {
-                    ((s_v / c_tail).clamp(0.03, 1.0), c_tail)
-                } else {
-                    let hv = (s_v * 1.5).sqrt().max(0.08);
-                    (hv, s_v / hv)
-                };
                 spec.surfaces.push((
                     PartKind::Tail,
                     SurfaceSpec {
@@ -357,6 +376,14 @@ fn fixed_wing(
                     let span = (s_vt * 3.5).sqrt().max(0.22);
                     (span * 0.5, s_vt / span)
                 };
+                let tail_x = if vtol {
+                    let dx_vt = c.max(semi * 15f32.to_radians().tan() + c * 0.75);
+                    nom_h
+                        .max(x_tail_aft_limit + dx_vt)
+                        .min((-c_r - 0.01).max(nom_h))
+                } else {
+                    nom_h
+                };
                 spec.surfaces.push((
                     PartKind::Tail,
                     SurfaceSpec {
@@ -373,18 +400,35 @@ fn fixed_wing(
                     },
                 ));
             }
-            TailKind::FlyingWing => {}
+            TailKind::FlyingWing => {
+                let x_le_tip = (b * 0.5) * sweep.to_radians().tan();
+                let h = (c_t * 1.1).clamp(0.03, 0.3);
+                spec.surfaces.push((
+                    PartKind::Tail,
+                    SurfaceSpec {
+                        root_le: Vec3::new(-x_le_tip, b * 0.5, 0.0),
+                        semi_span: h,
+                        c_root: c_t,
+                        c_tip: c_t * 0.55,
+                        sweep_le_deg: 35.0,
+                        dihedral_deg: 90.0,
+                        twist_tip_deg: 0.0,
+                        structure: None,
+                        profile: tail_prof_v,
+                        mirrored: true,
+                    },
+                ));
+            }
         }
         // Çekici pervane burunda (VTOL'de ileri itki pervanesi kuyrukta).
-        let r = pos_or(p.d_prop, 0.02, 0.25) * 0.5;
         let motor_r = (d_fuse * 0.3).clamp(0.01, 0.04);
         if vtol {
             spec.rotors.push(RotorSpec {
-                center: Vec3::new(x_root_le - l_fuse - 0.03, 0.0, z_axis),
+                center: Vec3::new(x_prop, 0.0, z_axis),
                 axis: Vec3::new(-1.0, 0.0, 0.0),
                 radius: r,
                 motor_radius: motor_r,
-                motor_height: 0.025,
+                motor_height: (standoff - 0.005).max(0.025),
                 blades: 2,
             });
         } else {
@@ -454,6 +498,178 @@ fn fixed_wing(
         spec.np = Some(Vec3::new(x_np as f32, 0.0, z_mark));
     }
     spec
+}
+
+/// 3B önizleme sahnesinde itici pervane diskinin kuyruk, bom ve gövdeye olan en küçük mesafeleri [m].
+#[derive(Clone, Debug, PartialEq)]
+pub struct PusherClearance3d {
+    pub min_clearance_m: f32,
+    pub tail_clearance_m: Option<f32>,
+    pub boom_clearance_m: Option<f32>,
+    pub fuselage_clearance_m: Option<f32>,
+    pub wing_tail_overlap: bool,
+}
+
+impl PusherClearance3d {
+    pub fn tail_ok(&self) -> bool {
+        !self.wing_tail_overlap
+            && self
+                .tail_clearance_m
+                .is_none_or(|d| d >= self.min_clearance_m - 1e-5)
+    }
+
+    pub fn boom_ok(&self) -> bool {
+        self.boom_clearance_m
+            .is_none_or(|d| d >= self.min_clearance_m - 1e-5)
+    }
+
+    pub fn fuselage_ok(&self) -> bool {
+        self.fuselage_clearance_m
+            .is_none_or(|d| d >= self.min_clearance_m - 1e-5)
+    }
+
+    pub fn is_ok(&self) -> bool {
+        self.tail_ok() && self.boom_ok() && self.fuselage_ok()
+    }
+}
+
+fn dist_pt_x_disc_m(pt: Vec3, center: Vec3, radius: f32) -> f32 {
+    let dx = (pt.x - center.x).abs();
+    let rho = (pt.y - center.y).hypot(pt.z - center.z);
+    let dr = (rho - radius).max(0.0);
+    dx.hypot(dr)
+}
+
+fn mesh_x_disc_clearance_m(m: &super::mesh::Mesh, center: Vec3, radius: f32) -> f32 {
+    let mut best = f32::INFINITY;
+    for p in &m.positions {
+        let v = Vec3::new(p[0], p[1], p[2]);
+        best = best.min(dist_pt_x_disc_m(v, center, radius));
+    }
+    for tri in m.indices.as_chunks::<3>().0 {
+        let pts = [
+            m.positions[tri[0] as usize],
+            m.positions[tri[1] as usize],
+            m.positions[tri[2] as usize],
+        ];
+        let mut hits: Vec<Vec3> = Vec::with_capacity(3);
+        for (i, j) in [(0, 1), (1, 2), (2, 0)] {
+            let a = Vec3::new(pts[i][0], pts[i][1], pts[i][2]);
+            let b = Vec3::new(pts[j][0], pts[j][1], pts[j][2]);
+            let dx = b.x - a.x;
+            if (a.x - center.x) * (b.x - center.x) <= 0.0 && dx.abs() > 1e-9 {
+                let t = ((center.x - a.x) / dx).clamp(0.0, 1.0);
+                let hit = a + (b - a) * t;
+                best = best.min(dist_pt_x_disc_m(hit, center, radius));
+                hits.push(hit);
+            }
+        }
+        if hits.len() >= 2 {
+            for k in 0..hits.len() {
+                for l in (k + 1)..hits.len() {
+                    let ay = hits[k].y - center.y;
+                    let az = hits[k].z - center.z;
+                    let dy = hits[l].y - hits[k].y;
+                    let dz = hits[l].z - hits[k].z;
+                    let len2 = dy * dy + dz * dz;
+                    if len2 > 1e-12 {
+                        let t = (-(ay * dy + az * dz) / len2).clamp(0.0, 1.0);
+                        let rho = (ay + t * dy).hypot(az + t * dz);
+                        best = best.min((rho - radius).max(0.0));
+                    }
+                }
+            }
+        }
+    }
+    best
+}
+
+/// 3B sahnedeki itici pervane diskinin kuyruk, bom ve gövdeyle açıklığını ölçer.
+pub fn check_pusher_clearance(spec: &AircraftSpec) -> Option<PusherClearance3d> {
+    let pusher = spec.rotors.iter().find(|r| r.axis.x < -0.5)?;
+    let c = pusher.center;
+    let r = pusher.radius;
+    let min_clearance_m = 0.10 * r;
+
+    let wing_te = spec
+        .surfaces
+        .iter()
+        .find(|(k, _)| *k == PartKind::Wing)
+        .map(|(_, w)| w.root_le.x - w.c_root);
+
+    let mut min_tail: Option<f32> = None;
+    let mut wing_tail_overlap = false;
+    for (k, s) in &spec.surfaces {
+        if *k != PartKind::Tail {
+            continue;
+        }
+        let mesh = super::aircraft::surface_half(s);
+        let mut d = mesh_x_disc_clearance_m(&mesh, c, r);
+        if s.mirrored {
+            let m2 = super::aircraft::mirror_y(&mesh);
+            d = d.min(mesh_x_disc_clearance_m(&m2, c, r));
+        }
+        if s.root_le.y.abs() < 1e-3 {
+            if let Some((bmin, _)) = mesh.bounds() {
+                if bmin.x < c.x + min_clearance_m - 1e-5 {
+                    d = d.min((bmin.x - c.x).max(0.0));
+                }
+            }
+            if let Some(w_te) = wing_te {
+                if s.root_le.x > w_te + 1e-4 {
+                    wing_tail_overlap = true;
+                }
+            }
+        }
+        min_tail = Some(min_tail.map_or(d, |m| m.min(d)));
+    }
+
+    let mut min_boom: Option<f32> = None;
+    for (k, rod) in &spec.rods {
+        if *k != PartKind::Boom {
+            continue;
+        }
+        for i in 0..=24 {
+            let t = i as f32 / 24.0;
+            let pt = rod.a + (rod.b - rod.a) * t;
+            let d = (dist_pt_x_disc_m(pt, c, r) - rod.radius).max(0.0);
+            min_boom = Some(min_boom.map_or(d, |m| m.min(d)));
+        }
+    }
+    for lr in spec.rotors.iter().filter(|rt| rt.axis.z > 0.5) {
+        for ir in 1..=6 {
+            let rr = lr.radius * (ir as f32) / 6.0;
+            for ia in 0..24 {
+                let ang = std::f32::consts::TAU * (ia as f32) / 24.0;
+                let pt = Vec3::new(
+                    lr.center.x + rr * ang.cos(),
+                    lr.center.y + rr * ang.sin(),
+                    lr.center.z,
+                );
+                let d = dist_pt_x_disc_m(pt, c, r);
+                min_boom = Some(min_boom.map_or(d, |m| m.min(d)));
+            }
+        }
+    }
+
+    let fuselage_clearance_m = spec.fuselage.as_ref().map(|f| {
+        let x_end = f.x_nose - f.length;
+        if c.x <= x_end {
+            x_end - c.x
+        } else if c.x >= f.x_nose {
+            c.x - f.x_nose
+        } else {
+            0.0
+        }
+    });
+
+    Some(PusherClearance3d {
+        min_clearance_m,
+        tail_clearance_m: min_tail,
+        boom_clearance_m: min_boom,
+        fuselage_clearance_m,
+        wing_tail_overlap,
+    })
 }
 
 /// Üç tekerlekli sabit iniş takımı: iki ana ayak (kanat altı) + burun ayağı. Ayak boyu,
@@ -1068,5 +1284,30 @@ mod tests {
             last = y;
         }
         assert_eq!(clusters, n);
+    }
+
+    #[test]
+    fn vtol_pusher_disc_clears_tail_and_booms_for_all_tail_kinds() {
+        let mut p = crate::project::load_example("vtol_quadplane.json").unwrap();
+        for kind in TailKind::ALL {
+            p.tail_kind = kind;
+            let m = eval(&p);
+            let spec = from_project(&p, &m, &ViewOptions::default());
+            let clr = check_pusher_clearance(&spec).expect("pusher rotor");
+            assert!(clr.is_ok(), "{kind:?}: {clr:?}");
+            let sc = build(&spec);
+            assert!(!sc.is_empty(), "{kind:?}");
+            for part in &sc.parts {
+                assert!(part.mesh.is_valid(), "{kind:?} {:?}", part.kind);
+            }
+        }
+
+        // Short fuselage makes tail clearance impossible -> detected cleanly.
+        p.tail_kind = TailKind::Conventional;
+        p.l_fuse = 0.40;
+        let m = eval(&p);
+        let spec = from_project(&p, &m, &ViewOptions::default());
+        let clr = check_pusher_clearance(&spec).unwrap();
+        assert!(!clr.tail_ok(), "{clr:?}");
     }
 }

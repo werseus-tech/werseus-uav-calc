@@ -55,12 +55,30 @@ pub enum TailKind {
 }
 
 impl TailKind {
-    pub fn label(&self) -> &'static str {
+    pub const ALL: [TailKind; 3] = [
+        TailKind::Conventional,
+        TailKind::VTail,
+        TailKind::FlyingWing,
+    ];
+
+    pub fn key(self) -> &'static str {
         match self {
-            TailKind::Conventional => crate::i18n::t("tail.conventional"),
-            TailKind::VTail => crate::i18n::t("tail.vtail"),
-            TailKind::FlyingWing => crate::i18n::t("tail.flying_wing"),
+            TailKind::Conventional => "tail.conventional",
+            TailKind::VTail => "tail.vtail",
+            TailKind::FlyingWing => "tail.flying_wing",
         }
+    }
+
+    pub fn desc_key(self) -> &'static str {
+        match self {
+            TailKind::Conventional => "tail.conventional.desc",
+            TailKind::VTail => "tail.vtail.desc",
+            TailKind::FlyingWing => "tail.flying_wing.desc",
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        crate::i18n::t(self.key())
     }
 }
 
