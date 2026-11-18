@@ -1205,6 +1205,108 @@ mod side_windows_tests;
 
 #[cfg(test)]
 mod tests {
+    /// Every `Tab` variant, in declaration order. The exhaustive match below makes adding a
+    /// variant without updating this list a compile error.
+    const ALL_TABS: [super::Tab; 35] = {
+        use super::Tab::*;
+        [
+            Summary,
+            Mission,
+            Multirotor,
+            Weight,
+            Geometry,
+            Aero,
+            DesignPoint,
+            Endurance,
+            Propulsion,
+            Stability,
+            Structure,
+            Schematic,
+            WindTunnel,
+            FlowTunnel,
+            FlightSim,
+            PropCurves,
+            StructFea,
+            ComputeBudget,
+            Acoustics,
+            ThermalPower,
+            Regulation,
+            Library,
+            ControlTuning,
+            Bom,
+            Reliability,
+            MissionEnergy,
+            RfEmi,
+            FlightLog,
+            SensorFov,
+            Downwash,
+            Wiring,
+            Topology,
+            ThrustStand,
+            Swarm,
+            Signature,
+        ]
+    };
+
+    #[allow(dead_code)]
+    fn all_tabs_is_exhaustive(tab: super::Tab) {
+        use super::Tab::*;
+        match tab {
+            Summary | Mission | Multirotor | Weight | Geometry | Aero | DesignPoint | Endurance
+            | Propulsion | Stability | Structure | Schematic | WindTunnel | FlowTunnel
+            | FlightSim | PropCurves | StructFea | ComputeBudget | Acoustics | ThermalPower
+            | Regulation | Library | ControlTuning | Bom | Reliability | MissionEnergy | RfEmi
+            | FlightLog | SensorFov | Downwash | Wiring | Topology | ThrustStand | Swarm
+            | Signature => {}
+        }
+    }
+
+    /// Every tab has a translated, unique label and is offered by `tabs_for` for at least one
+    /// drone type (so it can be reached from the expert-mode tab bar).
+    #[test]
+    fn every_tab_has_a_label_and_is_reachable() {
+        use crate::project::DroneType;
+        use std::collections::HashSet;
+        let values = |src: &str| -> HashSet<String> {
+            let map: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(src).expect("i18n json");
+            map.into_iter()
+                .filter_map(|(_, v)| v.as_str().map(str::to_owned))
+                .collect()
+        };
+        let tr = values(include_str!("../../assets/i18n/tr.json"));
+        let en = values(include_str!("../../assets/i18n/en.json"));
+        let mut labels = HashSet::new();
+        for tab in ALL_TABS {
+            let label = tab.label();
+            assert!(!label.trim().is_empty(), "{tab:?} has an empty label");
+            assert!(
+                tr.contains(label) || en.contains(label),
+                "{tab:?} label {label:?} is not a translated string (missing i18n key?)"
+            );
+            assert!(
+                labels.insert(label),
+                "{tab:?} label {label:?} is not unique"
+            );
+            let reachable: Vec<DroneType> = DroneType::ALL
+                .into_iter()
+                .filter(|dt| super::Tab::tabs_for(*dt).contains(&tab))
+                .collect();
+            assert!(
+                !reachable.is_empty(),
+                "{tab:?} is not offered for any drone type"
+            );
+            for dt in reachable {
+                let _ = super::steps::screen_for_tab(tab, dt);
+            }
+        }
+        for dt in DroneType::ALL {
+            let tabs = super::Tab::tabs_for(dt);
+            let unique: HashSet<_> = tabs.iter().map(|t| format!("{t:?}")).collect();
+            assert_eq!(unique.len(), tabs.len(), "{dt:?} lists a tab twice");
+        }
+    }
+
     /// Varsayılan egui yazı tipinin Türkçe karakterleri ve tüm i18n dizgilerini
     /// eksiksiz glif ile render edebildiğini doğrular (kutu/□ hatasını önler).
     #[test]
