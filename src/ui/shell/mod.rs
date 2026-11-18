@@ -908,6 +908,9 @@ impl App {
             Some(super::steps::CenterSlot::Topology) => {
                 super::topology::show(ui, &self.project, model);
             }
+            Some(super::steps::CenterSlot::ThrustStand) => {
+                super::thruststand::show(ui, &self.project, model);
+            }
             None => {}
         }
     }
@@ -1111,5 +1114,6 @@ mod tests {
         assert_eq!(active_step(&p, Tab::RfEmi), None);
         assert_eq!(active_step(&p, Tab::Downwash), None);
         assert_eq!(active_step(&p, Tab::Topology), None);
+        assert_eq!(active_step(&p, Tab::ThrustStand), None);
     }
 }

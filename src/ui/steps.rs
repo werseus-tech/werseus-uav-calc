@@ -76,6 +76,8 @@ pub enum Screen {
     Wiring,
     /// Uzman modundaki topoloji eniyileme sekmesi (merkezde yuvada çizilir).
     Topology,
+    /// Itki tezgahi verisi ve SITL/HIL parametre koprusu (merkez yuvasinda).
+    ThrustStand,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -102,6 +104,7 @@ pub enum CenterSlot {
     Downwash,
     Wiring,
     Topology,
+    ThrustStand,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -172,6 +175,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::Downwash => Screen::Downwash,
         Tab::Wiring => Screen::Wiring,
         Tab::Topology => Screen::Topology,
+        Tab::ThrustStand => Screen::ThrustStand,
     }
 }
 
@@ -210,6 +214,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::Downwash => Some(CenterSlot::Downwash),
         Screen::Wiring => Some(CenterSlot::Wiring),
         Screen::Topology => Some(CenterSlot::Topology),
+        Screen::ThrustStand => Some(CenterSlot::ThrustStand),
         _ => None,
     }
 }
@@ -228,6 +233,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::ThrustStand
             | Screen::Topology
             | Screen::Wiring
             | Screen::Downwash
@@ -266,6 +272,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ThrustStand
         | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
@@ -329,6 +336,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::Wiring
             | Screen::Acoustics
             | Screen::MrStructure
+            | Screen::ThrustStand
             | Screen::Topology
             | Screen::Downwash
             | Screen::SensorFov
@@ -379,6 +387,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::ThrustStand
         | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
@@ -425,6 +434,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ThrustStand
         | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
@@ -510,6 +520,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ThrustStand
         | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash
@@ -613,6 +624,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::ThrustStand
         | Screen::Topology
         | Screen::Wiring
         | Screen::Downwash

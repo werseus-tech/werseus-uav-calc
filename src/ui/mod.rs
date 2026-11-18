@@ -44,6 +44,7 @@ pub mod summary;
 pub mod teach;
 pub mod theme;
 pub mod thermalpower;
+pub mod thruststand;
 pub mod topology;
 pub mod type_cards;
 pub mod viewport3d;
@@ -102,6 +103,7 @@ pub enum Tab {
     Downwash,
     Wiring,
     Topology,
+    ThrustStand,
 }
 
 impl Tab {
@@ -139,6 +141,7 @@ impl Tab {
             Tab::Downwash => t("tab_downwash"),
             Tab::Wiring => t("tab_wiring"),
             Tab::Topology => t("tab_topology"),
+            Tab::ThrustStand => t("tab_thruststand"),
         }
     }
 
@@ -172,6 +175,7 @@ impl Tab {
                 Tab::Downwash,
                 Tab::Wiring,
                 Tab::Topology,
+                Tab::ThrustStand,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -206,6 +210,7 @@ impl Tab {
                 Tab::Downwash,
                 Tab::Wiring,
                 Tab::Topology,
+                Tab::ThrustStand,
             ],
             _ => vec![
                 Tab::Summary,
@@ -239,6 +244,7 @@ impl Tab {
                 Tab::Downwash,
                 Tab::Wiring,
                 Tab::Topology,
+                Tab::ThrustStand,
             ],
         }
     }
