@@ -39,6 +39,8 @@ pub mod widgets;
 pub mod windtunnel;
 pub mod wizard;
 
+pub mod acoustics;
+
 use crate::calc::{self, Library, Model};
 use crate::i18n::{t, tf};
 use crate::project::{DroneType, Project};
@@ -72,6 +74,7 @@ pub enum Tab {
     PropCurves,
     StructFea,
     ComputeBudget,
+    Acoustics,
 }
 
 impl Tab {
@@ -95,6 +98,7 @@ impl Tab {
             Tab::PropCurves => t("propcurves.tab"),
             Tab::StructFea => t("structfea.tab"),
             Tab::ComputeBudget => t("computebudget.tab"),
+            Tab::Acoustics => t("acoustics.tab"),
         }
     }
 
@@ -114,6 +118,7 @@ impl Tab {
                 Tab::PropCurves,
                 Tab::StructFea,
                 Tab::ComputeBudget,
+                Tab::Acoustics,
             ],
             DroneType::VtolQuadplane => vec![
                 Tab::Summary,
@@ -134,6 +139,7 @@ impl Tab {
                 Tab::PropCurves,
                 Tab::StructFea,
                 Tab::ComputeBudget,
+                Tab::Acoustics,
             ],
             _ => vec![
                 Tab::Summary,
@@ -153,6 +159,7 @@ impl Tab {
                 Tab::PropCurves,
                 Tab::StructFea,
                 Tab::ComputeBudget,
+                Tab::Acoustics,
             ],
         }
     }
@@ -195,6 +202,7 @@ pub struct App {
     pub wt_state: windtunnel::WtState,
     pub flow_state: flow_tunnel::FlowUiState,
     pub cb_state: computebudget::CbState,
+    pub ac_state: acoustics::AcState,
 
     // Topluluk Veritabanı Alanları
     pub db_updating: bool,
@@ -294,6 +302,7 @@ impl App {
             wt_state: windtunnel::WtState::default(),
             flow_state: flow_tunnel::FlowUiState::default(),
             cb_state: computebudget::CbState::default(),
+            ac_state: acoustics::AcState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,
@@ -367,6 +376,7 @@ impl App {
             wt_state: windtunnel::WtState::default(),
             flow_state: flow_tunnel::FlowUiState::default(),
             cb_state: computebudget::CbState::default(),
+            ac_state: acoustics::AcState::default(),
             db_updating: false,
             db_cancel_flag: None,
             db_update_rx: None,

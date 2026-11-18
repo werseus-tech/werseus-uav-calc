@@ -49,6 +49,8 @@ pub enum Screen {
     StructFea,
     /// Onboard computer budget panel (renders in the centre slot).
     ComputeBudget,
+    /// Uzman modundaki akustik tahmin sekmesi (merkezde yerleşim yuvasında çizilir).
+    Acoustics,
 }
 
 /// Merkezde görünümün altında yer alan, taşınmamış (başka paketin) içerik yuvası.
@@ -61,6 +63,7 @@ pub enum CenterSlot {
     PropCurves,
     StructFea,
     ComputeBudget,
+    Acoustics,
 }
 
 pub fn screen_for_step(step: StepId, dt: DroneType) -> Screen {
@@ -117,6 +120,7 @@ pub fn screen_for_tab(tab: Tab, dt: DroneType) -> Screen {
         Tab::PropCurves => Screen::PropCurves,
         Tab::StructFea => Screen::StructFea,
         Tab::ComputeBudget => Screen::ComputeBudget,
+        Tab::Acoustics => Screen::Acoustics,
     }
 }
 
@@ -141,6 +145,7 @@ pub fn center_slot(screen: Screen, expert: bool) -> Option<CenterSlot> {
         Screen::PropCurves => Some(CenterSlot::PropCurves),
         Screen::StructFea => Some(CenterSlot::StructFea),
         Screen::ComputeBudget => Some(CenterSlot::ComputeBudget),
+        Screen::Acoustics => Some(CenterSlot::Acoustics),
         _ => None,
     }
 }
@@ -155,6 +160,7 @@ pub fn has_inputs(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::Acoustics
             | Screen::PropCurves
             | Screen::StructFea
     )
@@ -183,6 +189,7 @@ pub fn warning_areas(screen: Screen) -> &'static [&'static str] {
         | Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Acoustics
         | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
@@ -225,6 +232,7 @@ pub fn has_formulas(screen: Screen) -> bool {
             | Screen::FlowTunnel
             | Screen::FlightSim
             | Screen::Schematic
+            | Screen::Acoustics
             | Screen::MrStructure
             | Screen::PropCurves
             | Screen::StructFea
@@ -264,6 +272,7 @@ pub fn formulas(ui: &mut Ui, screen: Screen, p: &Project, m: &Model) {
         | Screen::FlowTunnel
         | Screen::FlightSim
         | Screen::Schematic
+        | Screen::Acoustics
         | Screen::PropCurves => {}
         Screen::StructFea => {}
     }
@@ -300,6 +309,7 @@ pub fn intro(ui: &mut Ui, screen: Screen) {
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Acoustics
         | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
@@ -371,6 +381,7 @@ pub fn inputs(ui: &mut Ui, screen: Screen, p: &mut Project, m: &Model, lib: &Lib
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Acoustics
         | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim
@@ -460,6 +471,7 @@ pub fn results(
         Screen::Outputs
         | Screen::Schematic
         | Screen::WindTunnel
+        | Screen::Acoustics
         | Screen::ComputeBudget
         | Screen::FlowTunnel
         | Screen::FlightSim

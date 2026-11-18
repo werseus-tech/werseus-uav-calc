@@ -866,6 +866,9 @@ impl App {
             Some(super::steps::CenterSlot::ComputeBudget) => {
                 super::computebudget::show(ui, &self.project, model, &mut self.cb_state);
             }
+            Some(super::steps::CenterSlot::Acoustics) => {
+                super::acoustics::show(ui, &self.project, model, &mut self.ac_state);
+            }
             None => {}
         }
     }
