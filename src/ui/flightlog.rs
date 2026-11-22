@@ -5,6 +5,7 @@ use super::components::{self, Status, section_header};
 use super::theme::{self, space};
 use super::widgets::{fmt, section};
 use crate::calc::{Library, Model};
+use crate::flightlog::bin;
 use crate::flightlog::compare::{self, DesignPrediction, Metric};
 use crate::flightlog::csv::{
     self, AltUnit, CurUnit, Field, Log, Mapping, SpeedUnit, ThrottleUnit, TimeUnit, VoltUnit,
@@ -109,6 +110,20 @@ fn build_loaded(log: &Log) -> Loaded {
     }
 }
 
+/// CSV dosyasını akış olarak açar; ArduPilot .bin ise önce `flightlog-core` ile CSV'ye çevirir.
+fn open_reader(path: &std::path::Path) -> Result<Box<dyn std::io::BufRead + Send>, String> {
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut magic = [0u8; 2];
+    let is_bin = std::io::Read::read_exact(&mut f, &mut magic).is_ok() && bin::is_dataflash(&magic);
+    if is_bin {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let text = bin::bin_to_csv(&bytes)?;
+        return Ok(Box::new(std::io::Cursor::new(text.into_bytes())));
+    }
+    let f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    Ok(Box::new(BufReader::with_capacity(1 << 20, f)))
+}
+
 /// Dosyayı arka plan iş parçacığında okur ve çözümler.
 fn start_load(st: &mut State, ctx: &egui::Context) {
     let Some(path) = st.path.clone() else { return };
@@ -121,15 +136,15 @@ fn start_load(st: &mut State, ctx: &egui::Context) {
     let spawned = std::thread::Builder::new().name("flightlog".into()).spawn({
         let slot = slot.clone();
         move || {
-            let res = match std::fs::File::open(&path) {
-                Ok(f) => csv::read_log(BufReader::with_capacity(1 << 20, f), &map, csv::MAX_ROWS)
+            let res = match open_reader(&path) {
+                Ok(r) => csv::read_log(r, &map, csv::MAX_ROWS)
                     .map(|l| build_loaded(&l))
                     .map_err(|e| match e {
                         csv::LogError::Empty => t("flightlog.err_empty").to_string(),
                         csv::LogError::NoValidRows => t("flightlog.err_no_rows").to_string(),
                         csv::LogError::Io(m) => tf("flightlog.err_io", &[m]),
                     }),
-                Err(e) => Err(tf("flightlog.err_io", &[e.to_string()])),
+                Err(e) => Err(tf("flightlog.err_io", &[e])),
             };
             if let Ok(mut g) = slot.lock() {
                 *g = Some(res);
@@ -165,15 +180,12 @@ fn poll(st: &mut State) {
 
 fn open_dialog(st: &mut State, ctx: &egui::Context) {
     let Some(path) = rfd::FileDialog::new()
-        .add_filter("CSV", &["csv", "txt", "tsv"])
+        .add_filter("CSV / ArduPilot .bin", &["csv", "txt", "tsv", "bin", "BIN"])
         .pick_file()
     else {
         return;
     };
-    match std::fs::File::open(&path)
-        .map_err(|e| e.to_string())
-        .and_then(|f| csv::read_headers(BufReader::new(f)).map_err(|e| format!("{e:?}")))
-    {
+    match open_reader(&path).and_then(|r| csv::read_headers(r).map_err(|e| format!("{e:?}"))) {
         Ok(h) => {
             st.map = csv::guess_mapping(&h);
             st.headers = h;

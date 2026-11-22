@@ -170,7 +170,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
@@ -1001,6 +1001,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "flightlog-core"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b49c42833db7060cb61ccec8f29ba3fe925dc2b6e7b1c4b886d20541471ec75b"
+dependencies = [
+ "mavlink-tlog",
+]
+
+[[package]]
 name = "foldhash"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1613,6 +1622,12 @@ name = "log"
 version = "0.4.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
+
+[[package]]
+name = "mavlink-tlog"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56dc10e28f28477a20b62fd7c248a36e34d3ea0a0aa9264d854372e18c0718a9"
 
 [[package]]
 name = "memchr"
@@ -3378,6 +3393,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_plot",
+ "flightlog-core",
  "image",
  "native-tls",
  "rfd",
